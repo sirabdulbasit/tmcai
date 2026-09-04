@@ -131,7 +131,11 @@ describe('DEF-320 — the synthetic never survives into an outbound message', ()
     rows.conns = [];
     rows.ents = [{ wa_lid: '125408817238041', name: 'Saba Warid', phone: null }];
     const out = await scrubSyntheticIdentities('Message from +125408817238041.', 'TMC-0001');
-    expect(out).toContain('Saba Warid');
+    // The NAME ALONE in prose, not the table label. Splicing the label produced
+    // "Samra Bank Islami BTL — number not shared by WhatsApp (Samra Bank Islami BTL)" against
+    // live data, because Brain's own sentence had already named her. Asserted exactly, so the
+    // branch is pinned rather than merely contained.
+    expect(out).toBe('Message from Saba Warid.');
     expect(out).not.toContain('125408817238041');
   });
 

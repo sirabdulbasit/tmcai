@@ -39,6 +39,11 @@ export interface DisplayIdentity {
   label: string;
   /** True when the stored value was a routing key rather than a phone number. */
   wasAlias: boolean;
+  /** The person's name alone, when known. A TABLE CELL wants the full `label`; flowing prose
+   *  wants only this — splicing the label into a sentence produced
+   *  "Samra Bank Islami BTL — number not shared by WhatsApp (Samra Bank Islami BTL)" against
+   *  live data, because the sentence already named her. */
+  name: string | null;
 }
 
 /**
@@ -117,6 +122,7 @@ export async function resolveDisplayIdentities(
         number: real,
         label: conn.user_name ? `${conn.user_name} (${real})` : real,
         wasAlias: true,
+        name: conn.user_name ? String(conn.user_name) : null,
       });
       continue;
     }
@@ -126,21 +132,27 @@ export async function resolveDisplayIdentities(
         number: ent.phone ? String(ent.phone) : null,
         label: ent.phone ? `${ent.name} (${ent.phone})` : `${ent.name} — number not shared by WhatsApp`,
         wasAlias: !ent.phone,
+        name: ent.name ? String(ent.name) : null,
       });
       continue;
     }
     if (conn && real) {
       // Stored value IS the real number.
-      out.set(n, { number: n, label: conn.user_name ? `${conn.user_name} (${n})` : n, wasAlias: false });
+      out.set(n, {
+        number: n,
+        label: conn.user_name ? `${conn.user_name} (${n})` : n,
+        wasAlias: false,
+        name: conn.user_name ? String(conn.user_name) : null,
+      });
       continue;
     }
     // Unknown to both edges. If it has the shape of a lid, it is NOT shown as a number —
     // this is the branch that was leaking `+239487846228094` at owner-visible width.
     if (isLikelyLid(n)) {
-      out.set(n, { number: null, label: unknownLidLabel(n), wasAlias: true });
+      out.set(n, { number: null, label: unknownLidLabel(n), wasAlias: true, name: null });
       continue;
     }
-    out.set(n, { number: n, label: n, wasAlias: false });
+    out.set(n, { number: n, label: n, wasAlias: false, name: null });
   }
   return out;
 }
@@ -203,9 +215,12 @@ export async function scrubSyntheticIdentities(
       if (id?.number) {
         // Tier 1 — we hold the real number. This is the "always show with real number" case.
         replacement = id.number;
-      } else if (id && !/^Unknown WhatsApp sender/.test(id.label)) {
-        // Tier 2 — a known person whose number WhatsApp withholds: the NAME, never the id.
-        replacement = id.label;
+      } else if (id?.name) {
+        // Tier 2 — a known person whose number WhatsApp withholds: the NAME ALONE, never the id
+        // and never the table label. Splicing the label into prose produced
+        // "Samra Bank Islami BTL — number not shared by WhatsApp (Samra Bank Islami BTL)"
+        // against live data, because the sentence Brain wrote already named her.
+        replacement = id.name;
       } else {
         // Tier 3 — nothing known. No digits reach him at all; DEF-121's rule, that a
         // fabricated-looking identifier reads as actionable and is worse than an admitted gap.
