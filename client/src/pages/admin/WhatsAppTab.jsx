@@ -618,7 +618,14 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
                         for inbound. The previous `from_number || to_number`
                         always rendered the tenant's connected number for
                         outbound rows, which was misleading. */}
-                    <td style={s.td}>{m.direction === 'inbound' ? (m.from_number || '?') : (m.to_number || '?')}</td>
+                    {/* DEF-318 — show the resolved identity, never the @lid routing key.
+                        `from_display` falls back to the raw column server-side, so an older
+                        server that does not send it renders exactly as before. */}
+                    <td style={s.td} title={m.direction === 'inbound' ? (m.from_number || '') : (m.to_number || '')}>
+                      {m.direction === 'inbound'
+                        ? (m.from_display || m.from_number || '?')
+                        : (m.to_display || m.to_number || '?')}
+                    </td>
                     <td style={{ ...s.td, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.content?.slice(0, 60)}</td>
                     <td style={s.td}>
                       <span style={{ ...s.badge,

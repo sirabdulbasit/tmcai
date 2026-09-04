@@ -463,10 +463,34 @@ router.get('/messages', async (req: Request, res: Response) => {
   if (direction) { where += ` AND direction = $${idx++}`; params.push(direction); }
   if (status) { where += ` AND status = $${idx++}`; params.push(status); }
 
-  const messages = await prisma.$queryRawUnsafe(
+  const messages = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, direction, from_number, to_number, content, message_type, status, requires_approval, approved_by, wa_message_id, agent_id, error_message, created_at
      FROM whatsapp_messages ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`, ...params,
   );
+
+  // DEF-318 — resolve the identity before it is shown. Owner, 2026-09-04:
+  // *"always show correct number not lid"*. `from_number` may hold an `@lid`-derived ROUTING
+  // KEY rather than a phone number — all 58 of his inbound messages in seven days rendered as
+  // `+173555350261799`, which is his own phone shown as a 15-digit string that looks dialable.
+  //
+  // Resolved HERE, at the display boundary, rather than by rewriting the stored value: the
+  // synthetic is load-bearing for routing (removing it was `@lid` recurrence #4) and is only
+  // wrong when a human reads it. `.catch` to the raw rows so a resolver failure degrades to
+  // today's behaviour instead of emptying the panel.
+  const { resolveDisplayIdentities } = await import('../../services/whatsapp/displayIdentity');
+  const ids = await resolveDisplayIdentities(
+    cn, messages.flatMap((m: any) => [m.from_number, m.to_number]),
+  ).catch(() => new Map());
+  for (const m of messages as any[]) {
+    const from = m.from_number ? ids.get(m.from_number) : null;
+    const to = m.to_number ? ids.get(m.to_number) : null;
+    // Additive: the raw columns stay exactly as they were, so anything reading them is
+    // unaffected and the routing key remains inspectable.
+    m.from_display = from?.label ?? m.from_number ?? null;
+    m.to_display = to?.label ?? m.to_number ?? null;
+    m.from_was_alias = from?.wasAlias ?? false;
+    m.to_was_alias = to?.wasAlias ?? false;
+  }
   res.json({ messages });
 });
 
