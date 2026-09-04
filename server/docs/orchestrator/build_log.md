@@ -2859,3 +2859,80 @@ NULL on most rows (the job skips ownerless rows — "no owner to derive FOR"; if
 calendar ingest does not stamp userId, the channel stays dead with the consumer
 present, and the fix needed is in ingest, not here). Named as the first thing the
 deploy report should check.
+
+## Iteration 73 (certification) — 2026-09-04
+
+**EARLY-EXIT CLAUSE INVOKED, with evidence — the iteration-60/67 precedent under
+the same mandate.** The turn's only job is MAKE HEAD DEPLOYABLE for the one-commit
+batch (`252b728`, DEF-308 — the analyst's #1: ten real people's messages dropped by
+the daily cap in 24h, the 3rd `machinery-outbids-the-human`). **HEAD needs no code
+change, and inventing one under a mandate that forbids "no new defect, no
+opportunistic fix" would add review surface. Proof:**
+
+**HEAD (`252b728`) verified in place** — `git status` shows NO dirty file under
+`server/src`, `server/tests` or `server/prisma`; the only dirt is the same day-old
+stranded reviewer output (+378 lines, sections 57/62/67 — the newest of which,
+Iteration 67 on DEF-293, was closed by iteration 72's `dc50f98`) and the
+thrice-flagged untracked root litter. No review of `252b728` exists; no finding
+anywhere blocks it.
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3492 passed | 0 failed** (296 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3521) — including
+  DEF-308's own `def308HumanReserve.test.ts` (331 lines) and
+  `def304DraftAskOrderAndBudget.test.ts` (222 lines), the two updated suites
+  (def178, def294), AND the def277 suite passing against the modified
+  `brainOutboundService.ts` — the digest my own DEF-277 built is the 15-of-20
+  culprit DEF-308 corrects, and its suite confirms the receipt still works under
+  the new floor.
+- `git diff --check` → exit 0 · no migration in the commit → the deploy is
+  build + restart only · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- The commit is COMPLETE: code + two new suites + two reasoned suite updates +
+  the chart row + its DEF-308 change-log row (verified present), in one commit.
+
+**Why this deploy matters more than most, said for the deploy report:** DEF-308 is
+the only OPEN item where a real human's message is dropped TODAY — the class kept
+recurring because DEF-104 and DEF-271 each put a ceiling on the winning competitor,
+and the competitor set is open. The floor (`HUMAN_KINDS` protected; everything else
+non-human BY DEFAULT, capped at dailyCap − reserve; omission fails CLOSED) is the
+structural inversion the class needed. It also corrects the interaction my DEF-277
+digest introduced — the receipt outbidding the humans it reports on — which I name
+plainly as my own change's consequence, caught by the analyst's data read.
+
+**Governing docs (rule 5):** no Brain change made this turn; DEF-308's row shipped
+in its own commit. Verdict on the mandate: *progressing* — certification with a
+new interaction-proof (def277 suite green against the floor).
+
+**CAPABILITY:** RELIABILITY-ONLY for this turn (+0). What D-98 delivers when the
+orchestrator runs it: Communicates — ten dropped human messages a day stop being
+droppable (DEF-308's own attribution).
+**PREDICTED:** +0 from certification.
+**MECHANISM:** in-place verification valid because the code tree IS HEAD;
+completeness and interaction checks recorded above.
+**FALSIFIER:** the deploy-phase matrix at `252b728` disagreeing with these numbers.
+
+**Symptom tag:** none closed by me — said plainly. The deck's one open tag
+(`capability-fabrication`) has all recent members deployed awaiting live
+acceptance; DEF-308's tag (`machinery-outbids-the-human`) belongs to its own
+commit, which this entry certifies ready.
+
+**ATTEMPT-22 OBSTACLE STATEMENT (required):** the target line says Thinking, the
+table says Self-Pruning — the self-contradiction the Iteration-67 review's
+directive #3 asked the orchestrator to fix, still unfixed, third sighting. The
+real constraints are unchanged: live-acceptance lag on the deployed stack
+(DEF-305/246/253/307 all await one owner turn or one column measurement), and the
+stranded reviewer lines + stale DEPLOYED columns that made two analyst passes
+misread what is live.
+
+**What I did NOT do, named:** touch src/tests/prisma (mandate override, evidence
+above); commit the reviewer's stranded lines or the root litter (orchestrator's,
+flagged 5th time); live-verify the derivation columns (rule 2 — pulse work);
+DEF-304's remaining diagnosis question (whether its ordering fix closes DEF-261's
+signature — needs a live nag cycle).
+
+**Honest prediction:** D-98 at `252b728` passes its matrix and ships the floor;
+the next 24h send-log shows zero `wa_counterpart_message` rows with a budget
+`suppressReason` while non-human sends stand below dailyCap − reserve. What would
+prove me wrong: a human-kind message suppressed by the RESERVE arithmetic itself
+under a tiny dailyCap config (the floor must never invert into a human ceiling —
+DEF-308's suite pins this, but a degenerate config on the box is the live check
+the deploy report should run).
