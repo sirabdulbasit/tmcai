@@ -893,7 +893,7 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
   {
     id: 'chat27',
     title: 'asked one item\'s background three times and got three origins — it answered with a stranger\'s WhatsApp message',
-    fixCommits: ['pending'],
+    fixCommits: ['bbb9281'],
     symptomTags: ['referent-from-the-wrong-set', 'prompt-contradicts-itself'],
     assert: () => {
       const { readFileSync } = require('node:fs') as typeof import('node:fs');
