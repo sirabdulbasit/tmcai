@@ -153,7 +153,10 @@ describe('DEF-293 — DEF-199 and DEF-085 disciplines hold', () => {
 
   it('genuinely empty windows are stated as facts, not omitted', async () => {
     const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    expect(out).toContain('you asked him nothing and attempted no status change in the last 36h');
+    // DEF-313 — the empty case is now about the ITEM list specifically: background lines
+    // (third-party relays, diagnostics) may exist while nothing names one of his items, and
+    // those two states must not read the same.
+    expect(out).toContain('you asked him nothing about one of his items in the last 36h');
   });
 });
 
@@ -212,7 +215,12 @@ describe('↻ DEF-293 (iteration 72) — one time-ordered list: "most recent" is
 describe('DEF-293 — the referent rule sits beside the referents', () => {
   it('licenses "the most recent line is what he means" and forbids offering unrelated items', async () => {
     const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    expect(out).toMatch(/THE REFERENT IS IN THIS\s*RECORD, and the list above is NEWEST FIRST: its TOP line is the most recent thing/);
+    // DEF-313 — the rule now points at the ITEM LIST rather than "this record", because
+    // "this record" included relayed third-party messages and that is what it named on
+    // 2026-09-04. The recency licence this test protects is unchanged and still asserted;
+    // what changed is the SET it ranges over.
+    expect(out).toMatch(/THE REFERENT IS IN THE ITEM LIST ABOVE, which is NEWEST FIRST: its TOP\s*line is the default reading of what he means/);
+    expect(out).toContain('NEVER take the referent from the background block');
     expect(out).toMatch(/A REFUSED line is the answer to "why isn't it closed"/);
     expect(out).toMatch(/Never offer other items from elsewhere in your context\s*while a line here matches the moment/);
   });

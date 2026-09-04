@@ -891,6 +891,58 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
     },
   },
   {
+    id: 'chat27',
+    title: 'asked one item\'s background three times and got three origins — it answered with a stranger\'s WhatsApp message',
+    fixCommits: ['pending'],
+    symptomTags: ['referent-from-the-wrong-set', 'prompt-contradicts-itself'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const raw = readFileSync(
+        join(__dirname, '..', 'src', 'services', 'knowledge', 'dispatchLedgerService.ts'), 'utf-8');
+      // Comments stripped (BLD-009): this fix's comments necessarily quote the very strings
+      // being checked, so an assertion could pass on a comment while the code was gone.
+      const src = raw.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+      // 1. THE REFERENT SET IS SPLIT. The list the referent rule ranges over must contain only
+      //    lines that name an item — that is what excludes a relayed stranger.
+      expect(src).toContain('isReferentCandidate');
+      expect(src).toContain('allLines.filter((m) => m.isReferentCandidate)');
+      expect(src).toContain('allLines.filter((m) => !m.isReferentCandidate)');
+
+      // 2. ONE SORT, THEN THE SPLIT — not two separately sorted halves, which is the exact
+      //    shape DEF-293 removed and which this fix must not reintroduce.
+      const sortAt = src.indexOf('const allLines');
+      const splitAt = src.indexOf('const merged = allLines.filter');
+      expect(sortAt).toBeGreaterThan(-1);
+      expect(splitAt).toBeGreaterThan(sortAt);
+
+      // 3. THE RULE POINTS AT THE ITEM LIST, and forbids the background block by name.
+      //    Anchored on the stable half of the sentence, not the whole prose.
+      expect(src).toContain('THE REFERENT IS IN THE ITEM LIST ABOVE');
+      expect(src).toContain('NEVER take the referent from the background block');
+
+      // 4. A RELAYED MESSAGE IS NOT RENDERED AS SOMETHING BRAIN SAID. The line that put
+      //    `Hamna Latif Bhutta replied: "Apn Ghar hi"` under "you asked" is what made a
+      //    stranger's message look like Brain's own.
+      expect(src).toContain("SOMEONE ELSE'S WORDS, relayed to you");
+      expect(src).toContain('isThirdPartyQuote');
+
+      // 5. BACKGROUND CARRIES WHO AND WHEN-IT-HAPPENED. "came in via gmail" alone was never an
+      //    answer to "to whom did i do this chat?", and the ingest date was reported as the
+      //    origin date for an email written the day before.
+      expect(src).toContain('senderName');
+      expect(src).toContain('eventAt');
+      expect(src).toContain('sent ${when(o.eventAt)}');
+      expect(src).toContain('which I first recorded ${when(o.createdAt)}');
+
+      // 6. AN OPAQUE PROVIDER ID IS NEVER RENDERED AS A PERSON. All 25 live gchat items store
+      //    their sender as `users/<digits>`; presenting that as a name is DEF-121's mistake.
+      expect(src).toContain('senderIsOpaqueId');
+      expect(src).toContain('NOT yet identified');
+    },
+  },
+  {
     id: 'chat26',
     title: 'he quoted a reminder and asked where it came from; it answered the quoted question instead',
     fixCommits: ['pending'],

@@ -1052,6 +1052,47 @@ personal WhatsApp is connected for reading" unconditionally, while that connecto
 disconnected — reintroducing the exact `fabricated-status` over-claim DEF-299 had just avoided
 one block away. Rendering the block and reading it is what caught it.
 
+## Chat 27
+
+**2026-09-04 09:00 → 11:17 PKT, CL-055 — DEF-313. His own diagnosis, and it was right:
+*"brain is not corelating things correttly / brain don't know the proper background"*.**
+
+Brain sent two unrelated messages ten minutes apart — 09:00 a due-reminder for
+*"Plan session for Thursday"*, 09:10 a draft-ask for *"Approve new team members"*. Two hours
+later:
+
+> **Basit:** what is this?
+> **Brain:** That's a reminder about an open item titled "Plan session for Thursday". I first
+> recorded it on September 2nd from an email.
+>
+> **Basit:** do you know its background?
+> **Brain:** The record shows it originated from a Google Chat message on August 29th and that
+> I first prompted you about it being overdue on September 2nd.
+>
+> **Basit:** to whom with i did this chat?
+> **Brain:** The most recent reply I have a record of was from Hamna Latif Bhutta, who said
+> "Apn Ghar hi". It doesn't look like that was related to one of your open items.
+
+Three answers, three different origins, one item. **The record holds exactly one:**
+`source_feed='gmail'`, sender `Basit Ahmed <basit.ahmed@tmcltd.com>`, `event_at` **01 Sep
+08:16 UTC** — an email, from him. There was never a Google Chat, so *"to whom did i do this
+chat?"* had no answer; the question was premised on Brain's own error, and Brain then answered
+it with a stranger's WhatsApp message.
+
+**What went RIGHT, and it decides the fix:** Brain invented nothing. All three answers are
+verbatim rows of ONE ten-row window, and the first one was CORRECT. DEF-306's provenance
+carrying worked; DEF-288's referent answer worked; DEF-293's time ordering worked. The window
+was correctly ordered — its top line was `Hamna Latif Bhutta replied: "Apn Ghar hi"`, a third
+party's words carrying no item, and the rule beside it said *"its TOP line is ... the default
+reading of what he means"*. **Brain obeyed. The rule was fine; the SET it ranged over was
+wrong** — six of the ten lines could not answer anything he asked, and the list mixed what
+Brain told him with what other people told Brain, ranked against each other by time.
+
+**My own error, recorded because it cost a turn:** I first filed this as "the window is sorted
+by primary key". That was the FETCH order, not what the model sees. Computing the RENDERED
+order disproved it — reproduction-is-not-a-diagnosis, one day after I wrote that lesson into
+the handoff.
+
 ## Chat 26
 
 **2026-09-03 17:49 → 18:02, CL-053 — DEF-288, SECOND occurrence in two days.**

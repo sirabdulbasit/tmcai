@@ -190,12 +190,15 @@ function shownQuestion(raw: string | null | undefined): string {
 interface RecentInteractions {
   prompts: Array<{
     at: Date | null; question: string; hasItem: boolean; itemTitle: string | null;
-    itemOrigin: { feed: string | null; ref: string | null; createdAt: Date | null } | null;
+    isThirdPartyQuote: boolean;
+    itemOrigin: { feed: string | null; ref: string | null; createdAt: Date | null;
+      sender: string | null; senderIsOpaqueId?: boolean; eventAt: Date | null } | null;
     answeredAt: Date | null; answerText: string | null; state: string;
   }> | null;   // null = the read failed (unavailable ≠ none)
   transitions: Array<{
     at: Date; hasItem: boolean; itemTitle: string | null;
-    itemOrigin: { feed: string | null; ref: string | null; createdAt: Date | null } | null;
+    itemOrigin: { feed: string | null; ref: string | null; createdAt: Date | null;
+      sender: string | null; senderIsOpaqueId?: boolean; eventAt: Date | null } | null;
     fromStatus: string; toStatus: string;
     outcome: string; reason: string | null;
   }> | null;
@@ -270,20 +273,63 @@ async function getRecentInteractions(
   const titleRows = ids.length
     ? await Promise.resolve().then(() => prisma.openItem.findMany({
       where: { id: { in: ids }, clientNumber, userId },
-      select: { id: true, title: true, sourceFeed: true, sourceRef: true, createdAt: true } as any,
+      select: {
+        id: true, title: true, sourceFeed: true, sourceRef: true, createdAt: true,
+        // DEF-313 — the author. `source_feed_event_id` is populated on 94 of 95 live items and
+        // the feed event carries `sender_name`/`sender_email`; the join was simply never made on
+        // the answer path, which is why "to whom did i do this chat?" had no answer while the
+        // record held one.
+        sourceFeedEventId: true,
+      } as any,
     })).catch(() => [] as Array<{
       id: string; title: string | null; sourceFeed?: string | null;
-      sourceRef?: string | null; createdAt?: Date | null;
+      sourceRef?: string | null; createdAt?: Date | null; sourceFeedEventId?: string | null;
     }>)
     : [];
+
+  // DEF-313 — one more read, for the half of "background" that was missing.
+  //
+  // Owner, 2026-09-04: *"brain don't know the proper background"*, and *"it said 'Plan session
+  // for thursday' taken from google chat, but didnt tell me to whom i talked"*. Measured that
+  // day: the item is `gmail`, its feed event's sender is `Basit Ahmed <basit.ahmed@tmcltd.com>`
+  // and its `event_at` is 01 Sep — an email, from him. Brain had never read past `source_feed`.
+  //
+  // Two facts are added here and they are deliberately kept apart:
+  //   · WHO it came from, and WHEN IT HAPPENED (`event_at`)
+  //   · when BRAIN FIRST RECORDED it (`createdAt`) — already carried
+  // Collapsing those is the other half of the same complaint: Brain answered "September 2nd",
+  // its own ingest date, for an email written on the 1st. "When I learned it" is not "when it
+  // happened", and a background answer that gives the first is answering a different question.
+  const feedIds = [...new Set(titleRows
+    .map((r: any) => r.sourceFeedEventId).filter((x: any): x is string => !!x))];
+  const feedRows: any[] = feedIds.length
+    ? await Promise.resolve().then(() => (prisma as any).feedEvent.findMany({
+      where: { id: { in: feedIds }, clientNumber },
+      select: { id: true, senderName: true, senderEmail: true, eventAt: true },
+    })).catch(() => [])
+    : [];
+  const feedById = new Map(feedRows.map((f: any) => [f.id, f]));
   const titles = new Map(titleRows
     .filter((r) => String(r.title ?? '').trim())
     .map((r) => [r.id, String(r.title).trim()]));
-  const provenance = new Map(titleRows.map((r: any) => [r.id, {
-    feed: r.sourceFeed ? String(r.sourceFeed) : null,
-    ref: r.sourceRef ? String(r.sourceRef) : null,
-    createdAt: r.createdAt ?? null,
-  }]));
+  const provenance = new Map(titleRows.map((r: any) => {
+    const f = r.sourceFeedEventId ? feedById.get(r.sourceFeedEventId) : null;
+    // Prefer a name, fall back to an address. An OPAQUE PROVIDER ID IS NOT A NAME: all 25 live
+    // gchat items store their sender as `users/1124…`, and rendering that as though it were a
+    // person is the DEF-121 mistake — a fabricated-looking identifier reads as actionable, which
+    // is worse than admitting the gap. It is passed through labelled as unidentified so the
+    // model says so instead of inventing a person, and so the gap is visible rather than silent.
+    const raw = f ? (f.senderName ?? f.senderEmail ?? null) : null;
+    const opaque = !!raw && /^users\/\d+$/.test(String(raw));
+    return [r.id, {
+      feed: r.sourceFeed ? String(r.sourceFeed) : null,
+      ref: r.sourceRef ? String(r.sourceRef) : null,
+      createdAt: r.createdAt ?? null,
+      sender: raw ? String(raw) : null,
+      senderIsOpaqueId: opaque,
+      eventAt: f?.eventAt ?? null,
+    }];
+  }));
 
   return {
     prompts: promptRows === null ? null : promptRows.map((p) => ({
@@ -297,6 +343,16 @@ async function getRecentInteractions(
       // are different facts and were collapsed into one. Carried separately so the renderer can
       // stop telling the model "you asked about an item" about prompts that had no item.
       hasItem: !!promptSubjectItemId(p as any),
+      // DEF-313 — whose words are these? Used ONLY to label the background block, never to
+      // decide the referent: the referent stays item-based so a relay producer that forgets
+      // these markers still cannot become a referent. Labelling may fail open; the referent
+      // may not.
+      isThirdPartyQuote: (() => {
+        const m: any = (p as any).metadata ?? {};
+        return m.provenance === 'quoted_third_party'
+          || m.source === 'unattached_counterpart_reply'
+          || !!m.from;
+      })(),
       itemTitle: (() => { const k = promptSubjectItemId(p as any); return k ? (titles.get(k) ?? null) : null; })(),
       itemOrigin: (() => { const k = promptSubjectItemId(p as any); return k ? (provenance.get(k) ?? null) : null; })(),
       answeredAt: p.answeredAt, answerText: p.answerText ? String(p.answerText).slice(0, 80) : null,
@@ -449,11 +505,25 @@ export async function buildDispatchLedgerBlock(
    * item was 63rd of 93 in a 30-row window, so it was absent from context and Brain reported
    * that as absent from the record.
    */
-  const originOf = (o: { feed: string | null; ref: string | null; createdAt: Date | null } | null) => {
+  const originOf = (o: {
+    feed: string | null; ref: string | null; createdAt: Date | null;
+    sender?: string | null; senderIsOpaqueId?: boolean; eventAt?: Date | null;
+  } | null) => {
     if (!o || (!o.feed && !o.createdAt)) return '';
     const bits: string[] = [];
     if (o.feed) bits.push(`came in via ${o.feed}`);
-    if (o.createdAt) bits.push(`first recorded ${when(o.createdAt)}`);
+    // DEF-313 — WHO, next to the channel it arrived on. This is the whole of "background": the
+    // channel alone was never an answer to "to whom did i do this chat?".
+    if (o.sender) {
+      bits.push(o.senderIsOpaqueId
+        ? `from a ${o.feed ?? 'chat'} participant I have NOT yet identified (provider id ${o.sender}) `
+          + '— say exactly that, never guess a name and never borrow one from elsewhere'
+        : `from ${o.sender}`);
+    }
+    // DEF-313 — when it HAPPENED, kept separate from when Brain recorded it. He was told
+    // "September 2nd" for an email written on the 1st, because only the ingest date was carried.
+    if (o.eventAt) bits.push(`sent ${when(o.eventAt)}`);
+    if (o.createdAt) bits.push(`which I first recorded ${when(o.createdAt)}`);
     // The ref is a thread/message id. Included because it is the actual answer to "from where",
     // and truncated because it is an identifier, not prose.
     if (o.ref) bits.push(`ref ${String(o.ref).slice(0, 60)}`);
@@ -474,14 +544,47 @@ export async function buildDispatchLedgerBlock(
   // merged list, newest first. A prompt sorts by its newest fact — the answer
   // when one exists — because "the thing he means" after answering is the
   // exchange, not the moment the question was queued.
-  type MergedLine = { at: Date | null; line: string };
+  // DEF-313 — the referent set may contain ONLY lines that name one of his items.
+  //
+  // Owner, 2026-09-04: *"the replies brain is corelating with Hamna Latif, which is totally
+  // wrong"*. He is right, and Brain was obeying its instructions. The rule below says "the TOP
+  // line is the most recent thing between you"; the live list's top line was
+  // `Hamna Latif Bhutta replied: "Apn Ghar hi"` — a THIRD PARTY'S words, relayed, carrying no
+  // item — so that is what it named. SIX of the ten lines were not candidate answers at all:
+  // four counterpart relays, a self-prune marker and a connector warning.
+  //
+  // DEF-293 already made this list correctly time-ordered and the defect happened anyway,
+  // which is the proof that ordering is not the fix: a correctly ordered list of the WRONG KIND
+  // of thing still puts the wrong thing first. The list conflated *what Brain told him* with
+  // *what other people told Brain*, and then ranked them against each other by time, so a
+  // stranger's "Apn Ghar hi" outranked the reminder he was actually asking about.
+  //
+  // The discriminator is an INVARIANT, not a list of excluded sources: **does this line name an
+  // open item?** His follow-ups — "which one?", "what is this?", "from where you get it?" — are
+  // questions ABOUT AN ITEM, and a line with no item cannot answer one. A relay producer added
+  // next month is excluded without being listed anywhere, which is the guardrail shape
+  // BRAIN_VISION requires ("an invariant about ANY action, never a list of which are allowed").
+  // Enumerating `provenance: 'quoted_third_party'` instead would be an allow-list with the usual
+  // hole: the first producer that forgets the marker becomes the next Hamna.
+  //
+  // Non-item lines are NOT dropped — dropping them would lose real context, and a bare "yes"
+  // after a non-item question still needs them. They move to a clearly labelled background
+  // section that the referent rule does not range over.
+  type MergedLine = { at: Date | null; line: string; isReferentCandidate: boolean };
   const promptRows: MergedLine[] | null = ix.prompts === null ? null : ix.prompts.map((p) => {
     const answered = p.answeredAt
       ? `→ HE ANSWERED ${when(p.answeredAt)}${p.answerText ? `: "${p.answerText}"` : ''}`
       : `— ${p.state}, no answer yet`;
     return {
       at: p.answeredAt ?? p.at,
-      line: `- ${when(p.at)} you asked, re ${nameOf(p)}${originOf(p.itemOrigin)}: "${p.question}" ${answered}`,
+      // DEF-313 — a relayed message is not something "you asked". Rendering every line with
+      // that prefix is how `Hamna Latif Bhutta replied: "Apn Ghar hi"` came to sit under the
+      // heading "Your recent interactions with him" reading as Brain's own words. A block whose
+      // rows contradict its own header is `prompt-contradicts-itself`, already twice recorded.
+      line: p.isThirdPartyQuote
+        ? `- ${when(p.at)} SOMEONE ELSE'S WORDS, relayed to you (not yours, not about an item): "${p.question}" ${answered}`
+        : `- ${when(p.at)} you asked, re ${nameOf(p)}${originOf(p.itemOrigin)}: "${p.question}" ${answered}`,
+      isReferentCandidate: p.hasItem,
     };
   });
   const transitionRows: MergedLine[] | null = ix.transitions === null ? null : ix.transitions.map((t) => {
@@ -491,6 +594,8 @@ export async function buildDispatchLedgerBlock(
     return {
       at: t.at,
       line: `- ${when(t.at)} status change, ${nameOf(t)}${originOf(t.itemOrigin)}: ${t.fromStatus} → ${t.toStatus} ${verdict}`,
+      // A status change is always about an item — that is what it is.
+      isReferentCandidate: true,
     };
   });
 
@@ -503,9 +608,12 @@ export async function buildDispatchLedgerBlock(
     ? `\n(${unreadable.join(' and ')} could not be read — for that part say you cannot tell, do not guess)`
     : '';
 
-  const merged = [...(promptRows ?? []), ...(transitionRows ?? [])]
-    .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
-    .map((m) => m.line);
+  const allLines = [...(promptRows ?? []), ...(transitionRows ?? [])]
+    .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
+  // DEF-313 — one sort, then one split. Sorting each half separately would rebuild exactly the
+  // two-separately-sorted-sub-blocks problem DEF-293 removed.
+  const merged = allLines.filter((m) => m.isReferentCandidate).map((m) => m.line);
+  const background = allLines.filter((m) => !m.isReferentCandidate).map((m) => m.line);
 
   let interactionBody: string;
   if (merged.length > 0) {
@@ -515,22 +623,43 @@ export async function buildDispatchLedgerBlock(
   } else if (unreadable.length === 1) {
     interactionBody = `(nothing in the readable record for the last ${hrs}h)${unreadableNote}`;
   } else {
-    interactionBody = `(you asked him nothing and attempted no status change in the last ${hrs}h)`;
+    interactionBody = `(you asked him nothing about one of his items in the last ${hrs}h)`;
   }
 
-  const interactions = '\n\n## Your recent interactions with him — NEWEST FIRST (prompts you asked, from brain_prompt_queue; status changes you attempted, from item_status_history)\n'
+  // DEF-313 — the background half, labelled for what it is. These lines were previously mixed
+  // into the list above under the heading "Your recent interactions with him", which is how a
+  // third party's WhatsApp message came to read as something Brain had said to him.
+  const backgroundBlock = background.length
+    ? '\n\nALSO IN THE WINDOW, and NONE of it names one of his items — this is background, '
+      + 'NOT a referent.\nLines marked SOMEONE ELSE\'S WORDS were written by other people and '
+      + 'relayed to him; they are\nnot yours and not his. Never answer "which item did you '
+      + 'mean?" or "where did this come\nfrom?" using a line from this block:\n'
+      + background.join('\n')
+    : '';
+
+  const interactions = '\n\n## Your recent interactions with him ABOUT HIS ITEMS — NEWEST FIRST (prompts you asked, from brain_prompt_queue; status changes you attempted, from item_status_history)\n'
     // DEF-301 — the never-borrow-a-title rule, stated ONCE here instead of inside every row.
     + 'Where a line names no title, you do not have one: say so rather than borrowing a title\n'
     + 'from elsewhere in your context.\n'
-    + `${interactionBody}\n`
+    + `${interactionBody}${backgroundBlock}\n`
     // The referent rule lives NEXT TO the referents, per DEF-165's finding that
     // a constraint beside the data outranks one in a rulebook. This is target
     // grounding, not wording: what he means is a fact these rows carry.
     + '\nWHEN HE FOLLOWS UP on one of these — "what you got it?", "which one?", "which\n'
-    + 'approval?", a bare correction seconds after answering you — THE REFERENT IS IN THIS\n'
-    + 'RECORD, and the list above is NEWEST FIRST: its TOP line is the most recent thing\n'
-    + 'between you and the default reading of what he means. Name that item by its quoted\n'
-    + 'title. A REFUSED line is the answer to "why isn\'t it closed" — report its recorded\n'
+    + 'approval?", "what is this?", "from where you get it?", a bare correction seconds after\n'
+    + 'answering you — THE REFERENT IS IN THE ITEM LIST ABOVE, which is NEWEST FIRST: its TOP\n'
+    + 'line is the default reading of what he means. Name that item by its quoted title.\n'
+    // DEF-313 — the referent may never be drawn from the background block. Stated here, beside
+    // the data, per DEF-165: a constraint next to the rows outranks one in a rulebook.
+    + 'NEVER take the referent from the background block: those lines name no item, and some\n'
+    + 'of them are other people\'s words. Answering "which item?" with a relayed message from\n'
+    + 'someone else is the exact failure he reported on 2026-09-04.\n'
+    // DEF-313 — background is now a real answer, so the rule for it is stated too.
+    + 'WHEN HE ASKS WHERE AN ITEM CAME FROM or WHO IT WAS WITH, the origin is on that item\'s\n'
+    + 'own line: give the channel, the person and the date it was SENT — and say plainly when\n'
+    + 'the sender is a provider id you have not resolved to a person. "first recorded" is when\n'
+    + 'YOU logged it, which is NOT when it happened; never offer the one as the other.\n'
+    + 'A REFUSED line is the answer to "why isn\'t it closed" — report its recorded\n'
     + 'reason, in your own words. Never offer other items from elsewhere in your context\n'
     + 'while a line here matches the moment: offering unrelated items when the referent is\n'
     + 'on record is how you lost him before.\n';
