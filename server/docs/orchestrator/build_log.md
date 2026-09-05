@@ -2936,3 +2936,91 @@ prove me wrong: a human-kind message suppressed by the RESERVE arithmetic itself
 under a tiny dailyCap config (the floor must never invert into a human ceiling —
 DEF-308's suite pins this, but a degenerate config on the box is the live check
 the deploy report should run).
+
+## Iteration 73 (build) — 2026-09-05
+
+**Files named early and changed:**
+`server/src/services/whatsapp/connectionWatchdog.ts` + new suite
+`server/tests/def321AlertThatReachesNoOne.test.ts`. **The analyst's #1 and the
+assigned capability (Self-Healing) align this turn:** DEF-317's alert-delivery half,
+filed as **DEF-321**. The owner could not reach Brain on WhatsApp and nobody told
+him — "why silence??" is the sentence this closes.
+
+**Diagnosis first, and it corrects the analyst on the mechanism:** the analyst wrote
+"the alert was sent only over the channel it was reporting on." The code says
+otherwise — `alertWhatsAppDisconnect` already emails. The incident's
+`sent:0, failed:1` means the ONE admin email FAILED, its reason swallowed by
+`.catch(() => false)`, the zero logged at INFO, with no second route. Same outcome
+the analyst described (the alert reached no one), different defect — and the
+difference decides the fix.
+
+**What changed (one function):**
+- Per-recipient failure REASONS captured — throw or false-return, both stated
+  (DEF-276e's lesson: the instrument must say what it did, at a level production
+  keeps).
+- `sent === 0` escalates at **log.error** with those reasons — an undeliverable
+  "I've gone dark" alert is an incident, not an info line (DEF-276b).
+- **A second route through the one chokepoint, always:** `brainContactsUser` with
+  kind `connector_stale` (DIAGNOSTIC_KINDS — reserved slice under DEF-308's floor,
+  never crowds humans), urgency high, dedup `wa-disconnect:<tenant>` bounding
+  re-alerts to 6h while dead. That buys the durable audit row and the DEF-296
+  email fallback the old path never had — closing the 11th
+  `protection-with-two-implementations`. Wording is the model's (DEF-277 pattern;
+  only WhatsApp is down, not the model), curated facts as fallback. All plumbing
+  wrapped; both-routes-down is itself an error log, and the disconnect handler can
+  never be taken down by its own alerting.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3526 passed | 0 failed** (300 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3555). New suite:
+  **7 passed | 0 failed** — the 09-04 shape with the chokepoint route as the killed
+  mutation, reason capture both ways, route-fires-on-success, model-words vs
+  facts-verbatim fallback, no-SA/AD completes, both-routes-down logged without
+  throwing.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: one new read (tenant-scoped SA/AD lookup, LIMIT 1);
+  the notification carries (clientNumber, userId); every failure mode logs and
+  completes.
+
+**Governing docs (rule 5): circling at the class, structural fix given** —
+`protection-with-two-implementations` is the 10-deep chart family and this is its
+11th member; the fix routes through the existing chokepoint rather than adding a
+third path. DEF-321 row written.
+
+**CAPABILITY:** Self-Healing — the assigned target, aligned with the analyst's #1
+for the first time in weeks; no divergence to declare on target. (Campaign
+divergence only: C-3's increment 3 remains untouched, said plainly — a dead
+channel that cannot announce itself outranks a pruning increment.)
+**PREDICTED:** +0 score claim. What the owner receives: the NEXT channel death is
+announced — a row in his own channel history plus the email fallback — instead of
+five hours of silence he has to break himself.
+**MECHANISM:** reasons captured, silence escalated, the alert routed through the
+chokepoint that already owns fallback and audit.
+**FALSIFIER:** any future disconnect with no `brain_user_messages` row for the
+notice; or a sent:0 alert logged below error.
+
+**Symptom tag:** the deck's one open tag (`capability-fabrication`) is NOT closed
+by this — said plainly; its live member is DEF-315 (the identity-denial fallback),
+which is the next build. The analyst's signature for THIS defect is keyed DEF-317;
+DEF-321 closes its alert-delivery half. **What no code can fix, stated for the
+deploy report: the channel itself needs a human QR re-pair — until that happens
+WhatsApp stays dead regardless of this fix.**
+
+**ATTEMPT-23 OBSTACLE STATEMENT (required):** for once the assigned capability,
+the analyst's ranking and the buildable work coincided. The remaining obstacles:
+the QR re-pair (physical, owner's), DEF-315/319 (next builds, both diagnosed to a
+line by the analyst), and the stale DEPLOYED columns that have now misled three
+analyst passes (orchestrator's — drive them from the deployed-sha file).
+
+**What I did NOT do, named:** DEF-315 (the null-read fallback — next build, its
+fix shape is stated in the analyst's row); DEF-319 (wire `findOwnMessageIdByEcho`
+— next after; a real behaviour change on the send path deserving its own turn);
+DEF-316 (status lifecycle); the QR re-pair (not code).
+
+**Honest prediction:** the next session death produces an owner-visible notice
+within one alert cycle, with a durable row. What would prove me wrong: SMTP being
+down at the same moment (both email paths share the transport — the audit row
+still exists, which is the difference from 09-04, but delivery would wait; if
+that co-failure is observed, the escalation needs a third transport and that is a
+product decision, named now rather than discovered).

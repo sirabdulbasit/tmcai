@@ -343,15 +343,108 @@ export async function alertWhatsAppDisconnect(params: {
     </div>
   `;
 
+  // DEF-321 — the 09-04 incident, measured: this very function logged
+  // `disconnect alert sent {sent:0, failed:1}` at 07:48:21 and NO ONE was
+  // told the channel had died — the owner discovered it himself five hours
+  // later ("why silence??"). Three defects in the old three lines, each the
+  // codebase's own recorded lesson:
+  //   1. `.catch(() => false)` swallowed WHY the email failed (DEF-276e: the
+  //      reason must be captured at a level production keeps);
+  //   2. sent:0 was logged at INFO — a guard whose failure mode is doing
+  //      nothing quietly (DEF-276b, verbatim);
+  //   3. email was the ONLY route: no durable receipt, no second transport —
+  //      while `brainContactsUser` (audit row + WhatsApp attempt + the
+  //      DEF-296 email fallback) sat unused. `protection-with-two-
+  //      implementations`, 11th: one notification path with a fallback chain
+  //      and one without, and the one without is the one that says "you can
+  //      no longer reach me".
   const results = await Promise.all(
-    recipients.map(async (r) => ({
-      email: r.email,
-      ok: await sendEmail(r.email, subject, html).catch(() => false),
-    })),
+    recipients.map(async (r) => {
+      try {
+        const ok = await sendEmail(r.email, subject, html);
+        return { email: r.email, ok, error: ok ? null : 'sendEmail returned false' };
+      } catch (e: any) {
+        return { email: r.email, ok: false, error: String(e?.message ?? e).slice(0, 200) };
+      }
+    }),
   );
   const sent = results.filter((r) => r.ok).length;
-  const failed = results.filter((r) => !r.ok).length;
-  log.info('disconnect alert sent', { clientNumber: params.clientNumber, sent, failed, total: recipients.length });
+  const failed = results.filter((r) => !r.ok);
+  if (sent === 0) {
+    // An undeliverable "I've gone dark" alert is an incident of its own, not
+    // an info line. The per-recipient reasons are the diagnosis the 09-04
+    // incident never had.
+    log.error('disconnect alert reached NO ONE — escalating through the outbound chokepoint', {
+      clientNumber: params.clientNumber,
+      failures: failed.map((f) => ({ email: f.email, error: f.error })),
+    });
+  } else {
+    log.info('disconnect alert sent', {
+      clientNumber: params.clientNumber, sent, failed: failed.length, total: recipients.length,
+      ...(failed.length ? { failures: failed.map((f) => ({ email: f.email, error: f.error })) } : {}),
+    });
+  }
+
+  // DEF-321 — the SECOND route, through the one chokepoint every Brain→user
+  // contact is supposed to take (`brainOutboundService`'s own contract):
+  // a durable audit row exists even if delivery fails, and the DEF-296 email
+  // fallback gives an independent template and send path. Runs ALWAYS, not
+  // only when the admin emails fail: the owner deserves the notice in his own
+  // channel history, and dedup bounds it to one per window. Wrapped so alert
+  // plumbing can never throw into the disconnect handler.
+  try {
+    const ownerRows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT id FROM users
+        WHERE client_number = $1 AND is_active = TRUE AND user_type IN ('SA','AD')
+        ORDER BY user_type, id LIMIT 1`,
+      params.clientNumber,
+    ).catch(() => [] as any[]);
+    const ownerId = ownerRows[0]?.id;
+    if (ownerId) {
+      // Wording belongs to the model (owner ruling 2026-08-19); the curated
+      // fallback carries the same FACTS and fires only when the model is
+      // unreachable — the DEF-277 pattern. Only WhatsApp is down here; the
+      // model is not.
+      const facts = `Brain's WhatsApp channel for tenant ${params.clientNumber} is DOWN. `
+        + `Reason: ${params.reason}. Until it is re-paired, WhatsApp messages to Brain go `
+        + `unanswered and Brain cannot send WhatsApp replies or alerts. Required action: ${params.requiresAction}`;
+      let body: string;
+      try {
+        const { callLLM } = await import('../llmRouter');
+        const r = await callLLM(
+          'You are Nexeo, writing ONE short message to your owner. Say plainly, in your own '
+          + 'words: your WhatsApp channel is down, since when is not known precisely, what that '
+          + 'means for him (messages to you go unanswered), and exactly what will bring it back '
+          + '(keep the required action verbatim). Under 400 characters, no markdown, no apology theatre.',
+          facts,
+          { maxTokens: 300, timeoutMs: 12_000 },
+        );
+        body = String((r as any)?.text ?? '').trim();
+        if (!body) throw new Error('empty completion');
+      } catch {
+        body = facts;
+      }
+      const { brainContactsUser } = await import('../notifications/brainOutboundService');
+      await brainContactsUser({
+        userId: ownerId,
+        clientNumber: params.clientNumber,
+        kind: 'connector_stale',   // DIAGNOSTIC_KINDS: reserved slice, never crowds humans
+        provenance: 'brain_prose',
+        summary: `WhatsApp channel down: ${params.reason}`.slice(0, 200),
+        body,
+        urgency: 'high',
+        dedupKey: `wa-disconnect:${params.clientNumber}`,
+        dedupWindowMs: 6 * 60 * 60 * 1000,   // re-alert at most every 6h while dead
+        metadata: { reason: params.reason, requiresAction: params.requiresAction },
+      });
+    } else {
+      log.warn('no active SA/AD user to notify through the chokepoint', { clientNumber: params.clientNumber });
+    }
+  } catch (err: any) {
+    log.error('chokepoint disconnect notice failed too — both routes down', {
+      clientNumber: params.clientNumber, error: String(err?.message ?? err).slice(0, 200),
+    });
+  }
 }
 
 function escapeHtml(s: string): string {
