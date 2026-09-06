@@ -215,7 +215,16 @@ export async function getSystemCapabilities(clientNumber: string, userId: number
     },
   };
 
-  cache.set(key, { caps, at: Date.now() });
+  // DEF-315 — a NULL own-number is never cached. The 09-04 incident: the owner
+  // changed Brain's number and asked "what is your number?" 113 seconds later;
+  // a transiently-empty read had been cached and served the denial for the
+  // full TTL. Identity is the one fact whose absence must heal at the NEXT
+  // read, not a minute later — the cost is re-running these queries only for
+  // tenants whose number genuinely is unset, which is the fresh-tenant case
+  // where staleness matters least and correctness most.
+  if (caps.waIdentity.brainNumber !== null) {
+    cache.set(key, { caps, at: Date.now() });
+  }
   return caps;
 }
 
@@ -245,7 +254,24 @@ export function renderCapabilitiesBlock(caps: SystemCapabilities): string {
       + `${wa.brainStatus && wa.brainStatus !== 'connected' ? ` (${wa.brainStatus})` : ''}.`
       + ' A message arriving here was sent TO me — by the user, or by someone else who has this number.');
   } else {
-    lines.push('- I do not currently have a WhatsApp number of my own connected.');
+    // DEF-315 — `capability-fabrication`, a live regression of DEF-299 one day
+    // after its deploy. The old line here said "I do not currently have a
+    // WhatsApp number of my own connected" — a claim about the WORLD
+    // manufactured from an EMPTY READ. The read goes empty transiently (the
+    // owner hit it 113 seconds after changing the number, served from this
+    // module's cache), and the model relayed it faithfully: *"I don't have a
+    // phone number myself."* He was holding the phone that number rings on.
+    //
+    // The DEF-085 discipline, applied to identity: an empty read licenses a
+    // statement about Brain's KNOWLEDGE — which cannot be false — never about
+    // the world. Same rule as the push-history UNAVAILABLE block, the ledger's
+    // "could not be read", and the connector inventory's fail-closed line;
+    // this was the one self-fact still allowed to blank into a denial.
+    lines.push('- My own WhatsApp number could not be read just now. That is a statement about'
+      + ' THIS read, not about the world: I may well have a number (it may be mid-change or the'
+      + ' lookup was briefly empty). If asked what my number is, say I cannot confirm it at this'
+      + ' moment and offer to check again — NEVER say I do not have one; this read cannot'
+      + ' support that claim.');
   }
   if (wa.ownerPersonalStatus === 'connected' && wa.ownerPersonalNumber) {
     lines.push(`- SEPARATELY, the user's own WhatsApp (${wa.ownerPersonalNumber}) is connected for me to READ.`

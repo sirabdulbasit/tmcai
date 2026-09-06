@@ -52,13 +52,20 @@ describe('DEF-299 — Brain states its own WhatsApp number', () => {
     expect(block).toMatch(/message ME on/);
   });
 
-  it('says plainly when it has no number, rather than staying silent', () => {
-    // Silence is what the model filled in with a guess the first time.
+  it('a null read is stated as a READ fact, never as not-having-a-number (DEF-315 updated this pin)', () => {
+    // The original pin asserted "do not currently have a WhatsApp number" —
+    // and that exact sentence became the live DEF-315 regression: a transient
+    // empty read (113s after the owner changed the number) was relayed as
+    // "I don't have a phone number myself" to the man holding the phone.
+    // DEF-299's real requirement — never fill silence with a guess — SURVIVES:
+    // the null case still renders a plain statement; what changed is that the
+    // statement is about the READ (which cannot be false), not the world.
     const block = render({
       brainNumber: null, brainStatus: null,
       ownerPersonalNumber: null, ownerPersonalStatus: null,
     });
-    expect(block).toContain('do not currently have a WhatsApp number');
+    expect(block).toContain('could not be read just now');
+    expect(block).not.toContain('do not currently have a WhatsApp number');
   });
 });
 

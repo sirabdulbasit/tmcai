@@ -3024,3 +3024,92 @@ down at the same moment (both email paths share the transport — the audit row
 still exists, which is the difference from 09-04, but delivery would wait; if
 that co-failure is observed, the escalation needs a third transport and that is a
 product decision, named now rather than discovered).
+
+## Iteration 73 (build 2) — 2026-09-06
+
+**Files named early and changed:**
+`server/src/services/knowledge/systemCapabilitiesService.ts` + new suite
+`server/tests/def315IdentityNeverBlanksIntoDenial.test.ts` (and one reasoned pin
+update in `def299BrainKnowsItsOwnNumber.test.ts`). **Deck objective taken — the
+first open tag, `capability-fabrication` (4 conversations), whose one live,
+diagnosed member is DEF-315:** the owner changed Brain's number, asked "what is
+your number?" 113 seconds later, and was told *"I don't have a phone number
+myself"* — a regression of DEF-299 one day after its deploy. The analyst's builds
+#3 named this first; the deploys (DEF-321/307/244), the QR re-pair and the corrupt
+`deployed-sha` file are the orchestrator's/owner's, each declared not mine.
+
+**The mechanism, and why this closes the fork without resolving it:** the analyst
+left two candidate causes (the 120s cache serving an empty window vs the model
+contradicting a present fact) and prescribed one fix regardless. Both mechanisms
+are now closed:
+- `systemCapabilitiesService.ts` (null branch) — the fallback stated a WORLD-claim
+  from an EMPTY READ ("I do not currently have a WhatsApp number of my own
+  connected"), and the model relayed it faithfully. It now states a fact about
+  THE READ — which cannot be false — forbids deriving the denial, and offers the
+  recheck. The DEF-085 discipline (unavailable ≠ none), applied to the last
+  self-fact still allowed to blank into a denial; fourth application of the same
+  rule (push history, ledger, connector inventory, now identity).
+- The cache write — a NULL own-number is never cached: identity absence heals at
+  the NEXT read instead of living for the 60s TTL. A present number stays cached;
+  the re-read cost lands only on genuinely-unset tenants.
+- One def299 pin updated WITH reasoning: it asserted the exact sentence that
+  became this regression; DEF-299's real requirement (never fill silence with a
+  guess) survives, asserted as the read-fact statement.
+- Governance: no authority moves to code; the block supplies a true fact and the
+  model words every answer. No keyword list, no new guard — a false source string
+  removed and a caching rule corrected.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3530 passed | 0 failed** (301 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3559). New suite:
+  **4 passed | 0 failed** — the 09-04 shape (denial forbidden, source string
+  asserted GONE), present-number regression guard, never-cache-a-null through the
+  REAL `getSystemCapabilities` (mutation: unconditional cache.set dies there),
+  present-number-still-cached. def299+def300: **20 passed | 0 failed**.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: no query changed; one cache-write condition; the
+  renderer is pure.
+
+**Governing docs (rule 5): circling at the class, structural fix given** —
+`capability-fabrication`/`fabricated-status` is the deepest family, and this
+member recurred within a day of its instance fix because the SOURCE STRING of the
+false claim survived in a fallback. The fix removes the string's licence class-wide
+(empty read → knowledge statement) rather than patching the sentence. DEF-315 row
+updated with the ↻ fix.
+
+**CAPABILITY:** Accurate Communication (declared divergence: the header says Learn,
+the table says Self-Pruning — the target line contradiction, FOURTH sighting,
+still the orchestrator's to fix; the deck tag overrides per its own rule).
+**PREDICTED:** the false sentence becomes unreachable from an empty read on every
+path rendering this block; no score claim.
+**MECHANISM:** the fallback states knowledge not world; a null identity is never
+cached.
+**FALSIFIER:** any post-deploy "I don't have a number" while a number is
+configured; or a null identity served from cache.
+
+**Symptom tag closed (verbatim, in the commit):** `capability-fabrication` —
+partly: this closes its one live diagnosed member (DEF-315); the tag's other
+members are deployed awaiting live acceptance, said plainly rather than claiming
+the umbrella.
+
+**ATTEMPT-24 OBSTACLE STATEMENT (required):** the binding constraints are all in
+the analyst's own debt list and none are builds: WhatsApp needs a human QR re-pair
+(2+ days dead), DEF-321/307/244 need the orchestrator's deploy, and the
+`deployed-sha` file is WRONG (reads `1d9f255`; production HEAD is `e0053d8`) —
+the third analyst pass in a row misled by state files not driven from the deploy
+mechanics.
+
+**What I did NOT do, named:** DEF-319 (wire `findOwnMessageIdByEcho` — next build,
+a send-path behaviour change deserving its own turn); DEF-311 (the referent ledger
+reading `brainPromptQueue` while draft-asks live in `brain_user_messages` — a gap
+in my own DEF-293 block, named as mine to fix next); DEF-316 (status lifecycle);
+any deploy or the QR re-pair.
+
+**Honest prediction:** post-deploy, the number-change window renders the
+knowledge statement and the model says "I can't confirm my number right now" —
+and if a denial still appears, the analyst's fork resolves to the worse defect
+(model contradicting a present fact) with its own row. What would prove me wrong:
+a THIRD render site for identity outside this block — grep found the sentence
+only here, but a hardcoded denial elsewhere would survive this fix; if Codex
+finds one, the class needs the scrub at that site too.
