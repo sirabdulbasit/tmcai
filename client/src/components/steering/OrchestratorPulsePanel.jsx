@@ -1475,11 +1475,20 @@ export default function OrchestratorPulsePanel() {
                   {((data.found_now || {}).rows || []).length > 0 && (
                     <div className="orch-nowblock-found">
                       <span className="orch-nowblock-k">
-                        still open · {((data.found_now || {}).rows || []).length}
-                        {/* The settled ones are COUNTED, never silently dropped: a row hidden
-                            without saying so is how a deck starts lying by omission. */}
+                        {/* Owner, 2026-09-07: "don't show which is already built. it should only
+                            show the list where you are unable to do it though night cron with
+                            reason." So the LIST is the blockers only. The cron's own output —
+                            built work it will ship tonight by itself, and work already on
+                            production — is COUNTED here and never listed: a gap he cannot act on
+                            is what taught the eye to skip this panel. Counted, not dropped,
+                            because a row hidden without saying so is how a deck starts lying by
+                            omission. */}
+                        the cron cannot close · {((data.found_now || {}).rows || []).length}
+                        {(data.found_now || {}).built > 0 && (
+                          <em> · {(data.found_now).built} built, ships tonight</em>
+                        )}
                         {(data.found_now || {}).settled > 0 && (
-                          <em> · {(data.found_now).settled} already deployed or verified</em>
+                          <em> · {(data.found_now).settled} already on production</em>
                         )}
                       </span>
                       <ul>
@@ -1494,6 +1503,11 @@ export default function OrchestratorPulsePanel() {
                               {f.state || 'open'}
                             </span>
                             <code>{f.tag}</code> {f.saw}
+                            {/* The reason is the point of the row. Without it this is a list of
+                                things that are someone's problem; with it, it says whose. */}
+                            {f.why && (
+                              <span className="orch-fwhy"> — {f.why}</span>
+                            )}
                           </li>
                         ))}
                       </ul>

@@ -831,6 +831,11 @@ li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308
 .orch-fstate-verified { background: rgba(34,197,94,.10); color: #22c55e; opacity: .7; }
 .orch-fstate-unknown { background: rgba(127,127,127,.10); opacity: .6; }
 
+/* WHY the cron cannot close it — owner, 2026-09-07: the list must carry the reason.
+   Quieter than the symptom it explains, so the row still reads symptom-first, but on the
+   same line: a reason on its own line reads as a second finding. */
+.orch-fwhy { opacity: .62; font-size: .93em; }
+
 /* The settled count sits inside the heading, quieter than the open rows it accompanies. */
 .orch-nowblock-k em { font-style: normal; opacity: .75; }
 

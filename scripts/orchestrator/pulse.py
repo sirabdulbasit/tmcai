@@ -857,20 +857,85 @@ def _finding_state(tag):
                 continue
             if "VERIFIED (LIVE)" in line or "VERIFIED BY A/B" in line:
                 return "verified"
-            if "**NOT YET**" in line:
-                return "built"
-            # "DEPLOYED-IN-FACT (unrecorded)" is DEF-234's wording: shipped inside a commit
-            # that never named the tag, so the deck could not strike it. It is deployed, and
-            # reading it as `open` would be a false NEGATIVE — less dangerous than a false
-            # "fixed", but still a row the owner would chase twice.
-            if re.search(r"\*\*YES\s*—\s*deployed", line) or "DEPLOYED-IN-FACT" in line:
+            # DEPLOYED IS CHECKED FIRST, AND IT ACCEPTS THE WORDING PEOPLE ACTUALLY WROTE
+            # (fixed 2026-09-07, owner: "why still open?").
+            #
+            # This used to match only `**YES — deployed` and "DEPLOYED-IN-FACT", so three
+            # rows the owner was looking at were mislabelled at once: DEF-313 had said
+            # "**DEPLOYED 09-04 12:33 PKT (D-99)**" by hand for three days and rendered
+            # `open`; DEF-311 and DEF-315 carry the deploy phase's own "**DEPLOYED `sha`**"
+            # and rendered `open` too. Worse, the CODE-COMPLETE test below outranked an
+            # explicit deploy marker, so DEF-321 — deployed 09-05 — rendered `built`
+            # because its verification cell also says CODE-COMPLETE.
+            #
+            # A deck that calls shipped work unshipped is the same failure as BLD-014 one
+            # layer up: the artifact was written, in a wording nothing read.
+            if (re.search(r"\*\*DEPLOYED\b", line)
+                    or re.search(r"\*\*YES\s*—\s*deployed", line)
+                    or "DEPLOYED-IN-FACT" in line):
                 return "deployed"
-            if "CODE-COMPLETE" in line:
+            # NOT FIXED OUTRANKS NOT YET. "**NOT YET**" in the deploy column means "not
+            # deployed"; it says nothing about whether code exists. DEF-319 proves the
+            # difference: its row reads NOT YET and its verification cell says "DIAGNOSED
+            # FROM LIVE DATA AND THE CALL GRAPH, NOT FIXED", and its commit 6dbf933 changed
+            # exactly one line — of this document. Calling that `built` told the owner a
+            # fix existed that had never been written.
+            if re.search(r"NOT\s+FIXED|NOT\s+YET\s+FIXED|DIAGNOS\w+[^|]{0,40}NOT\s+FIXED",
+                         line, re.I):
+                return "open"
+            if "**NOT YET**" in line or "CODE-COMPLETE" in line:
                 return "built"
             return "open"
     except Exception:
         return "unknown"
     return "unknown"
+
+
+def _blocked_reason(tag, state):
+    """WHY the night cron has not closed this one — owner, 2026-09-07.
+
+    *"why still open? and don't show which is already built. it should only show the
+    list where you are unable to do it though night cron with reason."*
+
+    He is asking the panel to stop being an inventory and start being a blocker list.
+    Built and deployed rows are the cron's OUTPUT — the cron will ship a built row by
+    itself tonight, so listing it as an open gap asks him to act on something already in
+    hand. What is worth his attention is the residue: what the loop cannot close, and
+    what it needs from him.
+
+    Every reason below is read off the DEF row or the tag itself. Nothing is inferred
+    about intent, because a guessed reason is worse than none: it would send him to fix
+    the wrong half.
+    """
+    if not re.match(r"^DEF-\d+$", tag or ""):
+        return ("symptom class, not one defect — it spans several DEF rows, so it stays "
+                "listed for its recurrence count and closes only when the class stops "
+                "recurring in his chats")
+    path = os.path.join(ROOT, "server", "docs", "brain_change_log.md")
+    row = None
+    try:
+        for line in open(path, errors="replace"):
+            if f"**{tag}**" in line:
+                row = line
+                break
+    except Exception:
+        return "the change log could not be read — state unknown, treat as open"
+    if row is None:
+        return "no DEF row yet — reported but not diagnosed, so there is nothing to build"
+    # A human hand is the one thing the cron structurally cannot supply. Matched on the
+    # row's own words rather than a curated list of defects, so a new one is caught too.
+    hand = re.search(r"(QR\b[^|]{0,60}|re-?pair[^|]{0,60}|needs? a human[^|]{0,60}"
+                     r"|human (?:must|has to)[^|]{0,60}|by hand[^|]{0,60}"
+                     r"|reconnect them(?:selves)?[^|]{0,60})", row, re.I)
+    if re.search(r"NOT\s+FIXED", row, re.I):
+        why = ("diagnosed, never built — the row says NOT FIXED and its commit carries no "
+               "code change, so the cron has produced an explanation and not a fix")
+        return why + (f"; and part of it needs you: {hand.group(1).strip()}" if hand else "")
+    if hand:
+        return ("needs you — the cron cannot do this part: "
+                + hand.group(1).strip())
+    return ("open in the change log with no commit against it — the cron has not chosen "
+            "this one yet, or has attempted it and not closed it")
 
 
 def found_now(limit=8):
@@ -926,9 +991,21 @@ def found_now(limit=8):
     # So the panel shows what can still be ACTED on — open and built-but-undeployed — and reports
     # the settled ones as a count rather than dropping them silently. A hidden row nobody is told
     # about is how a deck starts lying by omission.
+    # OWNER, 2026-09-07: "don't show which is already built. it should only show the list
+    # where you are unable to do it though night cron with reason."
+    #
+    # Three buckets now, and only one of them is a list. `deployed`/`verified` is the
+    # cron's finished work; `built` is work it is holding and will ship on its own
+    # tonight — neither is a gap he can act on, and showing them is what made this panel
+    # an inventory he learned to skip. Both are still COUNTED, because a row hidden
+    # without saying so is how a deck starts lying by omission.
     settled = [r for r in out if r["state"] in ("deployed", "verified")]
-    live = [r for r in out if r["state"] not in ("deployed", "verified")]
-    return {"rows": live[:limit], "settled": len(settled), "total": len(out)}
+    built = [r for r in out if r["state"] == "built"]
+    blocked = [r for r in out if r["state"] not in ("deployed", "verified", "built")]
+    for r in blocked:
+        r["why"] = _blocked_reason(r["tag"], r["state"])
+    return {"rows": blocked[:limit], "settled": len(settled),
+            "built": len(built), "total": len(out)}
 
 
 def building_now():
