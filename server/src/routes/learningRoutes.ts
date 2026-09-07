@@ -180,127 +180,18 @@ router.get('/audit', requireAdmin, async (req: Request, res: Response) => {
   res.json({ events });
 });
 
-// ═════════════════════════════════════════════════════════════════════
-// Phase 2 — Gap Detection → Product Proposals → Development Requests
-// ═════════════════════════════════════════════════════════════════════
-// All Phase 2 routes are admin-only — these decide what Brain works
-// on next, so a regular user shouldn't be promoting gaps to dev
-// requests on their own. The Detected Gaps Inbox + Proposal screens
-// in the UI gate visibility on req.user.isAdmin.
-
-router.get('/gaps', requireAdmin, async (req: Request, res: Response) => {
-  const { listGaps } = await import('../services/learning/gapDetectionService');
-  const rows = await listGaps({
-    clientNumber: req.user!.clientNumber,
-    status: req.query.status as string | undefined,
-    limit: req.query.limit ? Number(req.query.limit) : undefined,
-  });
-  res.json({ gaps: rows });
-});
-
-router.post('/gaps/detect', requireAdmin, async (req: Request, res: Response) => {
-  // Manual trigger — also runs nightly via cron (see server.ts).
-  const { runGapDetection } = await import('../services/learning/gapDetectionService');
-  const result = await runGapDetection(req.user!.clientNumber);
-  res.json({ success: true, ...result });
-});
-
-router.patch('/gaps/:id/approve', requireAdmin, async (req: Request, res: Response) => {
-  const { approveGap } = await import('../services/learning/gapDetectionService');
-  const r = await approveGap(req.params.id as string, req.user!.id, req.user!.clientNumber);
-  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
-  res.json({ success: true });
-});
-
-router.patch('/gaps/:id/reject', requireAdmin, async (req: Request, res: Response) => {
-  const { rejectGap } = await import('../services/learning/gapDetectionService');
-  const r = await rejectGap(req.params.id as string, req.user!.id, req.user!.clientNumber);
-  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
-  res.json({ success: true });
-});
-
-// ─── Product proposals ─────────────────────────────────────────────
-
-router.post('/proposals/from-gap/:gapId', requireAdmin, async (req: Request, res: Response) => {
-  const { createFromGap } = await import('../services/learning/productProposalService');
-  const r = await createFromGap({
-    gapId: req.params.gapId as string,
-    clientNumber: req.user!.clientNumber,
-    authorUserId: req.user!.id,
-  });
-  if (r.error) { res.status(400).json({ error: r.error }); return; }
-  res.status(201).json({ success: true, id: r.id });
-});
-
-router.get('/proposals', requireAdmin, async (req: Request, res: Response) => {
-  const { listProposals } = await import('../services/learning/productProposalService');
-  const rows = await listProposals({
-    clientNumber: req.user!.clientNumber,
-    status: req.query.status as string | undefined,
-    limit: req.query.limit ? Number(req.query.limit) : undefined,
-  });
-  res.json({ proposals: rows });
-});
-
-router.patch('/proposals/:id/approve', requireAdmin, async (req: Request, res: Response) => {
-  const { approveProposal } = await import('../services/learning/productProposalService');
-  const r = await approveProposal(req.params.id as string, req.user!.id, req.user!.clientNumber);
-  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
-  res.json({ success: true });
-});
-
-router.patch('/proposals/:id/reject', requireAdmin, async (req: Request, res: Response) => {
-  const { rejectProposal } = await import('../services/learning/productProposalService');
-  const r = await rejectProposal(req.params.id as string, req.user!.id, req.user!.clientNumber);
-  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
-  res.json({ success: true });
-});
-
-// ─── Development requests ──────────────────────────────────────────
-
-router.post('/development-requests/from-proposal/:proposalId', requireAdmin, async (req: Request, res: Response) => {
-  const { createFromProposal } = await import('../services/learning/developmentRequestService');
-  const r = await createFromProposal({
-    proposalId: req.params.proposalId as string,
-    clientNumber: req.user!.clientNumber,
-    authorUserId: req.user!.id,
-  });
-  if (r.error) { res.status(400).json({ error: r.error }); return; }
-  res.status(201).json({ success: true, id: r.id });
-});
-
-router.get('/development-requests', requireAdmin, async (req: Request, res: Response) => {
-  const { listDevRequests } = await import('../services/learning/developmentRequestService');
-  const rows = await listDevRequests({
-    clientNumber: req.user!.clientNumber,
-    status: req.query.status as string | undefined,
-    limit: req.query.limit ? Number(req.query.limit) : undefined,
-  });
-  res.json({ devRequests: rows });
-});
-
-router.post('/development-requests/:id/generate-technical-spec', requireAdmin, async (req: Request, res: Response) => {
-  const { generateTechnicalSpec } = await import('../services/learning/developmentRequestService');
-  const r = await generateTechnicalSpec({
-    devRequestId: req.params.id as string,
-    clientNumber: req.user!.clientNumber,
-  });
-  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
-  res.json({ success: true, spec: r.spec });
-});
-
-router.patch('/development-requests/:id/approve', requireAdmin, async (req: Request, res: Response) => {
-  const { approveDevRequest } = await import('../services/learning/developmentRequestService');
-  const r = await approveDevRequest(req.params.id as string, req.user!.id, req.user!.clientNumber);
-  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
-  res.json({ success: true });
-});
-
-router.patch('/development-requests/:id/reject', requireAdmin, async (req: Request, res: Response) => {
-  const { rejectDevRequest } = await import('../services/learning/developmentRequestService');
-  const r = await rejectDevRequest(req.params.id as string, req.user!.id, req.user!.clientNumber);
-  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
-  res.json({ success: true });
-});
+// PHASE 2 — GAP DETECTION / PRODUCT PROPOSALS / DEVELOPMENT REQUESTS: RETIRED.
+//
+// Owner decision, 2026-09-07. The routes that fronted a second improvement pipeline are
+// gone. It produced 1 gap, 0 proposals and 0 development requests in 79 days, and
+// nothing downstream consumed its output — the night cron aims from
+// `chat-root-causes.md` and the capability card, never from `brain_development_requests`.
+// Two live owners for one concern is the shape BRAIN_VISION.md says to collapse.
+//
+// WHAT STAYS, and it is the half that works: everything above this line — the governed
+// memory queue (`/memories`), the audit feed (`/audit`) and the interaction log
+// (`/interactions`). That is the LEARN capability, separately scored, and its read path
+// is live: `renderGovernedMemoriesBlock` is injected into every prompt by
+// brainVoiceContext and brainComposer. Do not fold that into this removal.
 
 export default router;

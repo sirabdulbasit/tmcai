@@ -421,6 +421,38 @@ Recorded because they cost the owner real time and must not repeat.
 
 ## D. Undeployed work waiting on the box
 
+**PRUNE-001 — the Self-Improvement pipeline is retired (owner decision, 2026-09-07).**
+Owner: *"we agreed to retire or remove it."* Removed: `gapDetectionService.ts`,
+`productProposalService.ts`, `developmentRequestService.ts`, `jobs/gapDetectionJob.ts`,
+`BrainImprovementTab.jsx`, its 24h sweep in `server.ts`, and 123 lines of admin routes
+(the `/gaps`, `/proposals` and `/development-requests` families) from `learningRoutes.ts`.
+
+**Why it went, on the evidence:** it was the second live owner of one concern — detect a
+gap, decide a fix, request the work. In 79 days it produced **1 gap** (2026-06-20, still
+`new`), **0 product proposals** and **0 development requests**, and nothing downstream ever
+read its output: `productProposalService` and `developmentRequestService` were imported by
+the admin routes and by nothing else, and the night cron aims from `chat-root-causes.md`
+and the capability card, never from `brain_development_requests`. The other owner has
+shipped ~56 defects from his actual chats. `BRAIN_VISION.md`'s rule for that shape is
+collapse, not keep.
+
+**What was deliberately NOT removed.** (i) The **Learning** tab and the `/memories`,
+`/audit` and `/interactions` routes — that is the separate **Learn** capability, its read
+path is live (`renderGovernedMemoriesBlock` is injected into every prompt by
+`brainVoiceContext` and `brainComposer`), and two governed memories are pending approval
+with that panel as their only surface. (ii) The tables `brain_detected_gaps`,
+`brain_product_proposals`, `brain_development_requests` and their Prisma models — dropping
+them is irreversible, they cost nothing, and the single row in them is the only record the
+pipeline ever ran.
+
+**State:** the CLIENT half is LIVE (`client/dist` rebuilt 2026-09-07, apache serves it, the
+tab is gone). The SERVER half — the killed sweep and the unmounted routes — is committed and
+**NOT deployed**; it ships with the next nightly deploy. Nothing calls those routes now that
+the tab is gone, so the order is safe. **One thing to check at that deploy:** `tsc` does not
+delete output for a deleted input, so `server/dist` will keep stale `gapDetectionService.js`,
+`productProposalService.js`, `developmentRequestService.js` and `gapDetectionJob.js` unless
+the deploy clears them — nothing imports them, but they will sit in the manifest.
+
 All of `DEF-018`, `DEF-023`, `DEF-024`, `DEF-025` were **deployed 2026-08-05 11:40** at HEAD
 `7ace0f5`. Nothing is waiting on the box.
 

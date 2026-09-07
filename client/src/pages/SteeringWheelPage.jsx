@@ -6,7 +6,6 @@ import WikiPage from './WikiPage';
 import HealthCheckTab from '../components/steering/HealthCheckTab';
 import OrchestratorPulsePanel from '../components/steering/OrchestratorPulsePanel';
 import BrainLearningTab from './admin/BrainLearningTab';
-import BrainImprovementTab from './admin/BrainImprovementTab';
 import ErrorBoundary from '../components/ErrorBoundary';
 // CustomActionTab removed from rail — its JSON-rule-builder UI was a
 // developer surface and the API behind it had drifted (POST /shadow/rules
@@ -85,24 +84,40 @@ const PULSE_TAB = {
  * Self-Pruning. Admin answers who the clients are, who the users are, what is configured and what
  * it costs. Operating a capability is not an administrative act.
  *
- * They are MOVED, not deleted, and the difference is load-bearing: a check for other consumers of
- * `/learning/memories`, `/gaps`, `/proposals`, `/development-requests` and `/audit` returned ZERO
- * for all five. Those two panels are the only way to reach any of it — including two governed
- * memories sitting pending approval right now. Deleting the tabs would have taken the queues dark
- * and left `Learn 42%` with no way to act on it.
+ * LEARNING was MOVED, not deleted, and the difference is load-bearing: it is the only way to
+ * reach `/learning/memories` and `/audit` — including two governed memories sitting pending
+ * approval right now. Deleting it would take that queue dark and leave `Learn 42` with no way
+ * to act on it.
  *
- * Folded into this tab rather than added as rail entries, because three sections of one subject
- * is a subject, and the last thing this page needs is two more top-level tabs.
+ * IMPROVEMENT was DELETED (owner decision, 2026-09-07), and the same test is why: its
+ * `/gaps`, `/proposals` and `/development-requests` endpoints had zero other consumers AND
+ * zero output — 1 gap, 0 proposals, 0 development requests in 79 days, read by nothing
+ * downstream. An unreachable queue with nothing in it is not a capability going dark.
+ *
+ * Folded into this tab rather than added as rail entries, because two sections of one subject
+ * is a subject, and the last thing this page needs is another top-level tab.
  */
 function BrainEvolution() {
   const { user } = useAuth();
   const [section, setSection] = useState('pulse');
   const [msg, setMsg] = useState('');
 
+  // IMPROVEMENT IS RETIRED (owner decision, 2026-09-07). Two sections, not three.
+  //
+  // The Improvement panel fronted a second improvement pipeline — detect a gap, promote
+  // it to a proposal, promote that to a development request — that produced 1 gap
+  // (2026-06-20), 0 proposals and 0 development requests in 79 days, and whose output
+  // nothing downstream ever read. The night cron does the same job from his actual chat
+  // logs and has shipped ~56 defects. Two live owners of one concern is the shape
+  // BRAIN_VISION.md says to collapse, not keep.
+  //
+  // LEARNING STAYS, and the distinction matters: it is a different capability (Learn),
+  // separately scored, and its read path is live — an approved memory is injected into
+  // every prompt by brainVoiceContext and brainComposer. Two governed memories are
+  // sitting pending approval right now and this panel is the only way to reach them.
   const sections = [
     { key: 'pulse',       label: 'Healing Pulse' },
     { key: 'learning',    label: 'Learning' },
-    { key: 'improvement', label: 'Improvement' },
   ];
 
   return (
@@ -136,9 +151,6 @@ function BrainEvolution() {
       )}
       {section === 'learning' && (
         <ErrorBoundary><BrainLearningTab user={user} msg={msg} setMsg={setMsg} /></ErrorBoundary>
-      )}
-      {section === 'improvement' && (
-        <ErrorBoundary><BrainImprovementTab user={user} msg={msg} setMsg={setMsg} /></ErrorBoundary>
       )}
     </div>
   );

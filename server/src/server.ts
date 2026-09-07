@@ -247,20 +247,26 @@ const server = app.listen(env.port, async () => {
     }, 60 * 60 * 1000);
   }, 60 * 1000);
 
-  // Phase 2 Self-Learning — Gap Detection sweep every 24h. First
-  // run 5 min after boot so the system has time to settle. The job
-  // mines patterns from accumulated Phase 1 interaction logs +
-  // feedback to propose product gaps for admin review.
-  setTimeout(() => {
-    import('./jobs/gapDetectionJob')
-      .then(({ runGapDetectionForAllTenants }) => runGapDetectionForAllTenants())
-      .catch((err) => console.warn('Gap detection sweep failed:', err.message));
-    setInterval(() => {
-      import('./jobs/gapDetectionJob')
-        .then(({ runGapDetectionForAllTenants }) => runGapDetectionForAllTenants())
-        .catch((err) => console.warn('Gap detection sweep failed:', err.message));
-    }, 24 * 60 * 60 * 1000);
-  }, 5 * 60 * 1000);
+  // PHASE 2 GAP DETECTION IS RETIRED (owner decision, 2026-09-07).
+  //
+  // This swept every 24h for 79 days and produced ONE gap row (2026-06-20, still
+  // `new`), zero product proposals and zero development requests — because the two
+  // stages after it, `productProposalService` and `developmentRequestService`, were
+  // imported by the admin routes and by nothing else. Only a human click could advance
+  // a gap, and nothing downstream ever read a development request: the night cron picks
+  // its target from `chat-root-causes.md` and the capability card, and has never looked
+  // at `brain_development_requests`.
+  //
+  // So this was the second live owner of one concern — "detect a gap, decide a fix,
+  // request the work" — and BRAIN_VISION.md's rule for that shape is COLLAPSE, not keep:
+  // "every one of those is a place where a fix can land on the side nobody is running."
+  // The other owner works from his actual chats and has shipped ~56 defects.
+  //
+  // The switch is killed here first, deliberately, ahead of the files (BRAIN_VISION.md
+  // Class 2: "Kill the switch first, delete the files second"). The tables
+  // `brain_detected_gaps`, `brain_product_proposals` and `brain_development_requests`
+  // and their Prisma models are LEFT IN PLACE: dropping them is irreversible, they cost
+  // nothing, and the one row in them is the only record this ever ran.
   // Personal GDrive sync every 30 minutes (Phase 3.1)
   runPersonalDriveSyncJob().catch((e) => console.warn('[personalDriveSync] failed:', e?.message));
   setInterval(() => protectedJob('personal_drive_sync', 'important', () => runPersonalDriveSyncJob()), 30 * 60 * 1000);
