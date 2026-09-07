@@ -16,6 +16,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const state = vi.hoisted(() => ({
+  sends: [] as any[],
+  sendReadThrows: false,
   prompts: [] as any[],
   transitions: [] as any[],
   items: [] as any[],
@@ -27,6 +29,18 @@ vi.mock('../src/db/prisma', () => {
   const p = {
     brainActionArtifact: { findMany: async () => [] },
     whatsAppMessage: { findMany: async () => [] },
+    brainUserMessage: {
+      findMany: (args: any) => {
+        if (state.sendReadThrows) throw new Error('boom');
+        expect(args.where.clientNumber).toBe('TMC-0001');
+        expect(args.where.userId).toBe(2);
+        // DEF-311 invariant: queue-driven prompts render above WITH answers;
+        // their delivery rows are the ONLY exclusion, asserted on every read.
+        expect(args.where.kind?.not).toBe('brain_prompt');
+        expect(args.where.status?.in).toEqual(['sent', 'partial']);
+        return Promise.resolve(state.sends);
+      },
+    },
     brainPromptQueue: {
       findMany: (args: any) => {
         if (state.promptReadThrows) throw new Error('boom');   // SYNCHRONOUS throw — the DEF-274 shape
@@ -64,6 +78,8 @@ import { buildDispatchLedgerBlock } from '../src/services/knowledge/dispatchLedg
 const T = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000);
 
 beforeEach(() => {
+  state.sends = [];
+  state.sendReadThrows = false;
   state.prompts = [];
   state.transitions = [];
   state.items = [];
@@ -144,9 +160,10 @@ describe('DEF-293 — DEF-199 and DEF-085 disciplines hold', () => {
     state.promptReadThrows = true;      // throws before any promise exists — DEF-274's exact gap
     state.transitionReadThrows = true;
     const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    // ↻ iteration 72: both records unreadable → ONE honest sentence, and
-    // never the empty-fact wording that would read as a true zero.
-    expect(out).toContain('neither record could be read');
+    // ↻ DEF-311: the wording is generic over the record count now — it NAMES
+    // whichever records failed, and never the empty-fact wording that would
+    // read as a true zero.
+    expect(out).toContain('the prompts-you-asked record and the item-status-change record could not be read');
     expect(out).not.toContain('you asked him nothing');
     expect(out).not.toContain('attempted no status change');
   });
@@ -223,5 +240,45 @@ describe('DEF-293 — the referent rule sits beside the referents', () => {
     expect(out).toContain('NEVER take the referent from the background block');
     expect(out).toMatch(/A REFUSED line is the answer to "why isn't it closed"/);
     expect(out).toMatch(/Never offer other items from elsewhere in your context\s*while a line here matches the moment/);
+  });
+});
+
+describe('DEF-311 — the message he just received is in front of the model, from the delivery record', () => {
+  it('THE DECK SHAPE: the just-sent draft-ask renders in the sends section, newest first', async () => {
+    // The 09:10 draft-ask lived only in brain_user_messages; the ledger read
+    // brainPromptQueue and answered about the 09:00 reminder instead.
+    state.sends = [{
+      kind: 'open_item_draft_ask', createdAt: T(2),
+      summary: 'What deadline should I put on "Plan session for Thursday"?',
+    }];
+    state.prompts = [{
+      question: 'Reminder: approve the new team members.',
+      openItemId: 'a1', sentAt: T(60), answeredAt: T(58), answerText: 'ok', state: 'answered',
+    }];
+    state.items = [{ id: 'a1', title: 'Approve new team members' }];
+    const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
+    expect(out).toContain('MESSAGES YOU SENT HIM — NEWEST FIRST');
+    expect(out).toContain('you sent [open item draft ask]: What deadline should I put on "Plan session for Thursday"?');
+    // The rule that closes both halves of the tag: newest wins, and >1
+    // outstanding must be SAID, never silently picked between.
+    expect(out).toMatch(/the referent is the\s*NEWEST line/);
+    expect(out).toMatch(/If MORE THAN ONE went out recently, SAY so/);
+  });
+
+  it('a failed sends read is NAMED while the readable records still render (DEF-085, third record)', async () => {
+    state.sendReadThrows = true;
+    state.prompts = [{
+      question: 'Did you attend?', openItemId: 'a1',
+      sentAt: T(5), answeredAt: null, answerText: null, state: 'sent',
+    }];
+    state.items = [{ id: 'a1', title: 'Kickoff' }];
+    const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
+    expect(out).toContain('"Kickoff"');
+    expect(out).toContain('the messages-you-sent record could not be read');
+  });
+
+  it('no extra sends → the honest empty statement, never an omitted section', async () => {
+    const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
+    expect(out).toContain('none besides the prompts above');
   });
 });

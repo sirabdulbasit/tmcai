@@ -3113,3 +3113,94 @@ and if a denial still appears, the analyst's fork resolves to the worse defect
 a THIRD render site for identity outside this block — grep found the sentence
 only here, but a hardcoded denial elsewhere would survive this fix; if Codex
 finds one, the class needs the scrub at that site too.
+
+## Iteration 73 (build 3) — 2026-09-07
+
+**Files named early and changed:**
+`server/src/services/knowledge/dispatchLedgerService.ts` + the def293 suite
+(`def293JustActedReferent.test.ts`, harness extended + DEF-311 describe). **Deck
+objective taken — the run's single open tag:** `Asked "what is this?" about the
+message he had just received and Brain answered about a different, older one —
+never said two were outstanding` — **DEF-311, a gap in my own DEF-293 block,
+named as mine two turns ago and closed now.**
+
+**The mechanism (diagnosed by the analyst from live data, verified in code):** the
+ledger's "what you asked him" reads `brainPromptQueue` — but draft-asks,
+reminders, digests and relays go `brainContactsUser → brain_user_messages` and
+NEVER enter the queue. The 09:10 draft-ask was invisible; "what is this?" resolved
+against the nearest queue row, a different, older message — absence reported as a
+different item's presence, the DEF-306/DEF-313 family's third member.
+
+**What changed — the referent set drawn from the chokepoint every outbound passes:**
+- `getRecentInteractions` reads a third record: `brain_user_messages` sent/partial
+  rows (scoped, capped, deferred-catch like its siblings). `brain_prompt` rows are
+  the ONE exclusion — queue prompts already render WITH his answer; the same ask
+  must not appear twice — asserted inside the test mock on every read, alongside
+  the scope invariants.
+- Rendered as its own labelled section (MESSAGES YOU SENT HIM — NEWEST FIRST),
+  because these lines are Brain's OWN words: valid referents for a MESSAGE
+  question, but naming no open item — so they join neither DEF-313's item-referent
+  list (its invariant survives untouched) nor its forbidden background block.
+  Three referent semantics, each with its rule beside its data (DEF-165).
+- The rule closes BOTH halves of the tag: newest-wins for "what is this?", and
+  MORE THAN ONE outstanding must be SAID and the newest named — never silently
+  picked between.
+- The unreadable-records wording became generic over the record count (the
+  hardcoded "neither" broke when the third record joined — caught by the suite,
+  fixed, and the def293 pin updated with reasoning); the third record is NAMED on
+  a failed read. DEF-085 held across all three sources.
+- Governance: evidence provision, target grounding; no allow-list (the one kind
+  exclusion is a double-render dedup with its reason in code and its assertion in
+  the mock); wording stays the model's.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3533 passed | 0 failed** (301 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3562). The suite:
+  **14 passed | 0 failed** — the deck shape (the just-sent draft-ask renders while
+  an older answered prompt exists, with the newest-wins and say-when-several
+  rules), failed-sends-read named while the others render, honest-empty, and all
+  prior DEF-293/301/306/313 behaviours green.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: one new read, (clientNumber, userId)-scoped with the
+  scope asserted in the mock; no write; failed read → named unavailable.
+
+**Governing docs (rule 5): circling at the class, structural fix given** — third
+member of the record-holds-the-answer-but-the-block-reads-the-wrong-table family
+(DEF-306, DEF-313, this); the fix points the block at the chokepoint's audit
+table so a fourth producer cannot recreate the gap. DEF-311 row updated to FIXED.
+
+**CAPABILITY:** Self Follow-Up — the assigned target, aligned: what Brain sent
+and is awaiting is now in its own view. (Campaign divergence only: C-3 increment 3
+untouched, said plainly.)
+**PREDICTED:** "what is this?" lands on the message he actually received; the
+never-said-two-were-outstanding half becomes inexpressible silently. No score
+claim.
+**MECHANISM:** the referent set drawn from the delivery record every outbound
+passes, rendered beside its rule.
+**FALSIFIER:** any post-deploy "what is this?" answered about an older message
+while a newer send row exists; or a second outstanding message unnamed.
+
+**Symptom tag closed (verbatim, in the commit):** `Asked "what is this?" about
+the message he had just received and Brain answered about a different, older one —
+never said two were outstanding`.
+
+**ATTEMPT-25 OBSTACLE STATEMENT (required):** unchanged and now four analyst
+passes deep: the deploy pipe is stalled behind D-101 with FOUR code-complete
+fixes waiting (DEF-321/315/307/244 — now five with this), WhatsApp has been dead
+three days pending a human QR re-pair, and the `deployed-sha` file overstates
+production by two commits. Nothing built in three turns reaches him until D-102
+runs.
+
+**What I did NOT do, named:** DEF-319 (wire `findOwnMessageIdByEcho` — the
+remaining diagnosed build; a send-path behaviour change deserving its own turn);
+DEF-316; any deploy or the QR re-pair; the `deployed-sha` correction
+(orchestrator's, flagged fourth time). Prompt-cost noted honestly: the sends
+section adds up to ~12 lines to the ledger block on this path.
+
+**Honest prediction:** post-deploy, "what is this?" after a draft-ask answers
+about the draft-ask and names any second outstanding message. What would prove me
+wrong: a push kind whose summary is too terse to identify the message ("held
+notifications digest") making the newest line unhelpfully vague — if live turns
+show that, the summary quality of specific producers is the follow-up, not the
+referent mechanism.

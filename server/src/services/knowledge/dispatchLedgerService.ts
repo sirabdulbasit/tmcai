@@ -195,6 +195,12 @@ interface RecentInteractions {
       sender: string | null; senderIsOpaqueId?: boolean; eventAt: Date | null } | null;
     answeredAt: Date | null; answerText: string | null; state: string;
   }> | null;   // null = the read failed (unavailable ≠ none)
+  // DEF-311 — every outbound Brain actually SENT him, from the DEF-108
+  // chokepoint's own audit table. Draft-asks, reminders and digests go
+  // brainContactsUser → brain_user_messages and NEVER enter brainPromptQueue,
+  // so "what is this?" about a just-received draft-ask used to resolve
+  // against the nearest queue row — a different, older message.
+  sends: Array<{ at: Date; kind: string; summary: string }> | null;
   transitions: Array<{
     at: Date; hasItem: boolean; itemTitle: string | null;
     itemOrigin: { feed: string | null; ref: string | null; createdAt: Date | null;
@@ -237,6 +243,25 @@ async function getRecentInteractions(
       openItemId: true, fromStatus: true, toStatus: true,
       outcome: true, reason: true, createdAt: true,
     },
+  })).catch(() => null);
+
+  // DEF-311 — the third record: what was actually DELIVERED, from the one
+  // audit table every outbound passes (DEF-108's chokepoint). `brain_prompt`
+  // rows are excluded for one reason only: a queue-driven prompt already
+  // renders above WITH his answer, and the same ask appearing twice would
+  // re-create the two-lines-one-referent noise. Every other kind — the
+  // draft-asks, reminders, digests, relays — exists ONLY here, which is
+  // DEF-311's whole defect.
+  const sendRows = await Promise.resolve().then(() => prisma.brainUserMessage.findMany({
+    where: {
+      clientNumber, userId,
+      createdAt: { gte: since },
+      status: { in: ['sent', 'partial'] },
+      kind: { not: 'brain_prompt' },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    select: { kind: true, summary: true, createdAt: true },
   })).catch(() => null);
 
   // DEF-306 — read the subject through the ACCESSOR, not off the column.
@@ -332,6 +357,9 @@ async function getRecentInteractions(
   }));
 
   return {
+    sends: sendRows === null ? null : sendRows.map((r) => ({
+      at: r.createdAt, kind: String(r.kind), summary: String(r.summary ?? '').slice(0, 160),
+    })),
     prompts: promptRows === null ? null : promptRows.map((p) => ({
       // DEF-301 — `sentAt` alone left the two most recent lines rendering their date as `?`,
       // because a prompt can be answered without ever having been marked sent. An undated line
@@ -604,6 +632,7 @@ export async function buildDispatchLedgerBlock(
   const unreadable: string[] = [];
   if (promptRows === null) unreadable.push('the prompts-you-asked record');
   if (transitionRows === null) unreadable.push('the item-status-change record');
+  if (ix.sends === null) unreadable.push('the messages-you-sent record');
   const unreadableNote = unreadable.length
     ? `\n(${unreadable.join(' and ')} could not be read — for that part say you cannot tell, do not guess)`
     : '';
@@ -618,8 +647,10 @@ export async function buildDispatchLedgerBlock(
   let interactionBody: string;
   if (merged.length > 0) {
     interactionBody = merged.join('\n') + unreadableNote;
-  } else if (unreadable.length === 2) {
-    interactionBody = '(neither record could be read — say you cannot tell, do not guess)';
+  } else if (unreadable.length >= 2) {
+    // ↻ DEF-311 — generic over the record count: the hardcoded "neither" broke
+    // the moment a third record joined. Name what is unreadable, whatever N is.
+    interactionBody = `(${unreadable.join(' and ')} could not be read — say you cannot tell, do not guess)`;
   } else if (unreadable.length === 1) {
     interactionBody = `(nothing in the readable record for the last ${hrs}h)${unreadableNote}`;
   } else {
@@ -637,11 +668,32 @@ export async function buildDispatchLedgerBlock(
       + background.join('\n')
     : '';
 
+  // DEF-311 — the deck tag: `Asked "what is this?" about the message he had
+  // just received and Brain answered about a different, older one — never said
+  // two were outstanding`. These are Brain's OWN outbound messages, so they are
+  // valid referents for a MESSAGE question — but they name no open item, so
+  // they must not join the item-referent list (DEF-313's invariant), and they
+  // are not other people's words, so they must not sit under the background
+  // block's "never answer from here". A third, labelled section, with its own
+  // rule beside it.
+  const sendsBlock = ix.sends === null
+    ? ''
+    : ix.sends.length === 0
+      ? `\n\nMESSAGES YOU SENT HIM (delivery record): none besides the prompts above in the last ${hrs}h.\n`
+      : '\n\nMESSAGES YOU SENT HIM — NEWEST FIRST (from brain_user_messages, the delivery record'
+        + ' every outbound passes; prompts with his answers are listed above instead):\n'
+        + ix.sends.map((r) => `- ${when(r.at)} you sent [${r.kind.replace(/_/g, ' ')}]: ${r.summary}`).join('\n')
+        + '\n\nWHEN HE ASKS "what is this?" ABOUT A MESSAGE HE JUST RECEIVED, the referent is the'
+        + '\nNEWEST line across this section and the prompts above — never an older message when a'
+        + '\nnewer one exists. If MORE THAN ONE went out recently, SAY so and name the newest'
+        + '\nrather than silently picking one: answering about the wrong message without naming'
+        + '\nthe other is the exact failure he reported.\n';
+
   const interactions = '\n\n## Your recent interactions with him ABOUT HIS ITEMS — NEWEST FIRST (prompts you asked, from brain_prompt_queue; status changes you attempted, from item_status_history)\n'
     // DEF-301 — the never-borrow-a-title rule, stated ONCE here instead of inside every row.
     + 'Where a line names no title, you do not have one: say so rather than borrowing a title\n'
     + 'from elsewhere in your context.\n'
-    + `${interactionBody}${backgroundBlock}\n`
+    + `${interactionBody}${sendsBlock}${backgroundBlock}\n`
     // The referent rule lives NEXT TO the referents, per DEF-165's finding that
     // a constraint beside the data outranks one in a rulebook. This is target
     // grounding, not wording: what he means is a fact these rows carry.
