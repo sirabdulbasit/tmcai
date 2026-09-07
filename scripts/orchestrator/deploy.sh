@@ -256,6 +256,54 @@ say "evaluation-chart row written (pre-deploy): ${CHART_ROW:-none}"
 # The verdict this writes is UNVERIFIED, never PROGRESS. A green build and a healthy
 # probe say the code is RUNNING; they say nothing about whether the defect is fixed for
 # the owner, and this project has a chart full of rows about that exact confusion.
+# ── AND THE DEF ROW ITSELF ───────────────────────────────────────────────────
+#
+# THE SYMPTOM THE OWNER ACTUALLY SAW (2026-09-07). His Build Pulse deck read
+# "DEF-321 · alert fix built but not deployed" while DEF-321 had been live on
+# production for two days. The deck was not wrong — it reads `brain_change_log.md`,
+# and that row still said "**NOT YET at build time** (Builder does not deploy)",
+# which is the Builder's honest note about ITS OWN moment. Nothing was ever going to
+# replace it, because the Builder cannot deploy and the deploy phase never wrote back.
+#
+# CLAUDE.md rule 2 — "no fix ships without its DEF row updated (resolved date-time,
+# commit, verification)". This is the deploy half of that rule, and it had no
+# implementation at all. Its absence does not just lose bookkeeping: it tells the
+# owner on his own dashboard that shipped work is unshipped, which is the exact
+# "months of progress look like circling" failure the three-document protocol exists
+# to end.
+#
+# Narrow on purpose: it rewrites the DEPLOYED cell and ONLY when that cell still
+# says NOT YET. It never touches verification, never marks anything VERIFIED —
+# deployed is not verified, and this phase cannot see the owner's traffic.
+defs_deployed() {
+  [ -n "${DEFS:-}" ] || return 0
+  python3 - "$SRV/docs/brain_change_log.md" "$1" "$2" "${CHART_ROW:-}" $DEFS <<'PYDEF'
+import re, sys
+log, sha, ts, row = sys.argv[1:5]
+defs = sys.argv[5:]
+lines = open(log, errors="replace").read().split(chr(10))
+moved = []
+for i, ln in enumerate(lines):
+    m = re.match(r"^\| \*\*(DEF-\d+)\*\* \|", ln)
+    if not m or m.group(1) not in defs:
+        continue
+    cells = ln.split(" | ")
+    # Section A rows carry a DEPLOYED? column (8 cells); section B rows do not.
+    if len(cells) < 8:
+        continue
+    if "NOT YET" not in cells[6].upper() and "not yet" not in cells[6]:
+        continue
+    cells[6] = (f"**DEPLOYED `{sha}` {ts} UTC** by the loop's deploy phase"
+                + (f" ({row})" if row else "")
+                + " — deployed is NOT verified")
+    lines[i] = " | ".join(cells)
+    moved.append(m.group(1))
+if moved:
+    open(log, "w").write(chr(10).join(lines))
+print(" ".join(moved) if moved else "none")
+PYDEF
+}
+
 CHART_ROW="${CHART_ROW:-}"
 chart_observe() {
   # $1 = row id (D-NN) · $2 = observed cell · $3 = verdict cell
@@ -354,6 +402,9 @@ say "live acceptance of individual DEFs is NOT verified by this phase — that n
 # his traffic — so the verdict is UNVERIFIED and the next action names what would move
 # it. A deploy phase that wrote PROGRESS on a green probe would be manufacturing the
 # evidence the chart exists to demand.
+MOVED="$(defs_deployed "$(git rev-parse --short "$DEPLOY_SHA")" "$(date -u '+%Y-%m-%d %H:%M')")"
+say "DEF rows moved to DEPLOYED: ${MOVED:-none}"
+
 chart_observe "$CHART_ROW" \
   "**DEPLOYED \`$(git rev-parse --short "$DEPLOY_SHA")\` at $(date -u '+%Y-%m-%d %H:%M') UTC, written by the deploy phase itself.** Matrix re-run AT the deploy commit: \`tsc --noEmit\` clean, \`vitest run\` green. Dist manifest \`${MANIFEST:0:16}…\` (canonical command), built under an explicit \`chattr -i\` unlock and relocked on exit. Migrations applied this run: ${MIGS_RUN:-none}. \`pm2 restart $PM2_APP\`, then **health probe 200 with \`status:healthy\` after ${PROBE_SECS:-?}s** on :$PORT$HEALTH_PATH — an HTTP probe, not a pm2 status read. Boot log after restart: $([ -n "$NEWERR" ] && printf 'carries error lines, NOT established as new (pre-existing until compared)' || printf 'no error lines in the last 200'). **NOT VERIFIED:** live acceptance of ${DEFS:-the shipped changes} — no owner traffic has exercised them, and no capability number was re-measured by this phase." \
   "**UNVERIFIED — the code is running, the fix is not proven.** A healthy probe is evidence of a live process and nothing more. Next action: exercise ${DEFS:-the shipped changes} against real traffic, and let the next capability scoring run say whether anything moved."
