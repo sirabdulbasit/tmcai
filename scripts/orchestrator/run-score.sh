@@ -261,14 +261,36 @@ the real citation."
 run_grok_read "$READ_PROMPT" "${session_args[@]}"
 rc=$?
 
-# A recorded session id that was never actually created makes every resume 404.
+# A recorded session id that was never actually created makes every resume fail.
 # That is different from a session that existed and was lost: here a fresh start
 # is the correct repair, not a silent downgrade. Retried once, loudly.
-if [ "$rc" -ne 0 ] && grep -qiE "not found locally|404 Not Found|Failed to restore session" "$READ_LOG"; then
+#
+# THE PATTERN WAS WRONG AND IT COST SEVEN DAYS OF MEASUREMENT (found 2026-09-07).
+# This list was written from the shapes an HTTP resume failure takes. The CLI does
+# not emit any of them: a dead session prints
+#
+#   No conversation found with session ID: <uuid>
+#
+# and exits 1. Reproduced on this box against a fabricated uuid. So `rc` was
+# non-zero, the recovery branch did not match, run-score exited non-zero, and the
+# loop logged "grok FAILED" and carried on — every run from iteration 56
+# (2026-08-31 13:00) to iteration 73 (2026-09-07 02:58), TWELVE consecutive runs.
+# No iter-NN-capability.json was produced, so no card was ingested, so
+# `capability_scorecard.json` froze at iteration 54 / d144edf, so the ADVANCE test
+# in nexeo-loop.sh (compare the last two cards) could never see a rise and the
+# iteration counter froze at 73 — while each night still built, reviewed and
+# DEPLOYED a real fix. The loop was working and its instrument was dead.
+#
+# The lesson this file should carry: match on what the tool ACTUALLY printed, and
+# never let a diagnostic path be the one thing nothing exercises.
+if [ "$rc" -ne 0 ] && grep -qiE "not found locally|404 Not Found|Failed to restore session|No conversation found" "$READ_LOG"; then
   echo "run-score: recorded session does not exist — opening a NEW one and retrying once" >&2
   sid="$(cat /proc/sys/kernel/random/uuid)"
   printf '%s' "$sid" > "$SESSION_FILE"
-  run_grok_read "$READ_PROMPT" --session-id "$sid" --session-id "$sid"
+  # `--session-id` was passed twice here. The CLI tolerates it (verified, rc=0), so it
+  # cost nothing, but a duplicated flag reads as a typo in a recovery path nobody had
+  # ever seen run — and this one had never run.
+  run_grok_read "$READ_PROMPT" --session-id "$sid"
   rc=$?
 fi
 

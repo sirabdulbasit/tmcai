@@ -996,6 +996,29 @@ PYADV
   #     to start from, which is what the builder needs to aim.
   #   • head is BASE_HEAD, the commit actually scored. Using HEAD would attribute
   #     the reading to a commit that did not exist when Grok read the code.
+  # A DEAD INSTRUMENT MUST SHOUT (2026-09-07).
+  #
+  # The scorer died on 2026-08-31 and failed on TWELVE consecutive runs. Each one
+  # logged exactly one line — "grok FAILED" — indistinguishable from the ordinary
+  # noise of a long run, and nothing anywhere counted them. So the loop went on
+  # building, reviewing and deploying nightly against a capability card seven days
+  # old, and the only symptom the owner could see was a trend that never gained a
+  # column. Rung 1 of Self-Healing is "Brain notices its own failure"; the loop that
+  # is supposed to build that capability could not do it for its own instrument.
+  #
+  # A streak, and a line that says the measurement is dead in those words. Failing
+  # to score is not a reason to stop the build — an unaimed build still ships real
+  # fixes, which is what the last week proves — but it must never again be quiet.
+  score_failed() {
+    local streak=0
+    [ -s "$STATE/score-fail-streak" ] && streak="$(cat "$STATE/score-fail-streak")"
+    streak=$((streak + 1))
+    printf '%s' "$streak" > "$STATE/score-fail-streak"
+    if [ "$streak" -ge 2 ]; then
+      say "SCORE  ***MEASUREMENT IS DEAD*** — $streak consecutive scoring runs failed ($1). The capability card is STALE and every build since is aiming at old numbers. This build continues; the numbers it reports are not current."
+    fi
+  }
+
   if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
     say "SCORE  iter=$ITER skipped — conversational pulse (Chat Analysis + Build & Deploy only)"
   elif [ -x "$ROOT/scripts/orchestrator/run-score.sh" ]; then
@@ -1006,14 +1029,17 @@ PYADV
            --iteration "$ITER" --head "$(git rev-parse --short "$BASE_HEAD")" \
            --commit --append --label "Pre-Build" >> "$ORCH/score.log" 2>&1; then
         say "SCORE  iter=$ITER card appended — the build aims at these numbers"
+        printf '0' > "$STATE/score-fail-streak"
       else
         # Rejected means unevidenced or malformed — the file is removed so the
         # iteration is retried rather than silently skipped.
         say "SCORE  iter=$ITER INGEST REJECTED (see score.log) — capability file removed for retry"
         rm -f "$CAPJSON"
+        score_failed "ingest rejected"
       fi
     else
       say "SCORE  iter=$ITER grok FAILED — see logs/iter-$(printf '%02d' "$ITER")-score.log"
+      score_failed "scorer exited non-zero"
     fi
   fi
 

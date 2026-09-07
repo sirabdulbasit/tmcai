@@ -202,7 +202,7 @@ if [ "${NEXEO_DEPLOY_DRYRUN:-0}" = "1" ]; then
 fi
 
 # ── 3. CHART row, written BEFORE the deploy ─────────────────────────────────
-python3 - "$CHART" "$ITER" "$(git rev-parse --short "$DEPLOY_SHA")" "$DEFS" "$VERDICT" <<'PY'
+CHART_ROW="$(python3 - "$CHART" "$ITER" "$(git rev-parse --short "$DEPLOY_SHA")" "$DEFS" "$VERDICT" <<'PY'
 import re, sys, datetime
 chart, iteration, sha, defs, verdict = sys.argv[1:6]
 body = open(chart, errors="replace").read()
@@ -233,7 +233,51 @@ for i, ln in enumerate(lines):
 open(chart, "w").write("\n".join(lines))
 print(f"D-{nxt}")
 PY
-say "evaluation-chart row written (pre-deploy)"
+)"
+say "evaluation-chart row written (pre-deploy): ${CHART_ROW:-none}"
+
+# ── 3b. THE OTHER HALF OF THE ROW ────────────────────────────────────────────
+#
+# WHAT WAS MISSING, and it was missing for every automated deploy (found 2026-09-07).
+# The row above is written BEFORE the deploy and ends with the two placeholder cells
+# "*(written before deploy — observed result appended by the deploy phase)*" and
+# "*(pending)*". NOTHING IN THIS FILE EVER APPENDED THEM. The phase restarted
+# production, probed it, read the boot log — and then exited, leaving the row saying a
+# result would arrive that no line of code was ever going to write. D-102, D-103 and
+# D-104 (2026-09-05/06/07) all sit at "(pending)" with the evidence sitting unread in
+# their own deploy logs.
+#
+# That is CLAUDE.md rule 3 — "Report the evaluation chart at EVERY deploy … Anything
+# not exercised is stated as NOT VERIFIED, never assumed" — half-implemented: the
+# prediction was recorded so it could be wrong on the record, and then the record was
+# never closed. A chart of predictions with no observations cannot answer the only
+# question it exists to answer, which is whether the loop is getting anywhere.
+#
+# The verdict this writes is UNVERIFIED, never PROGRESS. A green build and a healthy
+# probe say the code is RUNNING; they say nothing about whether the defect is fixed for
+# the owner, and this project has a chart full of rows about that exact confusion.
+CHART_ROW="${CHART_ROW:-}"
+chart_observe() {
+  # $1 = row id (D-NN) · $2 = observed cell · $3 = verdict cell
+  [ -n "${1:-}" ] || return 0
+  python3 - "$CHART" "$1" "$2" "$3" <<'PYOBS'
+import sys
+chart, row, observed, verdict = sys.argv[1:5]
+clean = lambda t: t.replace("|", "¦").replace("\n", " · ").strip()
+placeholder = ("| *(written before deploy — observed result appended by the deploy "
+               "phase)* | *(pending)* |")
+lines = open(chart, errors="replace").read().split("\n")
+hit = False
+for i, ln in enumerate(lines):
+    if ln.startswith(f"| **{row}** |") and placeholder in ln:
+        lines[i] = ln.replace(placeholder, f"| {clean(observed)} | {clean(verdict)} |")
+        hit = True
+        break
+if hit:
+    open(chart, "w").write("\n".join(lines))
+print("observed" if hit else "row-not-found")
+PYOBS
+}
 
 # ── 4. MIGRATIONS ───────────────────────────────────────────────────────────
 # Hand-written, idempotent, applied by name-tracking in state. A failure stops the
@@ -254,8 +298,10 @@ for dir in "$SRV/prisma/migrations"/*/; do
   if psql "${DATABASE_URL:-$(grep -m1 '^DATABASE_URL=' "$SRV/.env" | cut -d= -f2- | tr -d '"')}" \
         -v ON_ERROR_STOP=1 -f "$dir/migration.sql" >> "$LOG" 2>&1; then
     printf '%s\n' "$name" >> "$APPLIED"
+    MIGS_RUN="${MIGS_RUN:-}$name "
     say "migration $name applied"
   else
+    chart_observe "$CHART_ROW" "**NOT DEPLOYED — migration \`$name\` FAILED.** Production was never restarted and the code never shipped; the schema is unchanged for this migration. Deploy log: \`$LOG\`." "**UNVERIFIED — nothing shipped.** Next action: fix the migration by hand, then re-run this iteration's deploy."
     die "migration $name FAILED — production NOT restarted, code NOT shipped"
   fi
 done
@@ -274,7 +320,7 @@ for i in $(seq 1 20); do
   # answering while its database is down is the false-green this project has a
   # chart row about.
   if [ "$code" = "200" ] && printf '%s' "$body" | grep -q '"status":"healthy"'; then
-    OK=1; say "health probe 200 + status=healthy after $((i*3))s"; break
+    OK=1; PROBE_SECS=$((i*3)); say "health probe 200 + status=healthy after ${PROBE_SECS}s"; break
   fi
 done
 
@@ -287,6 +333,7 @@ if [ "$OK" -ne 1 ]; then
   back="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$HEALTH_PATH" 2>/dev/null || echo 000)"
   say "post-rollback probe: $back"
   say "MIGRATIONS ARE NOT ROLLED BACK — they are idempotent and forward-only by design. Schema is ahead of the restored code."
+  chart_observe "$CHART_ROW" "**ROLLED BACK — NOT DEPLOYED.** The health probe on :$PORT$HEALTH_PATH never answered 200 with \`status:healthy\` in 60s, so the pre-build dist snapshot was restored and production restarted; the post-rollback probe returned \`$back\`. **Migrations were NOT rolled back** (idempotent, forward-only) so the schema is AHEAD of the restored code — that is stated, not hidden. Applied this run: ${MIGS_RUN:-none}. Deploy log: \`$LOG\`." "**UNVERIFIED — nothing reached the owner.** Next action: read the boot log for why the probe failed before re-attempting this commit."
   die "deploy failed and was rolled back" 2
 fi
 
@@ -299,4 +346,15 @@ say "DEPLOYED $(git rev-parse --short "$DEPLOY_SHA") · defects: ${DEFS:-none na
 [ -n "$NEWERR" ] && say "boot log carries errors (may be pre-existing — NOT verified as new):
 $NEWERR"
 say "live acceptance of individual DEFs is NOT verified by this phase — that needs real traffic"
+
+# THE ROW IS CLOSED HERE, and it is closed honestly. What this phase can witness is
+# exactly four things: the matrix was green at the deploy commit, the artifact it built
+# has this digest, production restarted, and the health endpoint answered. What it
+# CANNOT witness is whether any named DEF is actually fixed for the owner — that needs
+# his traffic — so the verdict is UNVERIFIED and the next action names what would move
+# it. A deploy phase that wrote PROGRESS on a green probe would be manufacturing the
+# evidence the chart exists to demand.
+chart_observe "$CHART_ROW" \
+  "**DEPLOYED \`$(git rev-parse --short "$DEPLOY_SHA")\` at $(date -u '+%Y-%m-%d %H:%M') UTC, written by the deploy phase itself.** Matrix re-run AT the deploy commit: \`tsc --noEmit\` clean, \`vitest run\` green. Dist manifest \`${MANIFEST:0:16}…\` (canonical command), built under an explicit \`chattr -i\` unlock and relocked on exit. Migrations applied this run: ${MIGS_RUN:-none}. \`pm2 restart $PM2_APP\`, then **health probe 200 with \`status:healthy\` after ${PROBE_SECS:-?}s** on :$PORT$HEALTH_PATH — an HTTP probe, not a pm2 status read. Boot log after restart: $([ -n "$NEWERR" ] && printf 'carries error lines, NOT established as new (pre-existing until compared)' || printf 'no error lines in the last 200'). **NOT VERIFIED:** live acceptance of ${DEFS:-the shipped changes} — no owner traffic has exercised them, and no capability number was re-measured by this phase." \
+  "**UNVERIFIED — the code is running, the fix is not proven.** A healthy probe is evidence of a live process and nothing more. Next action: exercise ${DEFS:-the shipped changes} against real traffic, and let the next capability scoring run say whether anything moved."
 exit 0
