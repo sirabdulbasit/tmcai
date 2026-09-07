@@ -402,9 +402,18 @@ function CapabilityMap({ data }) {
             >
               {/* An unscored capability shows a dash, never a zero. A zero is a
                   measurement; a missing card is not, and the two must not look the
-                  same on a wall display. */}
-              <span className="orch-capmap-pct">{c ? `${c.nexeo}%` : '—'}</span>
-              {c && <span className="orch-capmap-pro">of {c.professional}</span>}
+                  same on a wall display.
+
+                  ROUNDED FOR DISPLAY ONLY — owner, 2026-09-07: "remove decimals, and
+                  place beautifully inside the give box, content should not go outside".
+                  A decimal is three extra glyphs, and the painted boxes are ~112px in a
+                  960px raster: "55.12%" is six glyphs where "55%" is three, which is the
+                  whole overflow. The EXACT value stays in the title above, so the
+                  precision is one hover away and nothing is lost — a capability score is
+                  a judgement to one or two significant figures anyway, and rendering it
+                  to 1/100th of a point implies a resolution the scorer does not have. */}
+              <span className="orch-capmap-pct">{c ? `${Math.round(c.nexeo)}%` : '—'}</span>
+              {c && <span className="orch-capmap-pro">of {Math.round(c.professional)}</span>}
             </div>
           );
         })}
@@ -416,10 +425,14 @@ function CapabilityMap({ data }) {
             <div
               className="orch-capmap-slot orch-capmap-slot-total"
               style={{ left: `${CAP_MAP_TOTAL_SLOT.left}%`, top: `${CAP_MAP_TOTAL_SLOT.top}%` }}
-              title={`Brain overall ${data.brain.nexeo} vs professional ${data.brain.professional} · gap ${data.brain.gap} — the mean of ${(data.capabilities || []).length} capabilities`}
+              title={`Brain overall ${data.brain.nexeo} vs professional ${data.brain.professional} · gap ${data.brain.gap} — the mean of ${(data.capabilities || []).length} capabilities (shown rounded)`}
             >
-              <span className="orch-capmap-pct">{data.brain.nexeo}%</span>
-              <span className="orch-capmap-pro">of {data.brain.professional}</span>
+              {/* This is the box that overflowed. Both figures here are MEANS of eight,
+                  so both carry decimals the others do not — 55.12 of 92.25 is fourteen
+                  glyphs across two lines in a box built for three. Rounded here, exact in
+                  the title. */}
+              <span className="orch-capmap-pct">{Math.round(data.brain.nexeo)}%</span>
+              <span className="orch-capmap-pro">of {Math.round(data.brain.professional)}</span>
             </div>
             <div className="orch-capmap-totmask"
                  style={{ left: `${CAP_MAP_TOTAL_SLOT.mask.left}%`, top: `${CAP_MAP_TOTAL_SLOT.mask.top}%` }}

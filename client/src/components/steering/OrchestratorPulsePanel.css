@@ -544,10 +544,18 @@
   display: block; width: 100%; height: auto; max-width: 100%; max-height: 100%;
   border-radius: 8px;
 }
+/* THE SLOT IS THE BOX — owner, 2026-09-07: "content should not go outside".
+   Rounding the numbers removed the overflow that was actually on screen, but nothing in
+   the geometry PREVENTED it, so the next long value would have put it back. The slot is
+   now exactly as wide as the painted box it sits on (~112px of a 960px raster = 11.7%,
+   the same measurement the slot positions came from), centred on the box's centre by the
+   translate, with both lines held on one line each. Whatever it is handed now composes
+   within the box instead of spilling across the artwork. */
 .orch-capmap-slot {
   position: absolute; transform: translate(-50%, -50%);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 1px; pointer-events: auto;
+  width: 11.7%; white-space: nowrap;
 }
 /* Readable on artwork, not just on the dark boxes: the number carries its own
    halo so it survives whatever pixel it lands on. A dashboard figure that is
@@ -559,7 +567,10 @@
    viewport term raised to match, and the drop shadow strengthened because the boxes are
    near-black but the ribbons behind some of them are not. */
 .orch-capmap-pct {
-  font-size: clamp(15px, 2.9vw, 30px); font-weight: var(--fw-bold, 700);
+  /* 28px, not 30: the widest value the rounding can now produce is four glyphs ("100%"),
+     which at 30px measures ~99px against a box that is ~96px wide on this card's typical
+     render. Three glyphs — every real score — sit comfortably inside at 28. */
+  font-size: clamp(15px, 2.9vw, 28px); font-weight: var(--fw-bold, 700);
   color: #fff; font-variant-numeric: tabular-nums; line-height: 1;
   text-shadow: 0 1px 4px rgba(0,0,0,0.98), 0 0 14px rgba(0,0,0,0.9);
 }
