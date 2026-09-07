@@ -73,7 +73,22 @@ cd "$ROOT" || exit 1
 # otherwise be stamped `cron:nightly-iteration` and land in the spend deck's CRON cut —
 # corrupting the one number the comment above exists to protect. heal-now.sh exports
 # `manual:heal-now`; cron sets nothing and gets the default.
+# THE TURN CAP HAD TO MOVE WITH THE SCOPE (2026-09-07).
+#
+# build.md rule 4 now asks for every open gap in the target capability rather than one
+# change, and 40 turns does not fit five fixes — the brief would have been widened into a
+# cap that truncates it, which is a no-op dressed as a decision.
+#
+# 60, not unbounded, and the number comes from this project's own measurement rather than
+# comfort: the worst build ever observed ran 58 turns and cost $45.28 (iteration 47, from
+# the builders' own total_cost_usd events across 90 runs). So 60 is bounded by a cost
+# already survived once, and the mean run has never been near it. Raise or lower with
+# NEXEO_BUILD_MAX_TURNS if the trade changes.
+#
+# Note the cap bounds the MAIN LOOP only: sub-agent turns appear in the stream without
+# counting toward it, which is how iteration 47 logged 58 against a limit of 40.
 NEXEO_MAX_ITER=1 NEXEO_DEPLOY=1 \
+NEXEO_BUILD_MAX_TURNS="${NEXEO_BUILD_MAX_TURNS:-60}" \
 NEXEO_TRIGGER="${NEXEO_TRIGGER:-cron:nightly-iteration}" \
   bash "$ROOT/scripts/orchestrator/nexeo-loop.sh" >> "$ORCH/loop.out" 2>&1
 rc=$?

@@ -28,8 +28,30 @@ So:
 3. **Documentation follows the code in the same commit; it never replaces it.** The three
    Brain documents still get updated — that rule stands and is not weakened here. What is
    forbidden is a turn whose entire work product is documentation.
-4. **One change, the smallest that closes a symptom tag or moves the capability you were
-   given.** Not a survey, not a refactor, not three related improvements.
+4. **Every open gap that belongs to the capability you were given — ONE COMMIT EACH.**
+
+   Owner ruling 2026-09-07, replacing *"one change, the smallest"*: at one fix per pulse
+   the open queue grew faster than it drained. The bounds below are not hedges — they are
+   what keeps five fixes in one turn reviewable, and without them this rule is worse than
+   the one it replaces.
+
+   - **Only the target capability.** A gap in another capability is the next pulse's work,
+     however tempting: the AIM comparison and the chart row are both per-capability, and a
+     turn that wanders scores as MISAIMED however good the code.
+   - **One commit per DEF**, each naming its tag, each with its own tests, each moving its
+     own row. A single commit carrying five fixes cannot be reviewed, rolled back or
+     attributed — Codex rules on the iteration, the health probe rolls back the whole
+     deploy, and the chart row asks which prediction came true.
+   - **Commit as you go, in the order the ranking gives you.** The turn can end on the
+     turn cap. If it does, everything already committed still ships and only the unstarted
+     items wait — so never hold several finished fixes in the working tree to commit at the
+     end. That single habit is the difference between a truncated turn that delivered four
+     fixes and one that delivered none.
+   - **Still not a survey.** Each item is the smallest change that closes its tag. A turn
+     whose entire work product is documentation is still forbidden.
+   - **If the first item turns out to be structural, finish it alone and say so.** One real
+     root cause closed beats three symptoms patched, and the recurrence table is what
+     judges that, not the count.
 
 The loop already detects a turn that changed nothing and marks it DEAD. That detection
 is a postmortem. This section is the precondition, and it exists so the money is not

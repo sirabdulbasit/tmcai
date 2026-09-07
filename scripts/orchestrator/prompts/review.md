@@ -145,6 +145,12 @@ Required content, in this order:
 
 4. **AIM — did this reach the capability the iteration was aimed at?**
 
+   **THIS TURN MAY CARRY SEVERAL COMMITS.** Owner ruling 2026-09-07: the builder now
+   fixes every open gap in the target capability, one commit per DEF, rather than one
+   change per pulse. So judge the SET: a finding against one commit does not condemn the
+   others, and your verdict should name which commit each finding belongs to. A WEAK on
+   one fix among four is far more useful than a WEAK on the turn.
+
    **TARGET THIS ITERATION: @@TARGETCAP@@** — the next capability in the headroom
    rotation, derived before the build started. **It is not necessarily the widest gap**,
    so a table naming a different one below is not a contradiction. The card: @@CARDSTAMP@@.

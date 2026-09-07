@@ -421,6 +421,52 @@ Recorded because they cost the owner real time and must not repeat.
 
 ## D. Undeployed work waiting on the box
 
+**OPS-002 — a pulse now builds EVERY open gap in its target capability (owner ruling,
+2026-09-07: *"every build should build all open gaps"* → *"yes do it for now"*).**
+
+**What actually limited it was not the cost cap.** `NEXEO_MAX_ITER=1` bounds *iterations*
+(his 2026-08-18 ruling, after $1,144 across 162 builds). Separately, `build.md` rule 4 read
+*"One change, the smallest that closes a symptom tag… not three related improvements"* —
+an explicit instruction to do exactly one. Five open gaps therefore took five pulses, and
+the queue grew faster than it drained.
+
+Rule 4 now asks for every open gap **in the target capability, one commit per DEF**. The
+bounds are the point, not hedges:
+
+- **Only the target capability** — the AIM comparison and the chart row are both
+  per-capability, so a turn that wanders scores MISAIMED however good the code.
+- **One commit per DEF**, each naming its tag, its tests and its row. A single commit
+  carrying five fixes cannot be reviewed, rolled back or attributed: Codex rules on the
+  iteration, the probe rolls back the whole deploy, and the chart row asks which
+  prediction came true.
+- **Commit as you go, in ranking order** — the turn can end on the cap, and then everything
+  already committed still ships while only the unstarted items wait. Holding finished
+  fixes in the working tree is the difference between a truncated turn that delivered four
+  and one that delivered none.
+- **Still not a survey**, and a structural first item is finished alone rather than three
+  symptoms half-patched.
+
+**The turn cap had to move with the scope**, or the widened brief would have been a no-op
+dressed as a decision: 40 turns does not fit five fixes. `NEXEO_BUILD_MAX_TURNS` now
+defaults to **60** in `nightly-iteration.sh` (so the button inherits it too, per
+[OPS-001]). The number is from this project's own measurement, not comfort — the worst
+build ever observed ran **58 turns at $45.28** (iteration 47), so 60 is bounded by a cost
+already survived once, and the mean has never been near it. The cap bounds the MAIN LOOP
+only; sub-agent turns do not count against it, which is how iteration 47 logged 58 against
+a limit of 40.
+
+`review.md` is told the turn may carry several commits and to **name which commit each
+finding belongs to** — a WEAK on one fix among four is far more useful than a WEAK on the
+turn.
+
+**The cost to expect, stated plainly:** a pulse that fixes four things costs more than one
+that fixes one. The rail against runaway spend is still `NEXEO_MAX_ITER=1` — one pulse per
+click or per night, however much it does inside that pulse.
+
+**State:** prompts and the launcher are read from source, so this takes effect on the
+**next pulse** — tonight's cron or the next click — with no deploy. Marked *"for now"* by
+the owner: reverting is restoring rule 4's old paragraph and dropping the cap default.
+
 **OPS-001 — "Heal now" runs a FULL pulse (owner decision, 2026-09-07).** He asked whether
 the button runs what the nightly runs. It did not, and the difference was three phases.
 
