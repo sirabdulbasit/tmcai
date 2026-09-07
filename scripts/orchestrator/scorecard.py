@@ -212,8 +212,24 @@ def main():
         except Exception as e:
             sys.exit(f"--ingest: cannot read {a.ingest}: {e}")
         caps_in = g.get("capabilities") or []
-        if len(caps_in) != 9:
-            sys.exit(f"--ingest: expected 9 capabilities, got {len(caps_in)}")
+        # COUNT COMES FROM THE CARD, NOT A LITERAL (fixed 2026-09-07).
+        #
+        # This said `!= 9`. The owner merged Simple & Smart INTO Self-Pruning on
+        # 2026-08-31 in a commit titled "capability merge: nine become eight everywhere
+        # the machinery reads them" — and this file was not one of the places it reached.
+        # So the header carries eight and the gate demanded nine: the first correctly
+        # merged card the scorer produced was refused outright. Every other check below
+        # is already name-driven against the header, so the header's own length is the
+        # shape this was always trying to assert. It also rejects the scorer's other
+        # habit — nine slots with one capability listed twice, which would apply one
+        # score twice and silently overwrite the first.
+        want = len(d["capabilities"])
+        if len(caps_in) != want:
+            sys.exit(f"--ingest: expected {want} capabilities, got {len(caps_in)}")
+        seen = [c.get("name") for c in caps_in]
+        if len(set(seen)) != len(seen):
+            dupes = sorted({n for n in seen if seen.count(n) > 1})
+            sys.exit(f"--ingest: duplicate capability in the card: {dupes}")
         by_name = {c["name"]: c for c in d["capabilities"]}
         order = [c["name"] for c in d["capabilities"]]
         notes, applied = [], 0
