@@ -8,18 +8,26 @@
  * through a feedback button.
  *
  * Safety design (why this was deferred until now): auto-learning a
- * wrong rule is worse than asking twice. So this NEVER activates a
- * rule by itself:
+ * wrong rule is worse than asking twice. Three filters stand in front
+ * of every candidate, and since 2026-09-07 they are also what lets a
+ * high-confidence result activate WITHOUT a click (owner: "then make
+ * it human intervention less" — see proposeMemory). The filters did
+ * not get weaker; they became the reason the gate could:
  *   1. PRE-FILTER (mechanics, not judgement): cheap keyword check for
  *      durability markers (always / never / from now on / hamesha…).
  *      Most messages exit here at zero LLM cost.
  *   2. DISTILL (LLM judgement, per the no-hardcoded-judgement rule):
  *      is this a durable standing preference, or one-off content?
  *      Below-threshold confidence → dropped silently.
- *   3. PROPOSE — createdByBrain memories land as pending_approval in
- *      the existing governed-memory pipeline. ONLY the user's approval
- *      (Settings → Brain → Memories) activates them. Same governance
- *      as the correction distiller.
+ *   3. PROPOSE — into the existing governed-memory pipeline. At
+ *      confidence >= 0.9 and normal-or-lower sensitivity it lands
+ *      ACTIVE, because by this point it is a rule the owner stated in
+ *      his own words and the two filters above have agreed it
+ *      generalises. Below that bar, or at sensitive/critical, it lands
+ *      `pending_approval` and only his yes (Settings → Brain →
+ *      Memories) activates it. An auto-activated row carries
+ *      `approvedAt` with `approvedBy` NULL, shows in Active Memories,
+ *      and is one click from archived.
  *
  * Called fire-and-forget from the chat success paths (WhatsApp inbound
  * + web post-processing) — a capture failure never touches the reply.
@@ -93,9 +101,14 @@ export async function captureStandingPreference(input: {
       title,
       content,
       confidenceScore: confidence,
+      // This sourceType is what earns self-activation in proposeMemory —
+      // it is the marker that the three filters above ran. Do not reuse
+      // it for a path that skips them.
       sourceType: 'chat_standing_preference',
-      // createdByBrain forces pending_approval — the user's yes in
-      // Settings activates it; the brain never activates its own rule.
+      // Still true, and still accurate: Brain wrote the ROW. What changed
+      // on 2026-09-07 is that authorship of the row no longer decides the
+      // gate — the provenance of the CONTENT does, and this content is the
+      // owner's own words.
       createdByBrain: true,
     });
     log.info('standing preference proposed', { userId: input.userId, memoryId: mem.id, title });

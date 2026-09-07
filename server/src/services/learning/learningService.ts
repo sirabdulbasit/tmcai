@@ -191,21 +191,69 @@ export interface ProposeMemoryInput {
 }
 
 /**
+ * Sources whose content is the USER'S OWN WORDS, not Brain's inference.
+ *
+ * `chat_standing_preference` earns this because `standingPreferenceCapture` already
+ * spends three filters before it ever calls here: a durability-marker pre-filter
+ * (always / never / from now on / hamesha …), a deliberately conservative LLM distill
+ * that is told to reject one-off requests, questions and single-value corrections, and
+ * a 0.6 confidence floor below which the candidate is dropped silently. What survives
+ * is a rule the owner stated out loud and meant to apply in future.
+ *
+ * DEF-149 is the reason this list is a list and not a boolean. "Chase her again" was
+ * once filed as a preference when it was an imperative to act — but that message carries
+ * no durability marker, so it exits at the pre-filter for free and never reaches this
+ * function. Sources WITHOUT that filtering in front of them, the correction distiller
+ * included, are deliberately absent.
+ */
+const AUTO_ACTIVATE_SOURCES = new Set(['chat_standing_preference']);
+
+/**
+ * Higher than the 0.6 needed to PROPOSE, because activating without a human is a
+ * stronger act than queueing for one. The two memories that sat pending for eight and
+ * four weeks were both scored 1.00.
+ */
+const AUTO_ACTIVATE_MIN_CONFIDENCE = 0.9;
+
+/**
  * Propose a new memory. Sensitive / critical memories ALWAYS land in
  * `pending_approval` regardless of what the caller passes, per the
  * governance rule that no sensitive memory becomes active without
  * explicit human approval.
  *
- * Low/normal-sensitivity memories created BY THE USER (not Brain)
- * can be marked active immediately — that's an explicit user action.
+ * LESS HUMAN INTERVENTION (owner decision, 2026-09-07: "then make it human
+ * intervention less").
+ *
+ * The gate above this change was `createdByBrain`, which DEFAULTS TO TRUE — so every
+ * memory required a click and the "user-explicit memories can land active" path this
+ * comment used to promise could never fire for anything. Two governed memories sat in
+ * `pending_approval` from 2026-07-14 and 2026-08-07, `Active Memories (0)`, and `Learn`
+ * scored 42 as the only capability with no movement all campaign. The score was
+ * measuring two unclicked buttons.
+ *
+ * So a narrow class now activates itself: a high-confidence standing preference the
+ * owner stated in his own words, at normal or lower sensitivity. Everything else keeps
+ * the click, and the rule that matters is untouched — SENSITIVE AND CRITICAL ARE STILL
+ * ALWAYS GATED, by his hand and no other.
+ *
+ * What makes this reversible rather than merely convenient: an auto-activated row is
+ * distinguishable in the database, because `approvedAt` is set while `approvedBy` stays
+ * NULL — activated, by nobody. It shows in Active Memories and the audit feed, and one
+ * click archives it.
  */
 export async function proposeMemory(input: ProposeMemoryInput): Promise<{ id: string; status: string }> {
   const sensitivity = input.sensitivityLevel ?? 'normal';
   const createdByBrain = input.createdByBrain ?? true;
+  const autoActivates = (
+    sensitivity !== 'sensitive' &&
+    sensitivity !== 'critical' &&
+    AUTO_ACTIVATE_SOURCES.has(input.sourceType ?? '') &&
+    Number(input.confidenceScore ?? 0) >= AUTO_ACTIVATE_MIN_CONFIDENCE
+  );
   // Status gate: anything sensitive/critical OR proposed by Brain
-  // starts as pending_approval. User-explicit low/normal memories
-  // can land active.
-  const requiresApproval = (
+  // starts as pending_approval, UNLESS it is in the self-activating
+  // class above.
+  const requiresApproval = !autoActivates && (
     sensitivity === 'sensitive' ||
     sensitivity === 'critical' ||
     createdByBrain
@@ -224,6 +272,9 @@ export async function proposeMemory(input: ProposeMemoryInput): Promise<{ id: st
       confidenceScore: input.confidenceScore ?? 0,
       sensitivityLevel: sensitivity,
       status: requiresApproval ? 'pending_approval' : 'active',
+      // approvedAt WITHOUT approvedBy is the signature of a self-activation: active,
+      // and no human put it there. A human approval sets both (see approveMemory).
+      approvedAt: autoActivates ? new Date() : null,
       createdByBrain,
     },
     select: { id: true, status: true },

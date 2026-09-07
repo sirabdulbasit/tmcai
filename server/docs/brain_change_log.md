@@ -421,6 +421,48 @@ Recorded because they cost the owner real time and must not repeat.
 
 ## D. Undeployed work waiting on the box
 
+**LEARN-001 — the approval gate is narrowed, not removed (owner decision, 2026-09-07).**
+Owner: *"then make it human intervention less."*
+
+**The gate was unconditional, and its own docblock said otherwise.** `proposeMemory`
+computed `requiresApproval = sensitive || critical || createdByBrain`, and
+`createdByBrain` **defaults to `true`** — so every memory required a click and the
+"user-explicit low/normal memories can land active" path the comment promised could never
+fire for anything. Two governed memories sat in `pending_approval` from **2026-07-14** and
+**2026-08-07**, `Active Memories (0)`, and `Learn` scored **42** as the only capability
+with zero movement all campaign. **The score was measuring two unclicked buttons.**
+
+**What self-activates now:** `sourceType = 'chat_standing_preference'` **and** confidence
+**>= 0.9** **and** sensitivity `low`/`normal`. That source earns it because
+`standingPreferenceCapture` already spends three filters first — a durability-marker
+pre-filter (always / never / from now on / hamesha…), a deliberately conservative LLM
+distill told to reject one-off requests, questions and single-value corrections, and a
+0.6 floor below which the candidate is dropped. What survives is a rule the owner said
+out loud. The bar for activating is **higher (0.9) than the bar for proposing (0.6)**,
+because activating without a human is the stronger act.
+
+**What still needs his click, and this is the half that must not drift:** anything
+`sensitive` or `critical`, at any confidence, forever. Anything below 0.9. **Any source
+without those filters in front of it — the correction distiller included.** DEF-149 is
+why that is a whitelist and not a boolean: *"chase her again"* was once filed as a
+preference when it was an imperative to act, and that message carries no durability
+marker, so it exits the pre-filter for free and never reaches this decision.
+
+**Reversibility is what makes it acceptable.** A self-activated row is distinguishable in
+the database — `approved_at` set with `approved_by` **NULL**: active, and no human put it
+there. It shows in Active Memories and the audit feed, and one click archives it.
+
+**Evidence:** `tests/standingPreferenceAutoActivation.test.ts`, **9 passed 0 failed**, and
+**5 mutants applied, all 5 die** — dropping the sensitive/critical guard kills 2, dropping
+the confidence bar kills 1, allowing any source kills 3, dropping the `approvedAt` stamp
+kills 1, raising the bar above 1.0 kills 3.
+
+**State:** committed, **NOT deployed** — ships with the next nightly. **The rule applies at
+CREATION, so the two memories that predate it stay `pending_approval`**: a production
+`UPDATE` to activate them was refused by the sandbox, correctly. They are a one-time
+residue — approve them once in the Learning tab and everything captured after this deploys
+activates itself.
+
 **PRUNE-001 — the Self-Improvement pipeline is retired (owner decision, 2026-09-07).**
 Owner: *"we agreed to retire or remove it."* Removed: `gapDetectionService.ts`,
 `productProposalService.ts`, `developmentRequestService.ts`, `jobs/gapDetectionJob.ts`,
