@@ -145,8 +145,10 @@ Required content, in this order:
 
 4. **AIM — did this reach the capability the iteration was aimed at?**
 
-   **TARGET THIS ITERATION: @@TARGETCAP@@** — the widest gap, derived from Grok's
-   card before the build started. The full table:
+   **TARGET THIS ITERATION: @@TARGETCAP@@** — the next capability in the headroom
+   rotation, derived before the build started. **It is not necessarily the widest gap**,
+   so a table naming a different one below is not a contradiction. The card: @@CARDSTAMP@@.
+   The full table:
 
 @@CAPGAPS@@
 

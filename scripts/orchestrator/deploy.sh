@@ -395,6 +395,54 @@ say "DEPLOYED $(git rev-parse --short "$DEPLOY_SHA") · defects: ${DEFS:-none na
 $NEWERR"
 say "live acceptance of individual DEFs is NOT verified by this phase — that needs real traffic"
 
+# ── 8. THE DEPLOY COMMIT ─────────────────────────────────────────────────────
+#
+# WHY THIS EXISTS, and it is the most expensive omission in the loop (found 2026-09-07).
+# This phase changed production and left NO artifact in git. The chat analyst — which is
+# what CHOOSES the loop's target — reads `git log` for a deploy commit, finds none, and
+# concludes nothing shipped. On 2026-09-07 it wrote, in the file the builder is handed:
+#
+#   "deployed-sha was advanced to HEAD twice without a deploy; production HEAD is still
+#    e0053d8 ... DEF-321 and DEF-315 are both BUILT-NOT-DEPLOYED"
+#
+# Every word of that is false. Production was running 2e243a4: the live dist manifest
+# equals the one recorded for that commit, and pm2 reports tmcai-server started at
+# 02:52:28 UTC, the same second this phase issued its restart. But the analyst was not
+# being careless — it was reading the only evidence git had, and git had none, because
+# `deployed-sha` and `deploy-history` are files nothing outside the loop reads.
+#
+# The cost is not bookkeeping. The loop ranks its work from that analysis, so it has been
+# re-ranking already-shipped defects as urgent and telling the builder to "deploy the
+# D-102 wave" that shipped two days earlier. A loop whose aim is computed from a file
+# that believes its own fixes never ship cannot improve a capability no matter how well
+# it builds.
+#
+# So: one commit, naming its files (never a directory — BLD-001), carrying exactly the
+# three documents this phase just wrote. And `deployed-sha` is then advanced to the
+# commit itself, because otherwise every subsequent night sees HEAD ahead of it and
+# redeploys a documentation change as if it were code.
+git add server/docs/brain_evaluation_chart.md server/docs/brain_change_log.md \
+        server/docs/orchestrator/state/deployed-sha 2>>"$LOG"
+if git diff --cached --quiet 2>/dev/null; then
+  say "no deploy-commit artifacts changed — nothing to commit"
+else
+  if git commit -q -m "${CHART_ROW:-D-?}: deploy $(git rev-parse --short "$DEPLOY_SHA") — ${DEFS:-no DEF named}
+
+Written by the loop's deploy phase, not by hand. Production restarted at
+$(date -u '+%Y-%m-%d %H:%M:%S UTC') and answered the health probe on :$PORT.
+Dist manifest $MANIFEST.
+
+This commit carries no code: it is the git-visible record that the deploy happened,
+which is what the chat analyst reads to decide whether a defect still needs work.
+deployed-sha is advanced to this commit so the next run does not redeploy it." \
+       >>"$LOG" 2>&1; then
+    git rev-parse HEAD > "$STATE/deployed-sha"
+    say "deploy commit $(git rev-parse --short HEAD) written; deployed-sha advanced to it"
+  else
+    say "WARNING deploy commit FAILED — production IS deployed, but git carries no record of it. The chat analyst will read this as unshipped. Fix by hand."
+  fi
+fi
+
 # THE ROW IS CLOSED HERE, and it is closed honestly. What this phase can witness is
 # exactly four things: the matrix was green at the deploy commit, the artifact it built
 # has this digest, production restarted, and the health endpoint answered. What it

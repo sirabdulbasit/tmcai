@@ -153,15 +153,18 @@ disagree, this one describes something that already happened to him.
 
 ## The capability gaps — THIS IS YOUR AIM
 
-**TARGET THIS ITERATION: @@TARGETCAP@@** — the widest gap, computed from Grok's card,
-not chosen by anyone. Your `CAPABILITY:` declaration is compared against it, and a
-mismatch is recorded and passed to Codex. Targeting something else is allowed when
-the CAMPAIGN below names it — say so explicitly, because unexplained divergence is
-what the comparison exists to catch.
+**TARGET THIS ITERATION: @@TARGETCAP@@** — derived, not chosen by anyone mid-turn.
+On a nightly run it is the next capability in the headroom rotation (any capability
+within 8 points of its benchmark is skipped); on a conversational run it is the top
+item in the chat analysis. **It is therefore NOT necessarily the widest gap**, and the
+table below may well name a different one — that is the rotation working, not a
+contradiction to resolve. Aim at YOUR TARGET. Your `CAPABILITY:` declaration is
+compared against it, and a mismatch is recorded and passed to Codex. Targeting
+something else is allowed when the CAMPAIGN below names it — say so explicitly,
+because unexplained divergence is what the comparison exists to catch.
 
-Grok scored these minutes ago, before you started, reading the codebase. They are the
-reason this iteration exists. Aim at the widest gap unless the CAMPAIGN below names
-something else, and say in your capability declaration which of these you moved.
+The card below was scored by reading the codebase — @@CARDSTAMP@@. Say in your
+capability declaration which of these you moved.
 
 @@CAPGAPS@@
 

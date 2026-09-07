@@ -1708,6 +1708,31 @@ else:
 PYGAP
 )"
 
+  # HOW OLD IS THE CARD, IN THE BRIEF ITSELF (2026-09-07).
+  #
+  # build.md told the Builder "Grok scored these minutes ago, before you started,
+  # reading the codebase." On 2026-09-07 that sentence was seven days out of date and
+  # the Builder had no way to know: the scorer had died on 08-31 and the card was frozen
+  # at iteration 54 / d144edf. A brief that misstates the age of its own evidence is
+  # worse than one that omits it, because the reader then trusts it.
+  CARDSTAMP="$(python3 - "$STATE/capability_scorecard.json" <<'PYSTAMP'
+import json, os, sys, time
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+    age_h = (time.time() - os.path.getmtime(p)) / 3600.0
+    stamp = (f"as of iteration {d.get('as_of_iteration','?')} at "
+             f"`{d.get('as_of_head','?')}`, written {age_h:.0f}h ago")
+    if age_h > 36:
+        stamp += (" — **THIS CARD IS STALE.** It was not written for this run, so treat "
+                  "every number below as a reading of an older tree, and do not assume "
+                  "anything you shipped since is reflected in it")
+    print(stamp)
+except Exception as e:
+    print(f"provenance unreadable ({e}) — treat the numbers below as unverified")
+PYSTAMP
+)"
+
   # ── BUILD ────────────────────────────────────────────────────────────────
   BUILD_PROMPT="$(render "$PROMPTS/build.md" \
     ITER "$ITER" TARGET "$TARGET" \
@@ -1719,6 +1744,7 @@ PYGAP
     RESCOPE "$RESCOPE_NOTE" GUARD "$GUARD_TXT" CAP "$CAP_NOTE" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL" CAPGAPS "$CAPGAPS" TARGETCAP "$TARGET_CAP" \
+    CARDSTAMP "$CARDSTAMP" \
     HOLD "$HOLD_NOTE" CHATROOTS "$CHATROOTS" OPENSYMPTOMS "$OPEN_SYMPTOMS")"
   # Save what the Builder was actually told. I could not verify that iteration 20's
   # remediation note reached the prompt, because the rendered text only ever lived
@@ -1872,7 +1898,7 @@ PYGAP
     BASEHEAD "$(git rev-parse --short "$BASE_HEAD")" HEAD "$(git rev-parse --short HEAD)" \
     DIFFSTAT "$DIFF_STAT" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" \
-    TARGETCAP "$TARGET_CAP" CAPGAPS "$CAPGAPS")"
+    TARGETCAP "$TARGET_CAP" CAPGAPS "$CAPGAPS" CARDSTAMP "$CARDSTAMP")"
   if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
     say "REVIEW iter=$ITER skipped — conversational pulse; the nightly run reviews what accumulated"
   else
