@@ -142,6 +142,34 @@ export async function readEmail(userId: number, messageId: string): Promise<{ em
 
 // ─── Send email ───────────────────────────────────────────────
 
+/**
+ * RFC 2047 encoded-word, for header values that are not pure ASCII.
+ *
+ * Pure-ASCII values are returned untouched, so the overwhelming majority of subjects are
+ * byte-identical to before this existed and nothing about their threading or appearance moves.
+ *
+ * Long values are split across several encoded-words joined by a folding CRLF+space, because
+ * RFC 2047 caps an encoded-word at 75 characters. The split is by CODE POINT, never by byte:
+ * chunking the UTF-8 buffer directly would cut a multi-byte character in half and produce
+ * exactly the class of corruption this function exists to remove.
+ */
+export function encodeHeaderValue(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  const chunks: string[] = [];
+  let current = '';
+  for (const ch of value) {
+    // 45 UTF-8 bytes base64-encodes to 60 chars, leaving room for the
+    // `=?UTF-8?B?` prefix and `?=` suffix inside the 75-char limit.
+    if (Buffer.byteLength(current + ch, 'utf8') > 45) { chunks.push(current); current = ''; }
+    current += ch;
+  }
+  if (current) chunks.push(current);
+  return chunks
+    .map((c) => `=?UTF-8?B?${Buffer.from(c, 'utf8').toString('base64')}?=`)
+    .join('\r\n ');
+}
+
 export async function sendUserEmail(
   userId: number,
   to: string,
@@ -208,7 +236,18 @@ export async function sendUserEmail(
     const headers = [
       `To: ${to}`,
       cc ? `Cc: ${cc}` : '',
-      `Subject: ${finalSubject}`,
+      // DEF-322 — an RFC 2822 HEADER must be 7-bit ASCII, and this one was not.
+      //
+      // Owner, 2026-09-07, on his Day Brief: subject read
+      // `[day_brief] Day Brief Ã¢Â€Â" 2026-09-07`. The stored summary is correct
+      // (`Day Brief — 2026-09-05` in `brain_user_messages`), and the em-dash in the BODY of the
+      // same email rendered fine — because `Content-Type: charset=utf-8` below governs the body
+      // ONLY. The subject went out as raw UTF-8 bytes in a header with nothing declaring their
+      // charset, so the client decoded E2 80 94 as Latin-1 and produced the mojibake.
+      //
+      // Non-ASCII in a header must be an RFC 2047 encoded-word. `Buffer.from(message)` was
+      // never the bug — it correctly emits UTF-8; the bug is that a header may not CARRY UTF-8.
+      `Subject: ${encodeHeaderValue(finalSubject)}`,
       opts?.inReplyTo ? `In-Reply-To: ${opts.inReplyTo}` : '',
       opts?.references ? `References: ${opts.references}` : '',
       'Content-Type: text/html; charset=utf-8',
