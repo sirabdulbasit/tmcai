@@ -663,23 +663,53 @@ def capability_trend():
     # Owner, 2026-08-18: "show last 10 iterations data in this graph". Thirteen
     # columns already overflowed the card, and the older ones are the ones a decision
     # can no longer affect.
-    iters = sorted(per_iter)[-10:]
-    if len(iters) < 2:
+    #
+    # OWNER, 2026-09-07: "it should last 10 iteration starting back to current #73."
+    #
+    # THE WINDOW WAS ANCHORED TO THE WRONG END, and that is how a dead instrument hid
+    # for nineteen pulses. It took the last ten iterations THAT HAD A CARD, so when the
+    # scorer died on 08-31 the table simply stopped at #54 — and a table ending at #54
+    # looks exactly like a table of a system that is running fine and not moving. The
+    # owner had to notice the header said #73 and the last column said #54 and ask.
+    #
+    # Anchored to the CURRENT pulse instead, a missing measurement renders as a column
+    # of em-dashes (the client already draws None as "—"), so the absence is the most
+    # visible thing on the card rather than the least. Nine measured columns are kept
+    # beside it so the trend does not vanish: a window of ten empty columns would be
+    # literal and useless. Once scoring is healthy the current pulse HAS a card, the
+    # special case never fires, and the window is exactly "the last ten, ending here".
+    measured = sorted(per_iter)
+    cur = None
+    try:
+        with open(os.path.join(STATE, "iteration")) as fh:
+            cur = int(fh.read().strip())
+    except Exception:
+        cur = None
+    if cur is None or cur in per_iter:
+        iters = measured[-10:]
+    else:
+        iters = measured[-9:] + [cur]
+    if len([i for i in iters if i in per_iter]) < 2:
         return [], [], []
     names = [c["name"] for c in d["capabilities"]]
     moved, flat = [], []
     for nm in names:
-        series = [next((c["nexeo"] for c in per_iter[i] if c["name"] == nm), None)
+        series = [(next((c["nexeo"] for c in per_iter[i] if c["name"] == nm), None)
+                   if i in per_iter else None)
                   for i in iters]
         real = [v for v in series if v is not None]
         if not real:
             continue
         if real[0] == real[-1] and len(set(real)) == 1:
             flat.append(nm)          # still reported, for the one-line summary
+        # first/last are the first and last MEASURED values, never the gap column —
+        # a delta computed against a missing measurement would read as a fall to zero.
         moved.append((nm, series, real[0], real[-1]))
-    overall = [round(sum(c["nexeo"] for c in per_iter[i]) / len(per_iter[i]), 1)
+    overall = [(round(sum(c["nexeo"] for c in per_iter[i]) / len(per_iter[i]), 1)
+                if i in per_iter else None)
                for i in iters]
-    moved.append(("BRAIN overall", overall, overall[0], overall[-1]))
+    real_overall = [v for v in overall if v is not None]
+    moved.append(("BRAIN overall", overall, real_overall[0], real_overall[-1]))
     return moved, flat, iters
 
 
