@@ -3204,3 +3204,71 @@ wrong: a push kind whose summary is too terse to identify the message ("held
 notifications digest") making the newest line unhelpfully vague — if live turns
 show that, the summary quality of specific producers is the follow-up, not the
 referent mechanism.
+
+## Iteration 75 — 2026-09-07
+
+**EARLY-EXIT CLAUSE INVOKED, with evidence — the iteration-60/67/73 precedent under
+the same mandate.** The turn's only job is MAKE HEAD DEPLOYABLE for the one-commit
+batch (`a1031e2`, DEF-322 — the RFC 2047 subject-encoding fix; the owner reported
+the mojibake with a screenshot on 09-07 and receives a garbled subject on every
+non-ASCII Day Brief until this ships — the analyst's #2 action). **HEAD needs no
+code change, and the mandate forbids inventing one. Proof, measured in a clean
+room because the shared tree is occupied:**
+
+- **A LIVE session is editing `server/src/server.ts`** (mtime 07:34 against an
+  07:38 clock — retiring the gap-detection job per an owner decision dated today).
+  Shared disk therefore cannot measure HEAD; `git worktree` at `1e759c7` did:
+  - `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+  - `env -u GEMINI_API_KEY npx vitest run` → **3538 passed | 0 failed** (302 files
+    passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3567) — including
+    DEF-322's own `def322EmailSubjectEncoding.test.ts`.
+  - Worktree removed after measurement; the live session untouched.
+- `a1031e2` is a COMPLETE commit: `gmailService.ts` (+41), its 75-line suite, and
+  its change-log row, no migration — the deploy is build + restart only. The three
+  commits after it (`5c9aad5`, `ead4748`, `1e759c7`) are BLD deck bookkeeping,
+  docs-only.
+- **No review of `a1031e2` exists and no review names a blocker**: the three
+  newest sections (my iteration-73 builds — DEF-321, DEF-315, DEF-311) are all
+  **SOUND, rollback: no**.
+
+**The newest review's directives, accounted for:** #1 (file B04's binding as its
+own DEF — Brain applied an instruction to the WRONG item and claimed success,
+scored 0 on six criteria) and #2 (test the prompt-bloat hypothesis on my DEF-311
+sends section, gate it if C-criteria recover) are **NEXT-BUILD work that this
+turn's mandate explicitly excludes** ("no new defect, no opportunistic fix") —
+carried forward by name so they are not lost: **B04-binding is the next build's
+first job, and I note plainly that the measured regression suspect is my own
+DEF-311 section.** #3 (C6 instruction-grounding family) folds into #1. #4 is the
+orchestrator's (target-line contradiction, fifth sighting; tree litter).
+
+**What blocks the D-105 deploy — all process, each with its owner:**
+1. The live session's `server.ts` WIP (plus dirty `deployed-sha` and
+   `WHATSAPP_QR_ARCHITECTURE.md`) will trip the dirty-tree refusal until that
+   session commits — theirs, not swept.
+2. `a1031e2` unreviewed → the arbitration path (orchestrator's, precedented).
+3. The WhatsApp QR re-pair (human-only, day 4) — unrelated to this deploy but
+   still the top owner-facing gap.
+
+**Governing docs (rule 5):** no Brain change made; DEF-322's row shipped in its
+own commit. Verdict on the mandate: *progressing* — certification plus the
+carried-forward B04 finding.
+
+**CAPABILITY:** RELIABILITY-ONLY (+0). What D-105 delivers when it runs: his Day
+Brief subjects render the em-dash instead of `Ã¢Â€Â"` (DEF-322's own attribution:
+Accurate Communication).
+**PREDICTED:** +0 from certification.
+**MECHANISM:** clean-room verification isolating a live session's half-written WIP.
+**FALSIFIER:** the deploy-phase matrix at `1e759c7` disagreeing with these numbers.
+
+**Symptom tag:** none open on the deck and none closed by me — said plainly; the
+DEF-322 tag belongs to `a1031e2`, which this entry certifies ready.
+
+**What I did NOT do, named:** the B04 binding DEF (mandate-excluded; NEXT build's
+#1); the DEF-311 gating experiment (same); DEF-319; touching the live session's
+files or orchestrator state; any deploy.
+
+**Honest prediction:** D-105 at `1e759c7` passes its matrix and the next
+non-ASCII Day Brief subject renders correctly. What would prove me wrong: a
+second, unfixed send path building its own Subject header (grep found the header
+construction only in `gmailService.ts`, but a raw SMTP fallback elsewhere would
+survive this fix — named for the reviewer rather than discovered later).
