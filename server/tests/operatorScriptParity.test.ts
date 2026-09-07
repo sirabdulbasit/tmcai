@@ -7,10 +7,10 @@ import ts from 'typescript';
 // Operator-script parity (CMP-2026-08-16 chunk 1).
 //
 // Two configs, two jobs:
-//   tsconfig.json        TYPECHECK — every file under src/, including all 41
+//   tsconfig.json        TYPECHECK — every file under src/, including all 42
 //                        operator scripts. `npx tsc --noEmit` and the deploy
 //                        gate use it.
-//   tsconfig.build.json  BUILD ONLY — excludes the 41 so they never reach
+//   tsconfig.build.json  BUILD ONLY — excludes the 42 so they never reach
 //                        server/dist on the production box.
 //
 // c572ccf collapsed both into one config, silently dropping the 41 from the
@@ -77,6 +77,10 @@ const TIER_4_PRODUCTION_WRITES = [
   'cleanupBatterySeeds', 'draftTestWaToBasit', 'seedGoldenDataset',
   'smokeOpsManualRetrieval', 'smokeRetrievalFeedback', 'smokeRiskRadarV2',
   'smokeUserPromptOverlay',
+  // LEARN-002 (2026-09-07): the nightly's LEARN phase. Reaches
+  // prisma.governedBrainMemory.update through sweepQualifyingMemories, so guard 9
+  // computes it into this tier — activating a memory changes what Brain says.
+  'nexeoLearnSweep',
   // direct raw SQL (first correction):
   'loadTestFeed', 'smokeInstructionVeto', 'smokeMeetingDigest', 'smokeWaDailyLimit',
   // service-mediated writes (second correction) — e.g. scribeBackfillEmails ->
@@ -125,13 +129,13 @@ const UNTRIAGED_STILL_EMITTED = [
 const RUNTIME_REACHABLE = ['seedActionDefinitions'];
 
 describe('operator-script parity — resolved programs, not config text', () => {
-  it('1 · inventory is 41 across five tiers, no duplicates', () => {
-    expect(INVENTORY.length).toBe(41);
-    expect(new Set(INVENTORY).size).toBe(41);
+  it('1 · inventory is 42 across five tiers, no duplicates', () => {
+    expect(INVENTORY.length).toBe(42);
+    expect(new Set(INVENTORY).size).toBe(42);
     expect(TIER_1_ACTION_REGISTRY.length).toBe(5);
     expect(TIER_2_BRAIN_ANSWER_PATH.length).toBe(10);
     expect(TIER_3_OUTBOUND_MESSAGING.length).toBe(6);
-    expect(TIER_4_PRODUCTION_WRITES.length).toBe(19);
+    expect(TIER_4_PRODUCTION_WRITES.length).toBe(20);
     expect(TIER_5_NO_WRITE_REACHABLE.length).toBe(1);
   });
 
@@ -142,7 +146,7 @@ describe('operator-script parity — resolved programs, not config text', () => 
     expect(missing, `not on disk: ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('3 · all 41 are IN the resolved typecheck program — the c572ccf guard', () => {
+  it('3 · all 42 are IN the resolved typecheck program — the c572ccf guard', () => {
     // Resolves tsconfig.json through the compiler API and asks which files the
     // program actually contains. Unlike an `exclude`-array assertion this also
     // fails if `include`/`files`/`extends` removes them by another route,
@@ -157,13 +161,13 @@ describe('operator-script parity — resolved programs, not config text', () => 
     ).toEqual([]);
   });
 
-  it('4 · none of the 41 is in the resolved build program', () => {
+  it('4 · none of the 42 is in the resolved build program', () => {
     const inBuild = programScripts(resolveConfig('tsconfig.build.json'));
     const leaked = INVENTORY.filter((n) => inBuild.has(n));
     expect(leaked, `would be emitted into dist: ${leaked.join(', ')}`).toEqual([]);
   });
 
-  it('5 · the FULL programs differ by exactly the 41, in both directions', () => {
+  it('5 · the FULL programs differ by exactly the 42, in both directions', () => {
     // Compares complete normalized fileNames, not just src/scripts basenames.
     // The basename-only version passed even if an unrelated source file had
     // vanished from the build program, so it did not support the claim it made.
@@ -181,7 +185,7 @@ describe('operator-script parity — resolved programs, not config text', () => 
 
     expect(
       onlyTypecheck,
-      'typecheck-minus-build must be exactly the 41 operator scripts',
+      'typecheck-minus-build must be exactly the 42 operator scripts',
     ).toEqual(expected);
     expect(
       onlyBuild,

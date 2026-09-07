@@ -5,7 +5,7 @@
 // standing verification gate, and the one deploy.sh runs — uses it, so these
 // scripts stay type-checked.
 //
-// This config is used ONLY by `npm run build`. It excludes 41 operator entry
+// This config is used ONLY by `npm run build`. It excludes 42 operator entry
 // points from the emitted artifact so they never reach server/dist on the
 // production box.
 //
@@ -66,7 +66,7 @@
     "src/scripts/smokeBrainPromptReplyFlow.ts",
     "src/scripts/smokeWhatsappVoiceCall.ts",
 
-    // === TIER 4 — reaches a production write (19) ===
+    // === TIER 4 — reaches a production write (20) ===
     // MEASURED, not hand-labelled: guard 9 of tests/operatorScriptParity.test.ts
     // walks each script's full import closure and asserts this membership. Hand
     // reading got it wrong twice — the first pass saw only the Prisma model API,
@@ -81,6 +81,11 @@
     "src/scripts/smokeRetrievalFeedback.ts",
     "src/scripts/smokeRiskRadarV2.ts",
     "src/scripts/smokeUserPromptOverlay.ts",
+    "src/scripts/nexeoLearnSweep.ts",        // LEARN-002: the nightly's LEARN phase,
+                                             // run from SOURCE via ts-node, so it has
+                                             // no reason to sit in the deployed dist.
+                                             // Reaches governedBrainMemory.update —
+                                             // activating a memory changes replies.
     // direct raw SQL:
     "src/scripts/loadTestFeed.ts",           // $executeRaw`DELETE FROM feed_events …`
     "src/scripts/smokeInstructionVeto.ts",   // $executeRawUnsafe × 1

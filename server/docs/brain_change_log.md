@@ -457,11 +457,47 @@ there. It shows in Active Memories and the audit feed, and one click archives it
 the confidence bar kills 1, allowing any source kills 3, dropping the `approvedAt` stamp
 kills 1, raising the bar above 1.0 kills 3.
 
-**State:** committed, **NOT deployed** — ships with the next nightly. **The rule applies at
-CREATION, so the two memories that predate it stay `pending_approval`**: a production
-`UPDATE` to activate them was refused by the sandbox, correctly. They are a one-time
-residue — approve them once in the Learning tab and everything captured after this deploys
-activates itself.
+**LEARN-002 — the sweep, the phase, and the evidence (same day, owner: *"since learning
+and improvement is already part of brain's capability that's why i am expecting to make it
+part of brain's capability (nightly cron) and also update score of brain's capability"*).**
+
+LEARN-001 only helped memories created AFTER it existed, so anything captured earlier
+stayed pending forever and still needed a hand — the original complaint, one layer down.
+Three pieces close it:
+
+1. **`sweepQualifyingMemories()`** (`learningService.ts`) — activates every pending row
+   that clears the bar, reading the SAME two exported constants as the creation-time rule,
+   because a sweep with its own copy of the rule is how a gate ends up wider in the
+   background than in the foreground. Idempotent: it reads only `pending_approval`, so a
+   second run the same night finds nothing.
+2. **A LEARN phase in the nightly** (`nexeo-loop.sh`), running `nexeoLearnSweep.ts`
+   **before** the scorer — the card is written Pre-Build, so a sweep running afterwards
+   would not appear in tonight's numbers, and the point is that the score moves in the
+   same pulse that does the work. A failure there never aborts the pulse.
+3. **Learn evidence in `evidence-pack.sh`, which had NONE.** Its only memory line queried
+   `brain_memory`, a table that does not exist — the scorer's own notes read *"pack:
+   brain_memory absent"* — so Learn was scored `code-read` every time, on the shape of the
+   code rather than on whether anything was ever learned. **It was not being measured.**
+   The pack now reports the active/pending split, the self-activated count, and the age of
+   the oldest row still waiting on a human.
+
+**RESULT, measured not claimed.** The sweep ran: `scanned 2 pending · activated 2 · held
+0`. The pack now reads **"2 ACTIVE (injected into every prompt), 0 pending a human"** and
+**"self-activated by Brain: 2 of 2 active"**, where before today it read 0 active and
+`oldest pending 2026-07-14`.
+
+**This half is LIVE with no deploy.** `renderGovernedMemoriesBlock` reads the table at
+prompt time and the running server already contains it, so *"always send text instead of
+voice notes"* and *"use asad.ahmed@tmcltd.com as the email address"* are steering replies
+now. Either is one click from archived in the Learning tab.
+
+**Evidence:** `tests/standingPreferenceAutoActivation.test.ts` **18 passed 0 failed**;
+**11 mutants applied, all 11 die** (5 on the creation gate, 6 on the sweep — including
+attributing a swept row to a human, and reading a status other than pending).
+
+**State:** the CODE is committed and **NOT deployed** — the gate, the sweep, the LEARN
+phase and the pack evidence ship with the next nightly. The DATA change above is already
+live.
 
 **PRUNE-001 — the Self-Improvement pipeline is retired (owner decision, 2026-09-07).**
 Owner: *"we agreed to retire or remove it."* Removed: `gapDetectionService.ts`,

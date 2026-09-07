@@ -979,6 +979,37 @@ PYADV
     "$ITER" "$PULSE_KIND" "$PULSE_N" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
   say "PULSE  iter=$ITER $PULSE_KIND #$PULSE_N"
 
+  # ── LEARN SWEEP ───────────────────────────────────────────────────────────
+  #
+  # Owner, 2026-09-07: *"since learning and improvement is already part of brain's
+  # capability that's why i am expecting to make it part of brain's capability (nightly
+  # cron) and also update score of brain's capability."*
+  #
+  # Learn was the ONLY capability with zero movement across the entire campaign, and the
+  # cause was never in the code: every governed memory was gated behind a click that
+  # never came, so two of them sat pending from 2026-07-14 and 2026-08-07 while `Active
+  # Memories` read (0) and the deck read `Learn 42`. A capability whose progress waits on
+  # the owner opening a tab is not a capability the loop can move.
+  #
+  # It runs BEFORE the scorer deliberately. The card is written Pre-Build from the tree
+  # and the evidence pack, so a sweep that ran afterwards would not appear in tonight's
+  # numbers — the whole point is that the score moves in the same pulse that does the
+  # work. evidence-pack.sh now reports the active/pending split, so the scorer can see it
+  # at all; before today it queried a `brain_memory` table that does not exist and scored
+  # Learn `code-read` every time.
+  #
+  # It applies the SAME bar as creation (learningService's two exported constants):
+  # sensitive and critical are never touched, at any confidence. A failure here never
+  # stops the pulse — losing a night of learning is a missed improvement, but a pulse
+  # that aborts on it loses the build too.
+  if [ "${NEXEO_LEARN_SWEEP:-1}" = "1" ]; then
+    LEARN_OUT="$( cd "$ROOT/server" && npx ts-node src/scripts/nexeoLearnSweep.ts 2>&1 \
+                  | grep '^learn-sweep:' | tail -1 )"
+    say "LEARN  iter=$ITER ${LEARN_OUT:-sweep produced no line — see the phase log}"
+  else
+    say "LEARN  iter=$ITER sweep disabled by NEXEO_LEARN_SWEEP=0"
+  fi
+
   # ── CAPABILITY EVALUATION (Grok) — FIRST, before anything is built ────────
   #
   # Owner, 2026-08-17: "it will first score the brain using grok and then start

@@ -206,14 +206,14 @@ export interface ProposeMemoryInput {
  * function. Sources WITHOUT that filtering in front of them, the correction distiller
  * included, are deliberately absent.
  */
-const AUTO_ACTIVATE_SOURCES = new Set(['chat_standing_preference']);
+export const AUTO_ACTIVATE_SOURCES = new Set(['chat_standing_preference']);
 
 /**
  * Higher than the 0.6 needed to PROPOSE, because activating without a human is a
  * stronger act than queueing for one. The two memories that sat pending for eight and
  * four weeks were both scored 1.00.
  */
-const AUTO_ACTIVATE_MIN_CONFIDENCE = 0.9;
+export const AUTO_ACTIVATE_MIN_CONFIDENCE = 0.9;
 
 /**
  * Propose a new memory. Sensitive / critical memories ALWAYS land in
@@ -280,6 +280,60 @@ export async function proposeMemory(input: ProposeMemoryInput): Promise<{ id: st
     select: { id: true, status: true },
   });
   return row;
+}
+
+/**
+ * THE LEARN SWEEP — Brain activates its own qualifying memories, unasked.
+ *
+ * Owner, 2026-09-07: *"since learning and improvement is already part of brain's
+ * capability that's why i am expecting to make it part of brain's capability (nightly
+ * cron) and also update score of brain's capability."*
+ *
+ * `proposeMemory`'s self-activation only applies at CREATION, so anything captured
+ * before that rule existed stays pending forever and still needs a hand. That is the
+ * shape of the original complaint, one layer down: a capability whose progress depends
+ * on the owner opening a tab. This closes it — the nightly runs this, and the residue
+ * drains itself.
+ *
+ * IT APPLIES EXACTLY THE CREATION-TIME BAR, from the same two constants, because a
+ * sweep with its own copy of the rule is how a gate ends up wider in the background than
+ * it is in the foreground. Sensitive and critical are never touched, at any confidence,
+ * by this or anything else.
+ *
+ * Idempotent by construction: it only reads `pending_approval`, so a second run in the
+ * same night finds nothing. `approvedBy` stays NULL — active, and no human put it there.
+ */
+export async function sweepQualifyingMemories(opts: { dryRun?: boolean } = {}): Promise<{
+  scanned: number; activated: number; held: number; titles: string[];
+}> {
+  const pending = await prisma.governedBrainMemory.findMany({
+    where: { status: 'pending_approval' },
+    select: {
+      id: true, title: true, sourceType: true,
+      confidenceScore: true, sensitivityLevel: true,
+    },
+  });
+  const qualifies = (m: (typeof pending)[number]) => (
+    m.sensitivityLevel !== 'sensitive' &&
+    m.sensitivityLevel !== 'critical' &&
+    AUTO_ACTIVATE_SOURCES.has(m.sourceType ?? '') &&
+    Number(m.confidenceScore ?? 0) >= AUTO_ACTIVATE_MIN_CONFIDENCE
+  );
+  const winners = pending.filter(qualifies);
+  if (!opts.dryRun) {
+    for (const m of winners) {
+      await prisma.governedBrainMemory.update({
+        where: { id: m.id },
+        data: { status: 'active', approvedAt: new Date(), approvedBy: null },
+      });
+    }
+  }
+  return {
+    scanned: pending.length,
+    activated: winners.length,
+    held: pending.length - winners.length,
+    titles: winners.map((m) => m.title),
+  };
 }
 
 /** Approve a pending memory — flips to 'active'. Approver MUST be in

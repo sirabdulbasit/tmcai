@@ -63,6 +63,34 @@ echo "### Memory — is anything stored and reused?"
 echo '```'
 q "SELECT 'brain memory rows: '||count(*) FROM brain_memory" 2>/dev/null || echo "brain_memory: table absent"
 q "SELECT 'conversation turns on record: '||count(*) FROM brain_user_messages" 2>/dev/null || echo "brain_user_messages: unavailable"
+# THE LEARN CAPABILITY HAD NO EVIDENCE IN THIS PACK AT ALL (added 2026-09-07).
+#
+# The only memory line above queries `brain_memory`, a table that does not exist — the
+# scorer's own notes read "pack: brain_memory absent". So Learn was scored `code-read`
+# every time, on the shape of the code rather than on whether anything was ever learned,
+# and it sat at 42 as the only capability with zero movement all campaign. It was not
+# being measured.
+#
+# `governed_brain_memories` is where the answer actually lives, and the split matters
+# more than the total: ACTIVE means a rule is being injected into every prompt by
+# governedMemoriesBlock; PENDING means it is inert and waiting on a human. A row with
+# approved_at set and approved_by NULL was activated by Brain itself, which is the
+# capability working — so it is counted separately and named as such.
+q "SELECT 'governed memories: '||count(*)||' total — '
+     ||count(*) FILTER (WHERE status='active')||' ACTIVE (injected into every prompt), '
+     ||count(*) FILTER (WHERE status='pending_approval')||' pending a human, '
+     ||count(*) FILTER (WHERE status IN ('archived','rejected'))||' archived/rejected'
+     FROM governed_brain_memories" 2>/dev/null || echo "governed_brain_memories: unavailable"
+q "SELECT 'self-activated by Brain (approved_at set, approved_by NULL): '
+     ||count(*) FILTER (WHERE status='active' AND approved_at IS NOT NULL AND approved_by IS NULL)
+     ||' of '||count(*) FILTER (WHERE status='active')||' active'
+     FROM governed_brain_memories" 2>/dev/null || echo "self-activation: unavailable"
+q "SELECT 'oldest memory still pending a human: '
+     ||coalesce(min(created_at)::date::text,'none')
+     FROM governed_brain_memories WHERE status='pending_approval'" 2>/dev/null || echo "pending age: unavailable"
+q "SELECT 'interaction learning logs: '||count(*)||', latest '
+     ||coalesce(max(created_at)::date::text,'never')
+     FROM brain_interaction_learning_logs" 2>/dev/null || echo "brain_interaction_learning_logs: unavailable"
 echo '```'
 echo
 echo "### What this pack does NOT tell you"
