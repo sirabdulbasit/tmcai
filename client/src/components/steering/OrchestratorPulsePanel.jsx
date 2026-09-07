@@ -1240,7 +1240,7 @@ export default function OrchestratorPulsePanel() {
             </Button>
           )}
           <Button variant="primary" size="sm" disabled={healing}
-                  title="Read the newest conversation, analyse it, and fix what it shows. Takes ~15 minutes; declines to build if nothing changed."
+                  title="Run a FULL pulse now — the same phases as the nightly cron: learn sweep, capability score, chat analysis, build, deploy, review, measure. Takes ~30 minutes and costs about what a night costs. Refuses to start if a pulse is already running."
                   onClick={() => startHeal(false)}>
             <Icon name="zap" size={14} /> {healing ? 'starting…' : 'Heal now'}
           </Button>

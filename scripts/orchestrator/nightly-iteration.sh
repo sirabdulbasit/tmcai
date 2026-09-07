@@ -54,7 +54,7 @@ for pid in os.listdir('/proc'):
 sys.exit(1)
 PY
 then
-  say "an iteration is already running — skipping tonight's run rather than starting a second builder"
+  say "an iteration is already running — skipping this run rather than starting a second builder (one builder in one tree, ever)"
   exit 0
 fi
 
@@ -67,7 +67,14 @@ cd "$ROOT" || exit 1
 # opens — build, chat, review — writes it beside its run log, so the deck can answer "what did
 # the nightly cron cost" separately from a loop someone ran by hand. Unset means manual, so
 # this is the only place the nightly attribution can come from.
-NEXEO_MAX_ITER=1 NEXEO_DEPLOY=1 NEXEO_TRIGGER='cron:nightly-iteration' \
+# THE TRIGGER IS OVERRIDABLE, AND THAT IS THE WHOLE POINT OF THE DEFAULT (2026-09-07).
+#
+# Since heal-now.sh now runs a FULL pulse through this same script, a manual click would
+# otherwise be stamped `cron:nightly-iteration` and land in the spend deck's CRON cut —
+# corrupting the one number the comment above exists to protect. heal-now.sh exports
+# `manual:heal-now`; cron sets nothing and gets the default.
+NEXEO_MAX_ITER=1 NEXEO_DEPLOY=1 \
+NEXEO_TRIGGER="${NEXEO_TRIGGER:-cron:nightly-iteration}" \
   bash "$ROOT/scripts/orchestrator/nexeo-loop.sh" >> "$ORCH/loop.out" 2>&1
 rc=$?
 

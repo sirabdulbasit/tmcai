@@ -421,6 +421,48 @@ Recorded because they cost the owner real time and must not repeat.
 
 ## D. Undeployed work waiting on the box
 
+**OPS-001 — "Heal now" runs a FULL pulse (owner decision, 2026-09-07).** He asked whether
+the button runs what the nightly runs. It did not, and the difference was three phases.
+
+`heal-now.sh` exec'd `watch-conversations.sh`, which passes `NEXEO_TARGET_SOURCE=chat`, and
+inside `nexeo-loop.sh` that single flag switches off the capability **SCORE** (line ~1054),
+the Codex **REVIEW** (~1934) and the **MEASURE** baseline (~824). That was correct while a
+10-minute conversational cron existed and the nightly would pick those up later the same
+day. **The owner disabled that cron on 2026-09-03** (`4c8ce99`) — so the button had become
+the manual trigger for a schedule that no longer existed, still skipping the three phases
+whose only justification was that something else would run them. **A click produced a real
+build, a real deploy, and no capability card** — exactly the gap [LEARN-002] had just been
+written to close.
+
+It now execs `nightly-iteration.sh`: one implementation, so a manual run and the scheduled
+run cannot behave differently. That was always this file's stated principle; it had simply
+come to point at the wrong script. The click inherits the concurrency guard (one builder in
+one tree, ever), the cost read back from the builder's own result event, and the rc 0/2/1
+verdict line in `nightly.log`.
+
+**The trap avoided, and it is a real one:** `NEXEO_TRIGGER` was hardcoded
+`cron:nightly-iteration`, and its own comment says that stamp is where the spend deck's CRON
+cut comes from. Reusing the launcher unchanged would have charged every manual click to the
+cron and corrupted the one number that comment exists to protect. The trigger is now
+`${NEXEO_TRIGGER:-cron:nightly-iteration}` and the button exports `manual:heal-now`.
+
+**Consequences stated rather than discovered:** a click now takes **~30 minutes, not ~15**
+(scoring and the review are the slow phases) and costs about what a night costs (~$24 mean,
+$45 worst observed). The tooltip and the route docblock say so. `--build-anyway` is kept as
+an accepted no-op — a full pulse always builds — and reports itself rather than being
+silently ignored. The `NEXEO_WATCH_*` caps are gone with the watcher that read them; they
+bounded an unattended 10-minute loop and mean nothing to a pulse a person starts.
+
+**Verified statically, and NOT by running it** — a real run costs a night's spend: `bash -n`
+clean on both scripts, the exec target present and executable, the trigger default and
+override both exercised in isolation (`cron:nightly-iteration` when unset,
+`manual:heal-now` when exported), no `watch-conversations.sh` reference left on the exec
+path, and `tests/orchestratorPulseRoute.test.ts` **8 passed 0 failed**.
+
+**State:** the CLIENT half (the tooltip) is live once `client/dist` is rebuilt. The scripts
+take effect on the **next click** — they are read from source, not from `dist`, so they need
+no deploy. The route docblock ships with the next nightly.
+
 **LEARN-001 — the approval gate is narrowed, not removed (owner decision, 2026-09-07).**
 Owner: *"then make it human intervention less."*
 

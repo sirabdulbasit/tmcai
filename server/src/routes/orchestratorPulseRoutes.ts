@@ -109,12 +109,23 @@ router.get('/pulse', requireAdmin, async (_req: Request, res: Response) => {
 });
 
 /**
- * POST /orchestrator/heal — start a conversational healing pulse now.
+ * POST /orchestrator/heal — start a FULL healing pulse now.
  *
  * Owner, 2026-08-19: he wanted the manual trigger on the Brain Evolution deck rather than
- * having to reach a shell. This runs the same heal-now.sh a human would run, which runs the
- * same watch-conversations.sh the cron runs — one implementation, three callers, so the
- * button cannot drift from the schedule.
+ * having to reach a shell. This runs the same heal-now.sh a human would run, which since
+ * 2026-09-07 runs the same nightly-iteration.sh the cron runs — one implementation, three
+ * callers, so the button cannot drift from the schedule.
+ *
+ * IT USED TO BE A CONVERSATIONAL PULSE, and that is worth knowing if you are reading old
+ * logs: heal-now.sh went through watch-conversations.sh, which passes
+ * NEXEO_TARGET_SOURCE=chat and thereby skips the capability score, the Codex review and
+ * the measure baseline. Correct while a 10-minute conversational cron existed to be
+ * triggered early; wrong after the owner disabled that cron on 2026-09-03, at which point
+ * the button was the manual trigger for a schedule that no longer existed and a click
+ * produced a build, a deploy, and no capability card.
+ *
+ * SO THE TIMING CHANGED TOO: ~30 minutes, not ~15, because scoring and the review are the
+ * slow phases. The response still says "started", never "finished".
  *
  * SECURITY, and the reasons rather than the assertions:
  *  • requireAdmin, like the pulse read above: this spends money and writes to production.
@@ -124,7 +135,7 @@ router.get('/pulse', requireAdmin, async (_req: Request, res: Response) => {
  *    box that deploys to production.
  *  • `capability` is checked against the eight names, not sanitised. An allow-list cannot be
  *    escaped; a sanitiser can.
- *  • detached + unref: a healing pulse takes ~15 minutes and must not be tied to the
+ *  • detached + unref: a healing pulse takes ~30 minutes and must not be tied to the
  *    lifetime of an HTTP request. The response says "started", never "finished" — claiming
  *    a result we have not observed is the exact class this deck exists to expose.
  */
