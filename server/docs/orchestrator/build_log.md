@@ -3272,3 +3272,67 @@ non-ASCII Day Brief subject renders correctly. What would prove me wrong: a
 second, unfixed send path building its own Subject header (grep found the header
 construction only in `gmailService.ts`, but a raw SMTP fallback elsewhere would
 survive this fix — named for the reviewer rather than discovered later).
+
+## Iteration 76 — 2026-09-08
+
+**MANDATE TURN: make HEAD deployable for the six-commit wave** (`a1031e2` DEF-322 +
+PRUNE-001 + LEARN-001/002 + OPS-001/002). **File named and changed:**
+`server/tests/orchestratorPulseRoute.test.ts` — because this time the mandate DID
+find a code blocker, and fixing it was the turn.
+
+**The blocker, measured then diagnosed:** the full suite at HEAD failed
+**1 of 3585** — `orchestratorPulseRoute.test.ts:220`, the mean-rounding guard.
+Diagnosis: the guard exists (its own comment) to catch a ONE-decimal slip — the
+92.25→92.2 half-to-even incident. But `toBeCloseTo(x, 2)` demands strictly
+< 0.005, and BLD-019's eight-capability scorer produced a mean landing exactly on
+.xx5: 55.125 banker's-rounds to 55.12, a difference of exactly 0.005 + float
+epsilon. **The guard fired on the correct two-decimal rounding it exists to
+permit** — a latent, data-dependent boundary (the test reads the live scorecard
+through the route) that the first exactly-half mean was always going to trip.
+Filed as **DEF-323** (build-gate defect, no deck tag — said plainly).
+
+**The fix:** boundary-inclusive tolerance, `|diff| <= 0.005 + 1e-9` for
+nexeo/professional and `2×` for the gap (it compounds two half-roundings), with
+the reasoning inline. The kill is preserved: a genuine one-decimal slip is
+≥ 0.045 away and still dies. This is NOT a benchmark/judge/gate-arithmetic edit —
+it is the dashboard route's contract test, and the change widens nothing the
+guard hunts.
+
+**Certification of the wave, after the fix (code tree IS HEAD — no live session;
+`server.ts` quiet six hours; the only dirt is orchestrator docs/state):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3556 passed | 0 failed** (303 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3585). The fixed
+  suite: **8 passed | 0 failed**.
+- `git diff --check` → exit 0 · **no prisma migration in `2e243a4..HEAD`** (14
+  src/tests files) — the deploy is build + restart only · `npm run build` NOT
+  run — dist immutable (CLAUDE.md).
+- No review exists for any commit in the range and none names a blocker; the
+  three newest reviews (my iteration-73 builds) are all SOUND.
+
+**Governing docs (rule 5): progressing** — first occurrence of this boundary;
+DEF-323 row written with the capability block.
+
+**CAPABILITY:** RELIABILITY-ONLY (+0). What D-105 delivers when it runs: the
+mojibake subjects end (DEF-322), and the PRUNE/LEARN/OPS wave lands.
+**PREDICTED:** +0 from this turn.
+**MECHANISM:** the release gate stops being red on a correct rounding.
+**FALSIFIER:** the deploy-phase matrix disagreeing; or the guard firing again on
+an exactly-half mean.
+
+**Symptom tag:** none open on the deck and none closed — said plainly; this was a
+gate fix so the wave that closes DEF-322's row can ship.
+
+**Campaign divergence declared:** the campaign says Self-Pruning increment work,
+and the mandate suspends it ("YOUR ONLY JOB") — the suspension governs, and the
+one blocker is now closed. Carried forward untouched, by name: the B04 binding
+DEF (last review's directive #1, next build's first job), the DEF-311 gating
+experiment (directive #2 — the regression suspect is my own sends section),
+DEF-319, the DEF-038 live-verification the analyst promoted, and the QR re-pair
+(human-only, day 4+).
+
+**Honest prediction:** D-105 at HEAD+this commit passes its matrix and ships six
+commits. What would prove me wrong: the pulse route's LIVE data shifting between
+my run and the deploy gate such that a different boundary case appears — the
+tolerance now covers every exactly-half mean, so that would take a genuine
+arithmetic slip, which is what the guard is for.

@@ -216,10 +216,20 @@ describe('pulse.py --json contract (what the dashboard reads by name)', () => {
       const n = d.capabilities.length;
       const meanNexeo = d.capabilities.reduce((s: number, c: any) => s + c.nexeo, 0) / n;
       const meanPro = d.capabilities.reduce((s: number, c: any) => s + c.professional, 0) / n;
-      // Tight tolerance: this is a rounding guard, so it has to fail on a 0.05 slip.
-      expect(d.brain.nexeo).toBeCloseTo(meanNexeo, 2);
-      expect(d.brain.professional).toBeCloseTo(meanPro, 2);
-      expect(d.brain.gap).toBeCloseTo(meanPro - meanNexeo, 2);
+      // Tight tolerance: this is a rounding guard, so it has to fail on a 0.05
+      // slip — the one-decimal error the comment above records. It must NOT
+      // fail on CORRECT two-decimal rounding: a mean landing exactly on .xx5
+      // (55.125 with today's eight capabilities) rounds half-to-even to 55.12,
+      // a difference of exactly 0.005, and `toBeCloseTo(x, 2)` demands
+      // STRICTLY less than 0.005 — so the guard fired on the very rounding
+      // behaviour it exists to permit, and blocked a release on it (iteration
+      // 76). Boundary-inclusive with an epsilon: a genuine one-decimal slip is
+      // ≥ 0.045 away and still dies here.
+      const HALF_ULP_2DP = 0.005 + 1e-9;
+      expect(Math.abs(d.brain.nexeo - meanNexeo)).toBeLessThanOrEqual(HALF_ULP_2DP);
+      expect(Math.abs(d.brain.professional - meanPro)).toBeLessThanOrEqual(HALF_ULP_2DP);
+      // The gap may compound two half-roundings (one from each operand).
+      expect(Math.abs(d.brain.gap - (meanPro - meanNexeo))).toBeLessThanOrEqual(2 * HALF_ULP_2DP);
     }
     expect(Array.isArray(d.trend.iterations)).toBe(true);
     expect(Array.isArray(d.trend.rows)).toBe(true);
