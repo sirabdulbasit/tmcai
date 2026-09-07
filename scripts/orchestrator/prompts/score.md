@@ -126,7 +126,10 @@ field of the affected capability.
 
 Start here, then follow the code:
 
-- `BRAIN_VISION.md` — the nine capabilities, in order.
+- `BRAIN_VISION.md` — the EIGHT capabilities, in order. Eight since 2026-08-31:
+  Simple & Smart was merged INTO Self-Pruning, and the merged score is bounded by
+  the WORSE half. Emit each name exactly ONCE — a ninth slot repeating Self-Pruning
+  is rejected by the ingest gate and the whole scoring pass is lost.
 - `server/docs/brain_change_log.md` — every defect, root cause, fix, and whether
   it is DEPLOYED (which is never the same as VERIFIED).
 - `server/docs/brain_evaluation_chart.md` §1 capability state, §3 recurrence
@@ -161,7 +164,7 @@ exists. It is not evidence it works well; quality still has to come from the cod
 ## Comparing against your own last scoring
 
 AGENTS.md: *"Future reports compare against the most recent verified scorecard
-rather than rescoring history from scratch."* So do not re-derive all nine from
+rather than rescoring history from scratch."* So do not re-derive all eight from
 zero each iteration. Carry your previous numbers forward and move only what you
 can show moved — and if nothing moved, `what_moved` should say exactly that.
 Rescoring from scratch each time produces noise that looks like progress.

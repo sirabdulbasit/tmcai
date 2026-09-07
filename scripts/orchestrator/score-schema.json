@@ -12,9 +12,9 @@
   "properties": {
     "capabilities": {
       "type": "array",
-      "minItems": 9,
-      "maxItems": 9,
-      "description": "All nine, in BRAIN_VISION.md order. Never reordered, never omitted.",
+      "minItems": 8,
+      "maxItems": 8,
+      "description": "All EIGHT, in BRAIN_VISION.md order, each name exactly once. Never reordered, never omitted, never duplicated. Eight since 2026-08-31, when the owner merged Simple & Smart INTO Self-Pruning — the commit was titled 'nine become eight everywhere the machinery reads them' and this file was the third place it did not reach (scorecard.py was the second, BLD-016). Emitting nine, with Self-Pruning listed twice for the merged slot, is what the ingest gate rejects.",
       "items": {
         "type": "object",
         "additionalProperties": false,
