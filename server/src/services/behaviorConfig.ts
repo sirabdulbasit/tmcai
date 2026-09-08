@@ -193,6 +193,10 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     description: 'Re-alert suppression window for stale-connector pings.',
   },
   // ── C-3: self-pruning ─────────────────────────────────────────────
+  'selfpruning.daily_rollup_enabled': {
+    key: 'selfpruning.daily_rollup_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
+    description: 'ONE message per user per DAY, across all items (0/1). Owner ruling 2026-09-08, CL-057/DEF-325: "i should received one digest email per day instead of n number of email". Default 0 for the same reason digest_enabled is — SUPPRESSING pushes takes consent — but this is the stronger switch and the difference matters. `digest_enabled` digests per ITEM and only from the 4th unanswered push about that item in 24h, so at the owner\'s measured volume (28 pushes over 7 days across 2-5 distinct items, ~2 per item) it NEVER fires: turning it on would have changed nothing while reading as a fix. This key keys the digest per USER per DAY instead, so exactly one rollup exists however many items are pushing. Everything the per-item policy refuses to touch, this refuses too: a digest is never digested, and high/top criticality is never muffled — both guards run BEFORE this switch is read.',
+  },
   'selfpruning.digest_enabled': {
     key: 'selfpruning.digest_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
     description: 'C-3 increment 2 MASTER SWITCH (0/1). While 0 — the default — no push is ever digested, so deploying the mechanism changes nothing until the owner opts in. DECIDED SEMANTICS (DEF-173, Codex iteration-29 MEDIUM #4): turning this on IS blanket consent for per-item digesting across the tenant. Per-item pre-consent was rejected deliberately — the drip is only visible after it has happened, so requiring consent per item would make the feature inert for every new item. The per-item escape is `selfpruning.decision.item:<id>` = keep, which always wins; unknown values are keep, never consent; a per-item `suppress` level is NOT implemented.',

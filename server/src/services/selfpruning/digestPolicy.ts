@@ -135,6 +135,77 @@ export async function decideDigest(input: {
     return { action: 'send', reason: `criticality ${input.criticality} is never digested` };
   }
 
+  // ── THE DAILY ROLLUP — one message per user per DAY, across all items ─────
+  //
+  // Owner ruling 2026-09-08 (CL-057 / DEF-325): *"i should received one digest
+  // email per day instead of n number of email"*.
+  //
+  // WHY THE PER-ITEM POLICY BELOW COULD NOT DELIVER THIS, measured before
+  // building rather than assumed: it digests per ITEM and only from the FOURTH
+  // unanswered push about that item inside the window. His traffic is 28 pushes
+  // over 7 days spread across 2-5 distinct items — roughly two per item, so the
+  // threshold is never reached. Turning `digest_enabled` on would have changed
+  // nothing at all while reading, to him, as a fix. And even at threshold it
+  // yields one message per ITEM, which is 2-5 a day, not one.
+  //
+  // So the rollup keys the digest per USER per DAY. Exactly one exists however
+  // many items are pushing, and every later push that day files under it.
+  //
+  // WHAT IT DOES NOT WEAKEN, and the ordering is the proof: the two guards that
+  // matter — a digest is never digested, and high/top criticality is never
+  // muffled — are ABOVE this block and run first, so neither switch can reach
+  // them. The day bucket is computed from the same clock the caller passes, so a
+  // test can move the day without moving the machine.
+  //
+  // The day, not a rolling 24h window, is deliberate: "one per day" is a
+  // sentence about his calendar, and a rolling window would drift the message
+  // later each day until it crossed midnight and gave him two.
+  const rollup = await behaviorNumber('selfpruning.daily_rollup_enabled', input.clientNumber, 0);
+  if (rollup === 1) {
+    const day = new Date(now.getTime()).toISOString().slice(0, 10);
+    let deliveredToday: number;
+    let unansweredToday: number;
+    try {
+      const dayStart = new Date(`${day}T00:00:00.000Z`);
+      const where = {
+        clientNumber: input.clientNumber,
+        userId: input.userId,
+        sentAt: { gte: dayStart, lte: now },
+      };
+      // Both counts from the same instant, so the digest can never claim more
+      // unanswered than were sent — DEF-176's constructor clamps that anyway,
+      // but a caller that hands it an impossible pair is the bug it clamps.
+      deliveredToday = await prisma.brainPromptQueue.count({ where });
+      unansweredToday = await prisma.brainPromptQueue.count({
+        where: { ...where, answeredAt: null },
+      });
+    } catch (e: any) {
+      // The DEF-156 direction: a broken count must never cost him a message.
+      log.warn('daily rollup count failed; sending', { error: e?.message });
+      return { action: 'send', reason: 'daily count unavailable — fail open to sending' };
+    }
+    return {
+      action: 'digest',
+      reason: `daily rollup: ${deliveredToday} already sent today (${day}); one message per day`,
+      digest: {
+        subjectKey: `day:${day}`,
+        coveredCount: deliveredToday,
+        question: renderItemDigest({
+          label: 'your open items',
+          // +1 for the push being folded in right now — the renderer's contract
+          // is "every update in the window, INCLUDING the one being folded in".
+          totalCount: deliveredToday + 1,
+          unansweredCount: unansweredToday + 1,
+          windowHours: 24,
+          latest: input.question,
+        }),
+        // One digest per USER per DAY — the queue's own dedup on this key is
+        // what makes "exactly one" a property of the schema, not of this code.
+        dedupKey: `selfpruning:rollup:${input.userId}:${day}`,
+      },
+    };
+  }
+
   // Master switch — and the DECIDED consent semantics (Codex iteration-29
   // MEDIUM #4): turning this on IS blanket consent for per-item digesting.
   // Per-item pre-consent was rejected deliberately, because the drip is only
