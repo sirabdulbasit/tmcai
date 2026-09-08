@@ -1403,6 +1403,26 @@ with evidence — 'I disagree' does not clear a release blocker."
   # file, and this reads the top entry. Falls back to the widest gap when there is no
   # analysis, so the loop can never be left with no aim.
   ATTEMPTS="$(grep -c "──────── iteration $ITER ────────" "$ORCH/loop.log" 2>/dev/null || echo 1)"
+  # A ONE-SHOT AIM THAT CLEARS ITSELF (owner, 2026-09-08: "do it by yourself").
+  #
+  # `capability-priority` is a STANDING choice — every pulse targets it until someone
+  # deletes the file. That is right for a deliberate campaign and wrong for "work on this
+  # one next", which is what it is usually used for: the aim outlives the intent, and the
+  # person who set it has to remember a chore nobody wrote down. Left pinned, the headroom
+  # rotation silently stops and the loop polishes one capability forever.
+  #
+  # So the standing file keeps its meaning and gains a sibling that does not. This one is
+  # CONSUMED: read, exported through the env override that already outranks everything,
+  # and deleted in the same breath — so the pulse after it rotates normally without anyone
+  # intervening. Deleted BEFORE the build rather than after, deliberately: a pulse that
+  # dies mid-build must not re-aim the next one at a target its owner asked for once.
+  ONCE_FILE="$STATE/capability-priority-once"
+  if [ -s "$ONCE_FILE" ] && [ -z "${NEXEO_TARGET_CAPABILITY:-}" ]; then
+    NEXEO_TARGET_CAPABILITY="$(tr -d '\r\n' < "$ONCE_FILE")"
+    export NEXEO_TARGET_CAPABILITY
+    rm -f "$ONCE_FILE"
+    say "TARGET iter=$ITER one-shot aim '$NEXEO_TARGET_CAPABILITY' consumed and cleared — the next pulse rotates normally"
+  fi
   TARGET_CAP="$(python3 - "$STATE/capability_scorecard.json" "$STATE/chat-root-causes.md" "$ATTEMPTS" "${NEXEO_TARGET_CAPABILITY:-}" "$STATE/capability-priority" <<'PYTGT'
 import json, os, re, sys
 p = sys.argv[1]

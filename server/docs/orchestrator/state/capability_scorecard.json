@@ -1,8 +1,8 @@
 {
   "_provenance": "History cleared 2026-08-17 on the owner's reset. The nine scores are Grok's current reading and are carried forward; the previous 10 history entries spanned three runs whose iteration numbers collided after the counter was reset, and are archived at retired-2026-08-17-reset2/capability_scorecard.json",
   "_rules": "Evidence-based capability judgements, NOT test-pass percentages. Every score change must name the iteration and the evidence that moved it. Green tests alone never raise a score. Anything unexercised or unfalsifiable in production is UNVERIFIED and does not raise it either.",
-  "as_of_iteration": 73,
-  "as_of_head": "5c9aad5",
+  "as_of_iteration": 76,
+  "as_of_head": "365a154",
   "capabilities": [
     {
       "name": "Thinking",
@@ -14,7 +14,7 @@
     },
     {
       "name": "Memory",
-      "nexeo": 60,
+      "nexeo": 62,
       "professional": 92,
       "delta": 0,
       "basis": "live-evidence",
@@ -32,7 +32,7 @@
       "name": "Authorized Action",
       "nexeo": 63,
       "professional": 91,
-      "delta": 2,
+      "delta": 0,
       "basis": "live-evidence",
       "evidence": "Production pack 2026-08-17 09:33 UTC: action_lifecycle_follow_up 51, action_lifecycle_escalated 42; 86 of 2577 require approval; 0 provider receipts. central_action_governor (server.ts:208-220) and actionLifecycleWorker.ts fire. Handlers declare confirmationCapability. Deployed SHA e356d42; later branch AA reliability not credited as owner-facing."
     },
@@ -40,13 +40,13 @@
       "name": "Self Follow-Up",
       "nexeo": 60,
       "professional": 96,
-      "delta": 2,
+      "delta": 0,
       "basis": "live-evidence",
       "evidence": "Production pack 2026-08-17 09:33 UTC: delegatee follow-ups 42 (latest 2026-08-17), owner-routed 9, escalations 42, outbound 36 (32 accepted, 4 failed), provider receipts 0, bodies not stored. Code path: delegateeFollowupWorker.ts:1-59 due-date chase and silence escalate. Capability fires; quality unmeasured."
     },
     {
       "name": "Learn",
-      "nexeo": 42,
+      "nexeo": 45,
       "professional": 90,
       "delta": 0,
       "basis": "code-read",
@@ -56,7 +56,7 @@
       "name": "Self-Healing",
       "nexeo": 42,
       "professional": 89,
-      "delta": 4,
+      "delta": 0,
       "basis": "code-read",
       "evidence": "Owner ladder capability_contract.md:210-217. Partial rungs 1\u20132 only: self_heal_pass (server.ts:304-308) \u2192 repairService allowlisted recoveries; repairService.ts:6-8 forbids deploy/migrations. Rungs 3\u20134 absent. D-22: orchestrator deploys by hand \u2014 Brain does not ship its own repair."
     },
@@ -5505,6 +5505,294 @@
           "nexeo": 42,
           "professional": 89,
           "delta": 4
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 76,
+      "head": "36d7a45",
+      "overall": 55.1,
+      "movement": 0.6,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Memory 60 to 62 and Learn 42 to 45 \u2014 both SCORER_CORRECTIONs from the newly-surfaced live pack, NOT this iteration's work. The pack revealed a durable-memory + learning subsystem that was already deployed at 2e243a4 (c84db99 ancestor) but invisible to my earlier scoring: brainComposer.ts:3537 injects 2 active governedBrainMemory rows into prompts, and learningService.ts:57 has written 2483 interaction-learning logs (latest 2026-09-07). Overall 54.5 to 55.1, +0.6.",
+      "what_did_not": "The iteration deployed nothing \u2014 deployed-sha is unchanged at 2e243a4 and no Iteration 76 build-log/review section exists. The five new commits (PRUNE-001, LEARN-001, LEARN-002, OPS-001, OPS-002) are all after deployed-sha and mostly orchestrator-pipeline scripts, so they changed nothing reaching the owner. B04's live fabrication is still unfixed; DEF-322 subject mojibake still undeployed; receipts still 0. Thinking, Accurate Communication, Authorized Action, Self Follow-Up, Self-Healing, Self-Pruning all hold.",
+      "unverifiable": "The undeployed commits change nothing until they ship: PRUNE-001's Removal-half cleanup (Self-Improvement pipeline retired), LEARN-001/002's approval-gate narrowing and cron-driven distillation, and OPS-001/002's meta-loop self-healing. Whether the 2 active governed memories were Brain-learned or user-set cannot be told from the pack (deployed code calls active-at-creation an explicit user action). Whether iter-73's deployed messaging fixes reach the owner is still unconfirmable while WhatsApp is dead and receipts remain 0.",
+      "notes_for_builder": "Two live-but-thin capabilities are worth deploying the pending work for: Learn (2483 interaction logs distilling to only 2 memories \u2014 LEARN-001/002 would let the loop close without a human) and Self-Pruning (PRUNE-001's removal of the duplicate Self-Improvement pipeline). Both sit undeployed. The standing highest-value gap is still receipts: wire DEF-319's findOwnMessageIdByEcho so a send stamps wa_message_id, unblocking Self Follow-Up correlation and Authorized Action delivery proof.",
+      "evidence": [
+        "Thinking +0 [code-read/high]: HOLD 42. No deployed change and no Iteration 76 build-log/review section exists; the five new commits (PRUNE-001 e00d959, LEARN-001 f3c357c, LEARN-002 d8ef6b4, OPS-001/002) are all after deployed-sha 2e243a4 = undeployed. The B04 binding failure (bare answer bound to the wrong item, false success claimed) was next-build's #1 and was not built.",
+        "Memory +2 [live-evidence/medium]: +2 to 62, SCORER_CORRECTION not iteration work. The pack surfaced a live durable-memory mechanism my iter-73 'brain_memory table absent' missed: brainComposer.ts:3537-3538 (deployed at 2e243a4) injects renderGovernedMemoriesBlock, which renders governedBrainMemory status:'active' rows into the prompt (governedMemoriesBlock.ts:23-36). Pack: 2 active memories injected. Kept modest \u2014 only 2 rows, legacy compose path only (reasoningCompose has no call), DEF-314 zero person-item edges remain.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. No new deployed change: DEF-322 (Day-Brief subject mojibake) is still undeployed (deployed-sha unchanged at 2e243a4). The B04 live fabrication (Brain reported false success on an item the turn never named) persists. Iter-73's deployed anti-fabrication credit (DEF-315/318/320/311) stands.",
+        "Authorized Action +0 [live-evidence/medium]: HOLD 63. No deployed change this iteration; iter-73's DEF-308 human-reserve credit stands (still deployed). Production pack 2026-09-07 13:35: 102 of 2670 actions require approval, outbound sends 37 with 0 provider receipts (DEF-319 still diagnosis-only, findOwnMessageIdByEcho called by nothing).",
+        "Self Follow-Up +0 [live-evidence/medium]: HOLD 60. No new SFU work; DEF-311 credit stands. Pack 2026-09-07 13:35: follow-ups to a delegatee 43 latest 2026-08-19, escalations 68 latest 2026-09-07, outbound 37 with receipts 0 \u2014 quote-reply correlation still never fires because no wa_message_id is ever stamped (DEF-319).",
+        "Learn +3 [live-evidence/medium]: +3 to 45, SCORER_CORRECTION. Iter-73's 'pending_approval only, zero deployed movement' was refuted by the live pack: logInteraction writes every turn to brain_interaction_learning_logs (learningService.ts:57-62) \u2014 2483 logs latest 2026-09-07 \u2014 and correctionDistiller has produced 2 active governed memories that inject into prompts, 0 stuck pending. Conservative: 2483-to-2 is thin, deployed code frames active-at-creation as 'an explicit user action' (learningService.ts:200), and the self-activation/cron commits LEARN-001/002 are undeployed.",
+        "Self-Healing +0 [code-read/medium]: HOLD 42. No deployed change. OPS-001 (heal-now.sh) and OPS-002 (nightly-iteration.sh, prompts) are the orchestrator's meta-loop self-healing pipeline scripts, undeployed, and are not Brain deploying its own repair. Rungs 3-4 for Brain remain absent (owner 2026-08-14, capability_contract.md:198-219); iter-73's DEF-321 rung-1 / DEF-244 rung-2 credit stands.",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 36, bounded by the Experience half. PRUNE-001 (e00d959) retires the Self-Improvement pipeline / gapDetectionJob.ts (-43) and trims learningRoutes.ts (-135) \u2014 real Removal-half work but UNDEPLOYED (after 2e243a4). Experience half is worse: pack DRAFT 92 (was 88, 87), NEW 16 \u2014 the item pile grew again, 92 items carry a status the lifecycle matrix cannot express; junk-data floor untouched."
+      ],
+      "snapshot": [
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 62,
+          "professional": 92,
+          "delta": 2
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 63,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 60,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 45,
+          "professional": 90,
+          "delta": 3
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 42,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 76,
+      "head": "6d8f39b",
+      "overall": 55.1,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. deployed-sha is unchanged at 2e243a4, and the two new commits since my last card (DEF-323 6d8f39b rounding-guard tolerance, BLD-019 f714d77 scorer schema 9->8) are orchestrator machinery that touch no Brain runtime path (Codex SOUND but scoped to these two commits only, review_log.md:1133-1137). The production pack is materially unchanged (learning logs 2483->2495, DRAFT 92->93). Overall stays 55.1.",
+      "what_did_not": "The six-commit wave that would actually move capabilities \u2014 DEF-322 (subject mojibake), PRUNE-001 (removal), LEARN-001/002 (close the learning loop), OPS-001/002 \u2014 is now gate-certified green but still sitting undeployed above 2e243a4, and per Codex still unreviewed while deploy.sh would ship HEAD wholesale (review_log.md:1178-1180). B04's live fabrication remains unfixed; receipts remain 0. Thinking, Accurate Communication, Authorized Action, Self Follow-Up, Self-Healing, Self-Pruning all hold; Memory 62 and Learn 45 carry forward last turn's corrections unchanged.",
+      "unverifiable": "The undeployed wave changes nothing until D-105 runs: DEF-322's mojibake fix, PRUNE-001's Removal-half cleanup, LEARN-001/002's loop-closing, OPS-001/002's meta-loop self-healing. Codex additionally warns these five server/src commits (one a messaging-path change) are unreviewed. Whether the 2 active governed memories are Brain-learned or user-set still cannot be told from the pack; whether iter-73's deployed messaging fixes reach the owner is still unconfirmable while WhatsApp is dead (day 4+) and receipts remain 0.",
+      "notes_for_builder": "The single highest-value action is not a build: run D-105 so the certified six-commit wave (DEF-322 + PRUNE-001 + LEARN-001/002 + OPS-001/002) actually reaches the owner and its Memory/Learn/Self-Pruning effects can be scored on live evidence \u2014 after routing the five unreviewed server/src commits through review (Codex directive #1). Then fix B04 binding (Thinking/Accurate Communication) and wire DEF-319's findOwnMessageIdByEcho for receipts (Self Follow-Up / Authorized Action).",
+      "evidence": [
+        "Thinking +0 [code-read/high]: HOLD 42. Iteration 76 (2026-09-08) is a gate-fix turn: DEF-323 (6d8f39b, orchestratorPulseRoute.test.ts:220 rounding tolerance) and BLD-019 (f714d77, scorer schema 9->8) touch no Brain runtime. deployed-sha unchanged at 2e243a4. The B04 binding failure (bare answer bound to the wrong item, false success) is still live in the deployed SHA and named next build's #1 (review_log.md:1181-1184).",
+        "Memory +0 [live-evidence/medium]: HOLD 62. No new movement; iter-76 correction stands. Governed-memory injection still live in deployed code (brainComposer.ts:3537-3538 -> renderGovernedMemoriesBlock, governedMemoriesBlock.ts:23-36). Pack 2026-09-07 14:08: 2 active governed memories injected into every prompt, brain_memory table still absent, DEF-314 zero person-item edges unfixed.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. No new deployed change: DEF-322 (Day-Brief subject mojibake) is gate-certified but still undeployed (deployed-sha unchanged at 2e243a4; Codex flags it undeployed and unreviewed, review_log.md:1178-1180). B04 live fabrication persists; iter-73 anti-fabrication credit (DEF-315/318/320/311) stands.",
+        "Authorized Action +0 [live-evidence/medium]: HOLD 63. No deployed change; iter-73 DEF-308 human-reserve credit stands. Production pack 2026-09-07 14:08: 102 of 2670 actions require approval, outbound sends 37 with 0 provider receipts (DEF-319 still diagnosis-only, findOwnMessageIdByEcho called by nothing).",
+        "Self Follow-Up +0 [live-evidence/medium]: HOLD 60. No new SFU work; DEF-311 credit stands. Pack 2026-09-07 14:08: follow-ups to a delegatee 43 latest 2026-08-19, escalations 68 latest 2026-09-07, outbound 37 with receipts 0 \u2014 quote-reply correlation still never fires because no wa_message_id is ever stamped.",
+        "Learn +0 [live-evidence/medium]: HOLD 45. Iter-76 correction stands and the live pipeline continues: brain_interaction_learning_logs grew 2483->2495 latest 2026-09-07 (learningService.ts:57-62), 2 active governed memories injected, 0 pending. LEARN-001/002 (approval-gate narrowing, cron distillation) remain undeployed above 2e243a4, so no new movement.",
+        "Self-Healing +0 [code-read/medium]: HOLD 42. No deployed change. OPS-001 (heal-now.sh) / OPS-002 (nightly-iteration.sh, prompts) are undeployed orchestrator meta-loop scripts, not Brain deploying its own repair; rungs 3-4 for Brain remain absent (owner 2026-08-14, capability_contract.md:198-219). iter-73 DEF-321 rung-1 / DEF-244 rung-2 credit stands.",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 36, bounded by the Experience half. PRUNE-001 (e00d959) retires the Self-Improvement pipeline / gapDetectionJob.ts (-43) and trims learningRoutes.ts (-135) but is UNDEPLOYED (above 2e243a4). Experience half still worse: pack DRAFT 93 (was 92, 88, 87), NEW 16 \u2014 the item pile grew again, 93 items carry a status the lifecycle matrix cannot express; junk-data floor untouched."
+      ],
+      "snapshot": [
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 62,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 63,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 60,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 45,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 42,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 76,
+      "head": "2017546",
+      "overall": 55.1,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. deployed-sha is unchanged at 2e243a4, and the only commit since my last card (2017546) is a client/dist capability-map UI rebuild with no server/Brain code. The production pack drifted only trivially (escalations 68->71 latest 2026-09-08, DRAFT 93->94, learning logs steady at 2495). Overall stays 55.1.",
+      "what_did_not": "The six-commit wave that would actually move capabilities (DEF-322 subject mojibake, PRUNE-001 removal, LEARN-001/002 loop-closing, OPS-001/002) is gate-certified green but still parked undeployed above 2e243a4, and per Codex still unreviewed while deploy.sh would ship HEAD wholesale. B04's live fabrication remains unfixed; receipts remain 0; the delegatee follow-up worker is stale at 2026-08-19. All eight capabilities hold: Thinking, Accurate Communication, Authorized Action, Self Follow-Up, Self-Healing, Self-Pruning flat, and Memory 62 / Learn 45 carry forward last turn's corrections unchanged.",
+      "unverifiable": "The undeployed wave changes nothing until D-105 runs: DEF-322's mojibake fix, PRUNE-001's Removal-half cleanup, LEARN-001/002's loop-closing, OPS-001/002's meta-loop self-healing \u2014 and Codex warns five of these server/src commits (one a messaging-path change) are unreviewed. Whether the 2 active governed memories are Brain-learned or user-set still cannot be told from the pack; whether iter-73's deployed messaging fixes reach the owner is unconfirmable while WhatsApp is dead and receipts remain 0.",
+      "notes_for_builder": "The highest-value action remains not a build: run D-105 so the certified six-commit wave (DEF-322 + PRUNE-001 + LEARN-001/002 + OPS-001/002) reaches the owner and its Memory/Learn/Self-Pruning effects become scorable on live evidence \u2014 after routing the five unreviewed server/src commits through review. Then fix B04 binding (Thinking/Accurate Communication) and wire DEF-319's findOwnMessageIdByEcho for delivery receipts (Self Follow-Up / Authorized Action).",
+      "evidence": [
+        "Thinking +0 [code-read/high]: HOLD 42. The only commit since my last card, 2017546, is a client/dist capability-map UI rebuild ('No server code, no tests and no TypeScript touched') \u2014 no Brain runtime. deployed-sha unchanged at 2e243a4. The B04 binding failure (bare answer bound to the wrong item, false success) is still live in the deployed SHA and remains the standing next-build directive.",
+        "Memory +0 [live-evidence/medium]: HOLD 62. No new movement; iter-76 correction stands. Governed-memory injection still live in deployed code (brainComposer.ts:3537-3538 -> renderGovernedMemoriesBlock, governedMemoriesBlock.ts:23-36). Pack 2026-09-08 02:31: 2 active governed memories injected into every prompt, brain_memory table still absent, DEF-314 zero person-item edges unfixed.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. No deployed change: DEF-322 (Day-Brief subject mojibake) is gate-certified but still undeployed (deployed-sha unchanged at 2e243a4; Codex flags it undeployed and unreviewed, review_log.md:1178-1180). B04 live fabrication persists; iter-73 anti-fabrication credit (DEF-315/318/320/311) stands.",
+        "Authorized Action +0 [live-evidence/medium]: HOLD 63. No deployed change; iter-73 DEF-308 human-reserve credit stands. Production pack 2026-09-08 02:31: 102 of 2674 actions require approval, outbound sends 37 with 0 provider receipts (DEF-319 still diagnosis-only, findOwnMessageIdByEcho called by nothing).",
+        "Self Follow-Up +0 [live-evidence/medium]: HOLD 60. No new SFU work; DEF-311 credit stands. Pack 2026-09-08 02:31: follow-ups to a delegatee 43 latest 2026-08-19 (stale), escalations 71 latest 2026-09-08 (still firing), outbound 37 with receipts 0 \u2014 quote-reply correlation still never fires because no wa_message_id is ever stamped.",
+        "Learn +0 [live-evidence/medium]: HOLD 45. Iter-76 correction stands: brain_interaction_learning_logs steady at 2495 latest 2026-09-07 (learningService.ts:57-62), 2 active governed memories injected, 0 pending. LEARN-001/002 (approval-gate narrowing, cron distillation) remain undeployed above 2e243a4, so no new movement.",
+        "Self-Healing +0 [code-read/medium]: HOLD 42. No deployed change. OPS-001 (heal-now.sh) / OPS-002 (nightly-iteration.sh, prompts) are undeployed orchestrator meta-loop scripts, not Brain deploying its own repair; rungs 3-4 for Brain remain absent (owner 2026-08-14, capability_contract.md:198-219). iter-73 DEF-321 rung-1 / DEF-244 rung-2 credit stands.",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 36, bounded by the Experience half. PRUNE-001 (e00d959) retires the Self-Improvement pipeline / gapDetectionJob.ts (-43) and trims learningRoutes.ts (-135) but is UNDEPLOYED (above 2e243a4). Experience half still worse: pack DRAFT 94 (was 93, 92, 88), NEW 16 \u2014 the item pile grew again, 94 items carry a status the lifecycle matrix cannot express; junk-data floor untouched."
+      ],
+      "snapshot": [
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 62,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 63,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 60,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 45,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 42,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 76,
+      "head": "365a154",
+      "overall": 55.1,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. deployed-sha unchanged at 2e243a4; the two commits since my last card are orchestrator-only \u2014 PRUNE-002 (365a154) added Self-Pruning measurement to evidence-pack.sh (+89, an instrument change), and 1d259a2 is a build-log certification entry. No server/src, nothing deployed. The new pack Self-Pruning section is PRODUCTION_EVIDENCE that confirms the 36 floor (both halves broken) rather than moving any number. Overall stays 55.1.",
+      "what_did_not": "The six-commit wave that would move capabilities (DEF-322 subject mojibake, PRUNE-001 removal, LEARN-001/002 loop-closing, OPS-001/002) is certified green by two independent runs but still parked undeployed above 2e243a4, blocked on the loop scheduling reviews for five unreviewed Brain commits before D-105 ships them (build_log.md:3347-3349). B04's live fabrication remains unfixed; receipts remain 0; the delegatee follow-up worker is stale at 2026-08-19; WhatsApp dead day 5. All eight capabilities hold.",
+      "unverifiable": "The undeployed wave changes nothing until D-105 runs, and Codex requires the five unreviewed server/src commits (one a messaging-path change) to be reviewed first. Whether the 2 active governed memories are Brain-learned or user-set still cannot be told from the pack. Whether iter-73's deployed messaging fixes reach the owner is unconfirmable while WhatsApp is dead (day 5) and receipts remain 0. The Self-Pruning aspect counts are live DB/tree observations, not proof any cleanup path exists.",
+      "notes_for_builder": "Highest-value action remains not a build: schedule the five wave reviews so D-105 can ship (DEF-322 + PRUNE-001 + LEARN-001/002 + OPS-001/002) and its Memory/Learn/Self-Pruning effects become scorable live. On Self-Pruning specifically, the new instrument shows the biggest wins are deduping contacts into one store (entities 947 vs persons 974, 415 duplicate names) and pruning the 78%-inactive wiki corpus feeding retrieval \u2014 both Removal-half, neither yet touched by deployed code.",
+      "evidence": [
+        "Thinking +0 [code-read/high]: HOLD 42. The two commits since my last card (PRUNE-002 365a154 = evidence-pack.sh +89 instrument only; 1d259a2 = build_log certification) touch no server/src. deployed-sha unchanged at 2e243a4. The B04 binding failure (bare answer bound to the wrong item, false success) is still live in the deployed SHA and named next build's #1 (build_log.md:3370).",
+        "Memory +0 [live-evidence/medium]: HOLD 62. No new movement; iter-76 correction stands. Governed-memory injection still live in deployed code (brainComposer.ts:3537-3538 -> renderGovernedMemoriesBlock, governedMemoriesBlock.ts:23-36). Pack 2026-09-08 07:04: 2 active governed memories injected into every prompt, brain_memory table still absent, DEF-314 zero person-item edges unfixed.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. No deployed change: DEF-322 (Day-Brief subject mojibake) still undeployed and unreviewed (deployed-sha unchanged at 2e243a4; Codex directive to review the messaging-path commit before D-105, build_log.md:3347-3349). B04 live fabrication persists; iter-73 anti-fabrication credit (DEF-315/318/320/311) stands.",
+        "Authorized Action +0 [live-evidence/medium]: HOLD 63. No deployed change; iter-73 DEF-308 human-reserve credit stands. Production pack 2026-09-08 07:04: 102 of 2676 actions require approval, outbound sends 37 with 0 provider receipts (DEF-319 still diagnosis-only, findOwnMessageIdByEcho called by nothing).",
+        "Self Follow-Up +0 [live-evidence/medium]: HOLD 60. No new SFU work; DEF-311 credit stands. Pack 2026-09-08 07:04: follow-ups to a delegatee 43 latest 2026-08-19 (stale), escalations 72 latest 2026-09-08 (still firing), outbound 37 with receipts 0 \u2014 quote-reply correlation still never fires because no wa_message_id is ever stamped.",
+        "Learn +0 [live-evidence/medium]: HOLD 45. Iter-76 correction stands: brain_interaction_learning_logs 2496 latest 2026-09-08 (learningService.ts:57-62), 2 active governed memories injected, 0 pending. LEARN-001/002 (approval-gate narrowing, cron distillation) remain undeployed above 2e243a4, so no new movement.",
+        "Self-Healing +0 [code-read/medium]: HOLD 42. No deployed change. OPS-001 (heal-now.sh) / OPS-002 (nightly-iteration.sh, prompts) are undeployed orchestrator meta-loop scripts, not Brain deploying its own repair; D-105 remains human-gated (build_log.md:3394, QR re-pair day 5). Rungs 3-4 for Brain absent (owner 2026-08-14, capability_contract.md:198-219); iter-73 DEF-321 rung-1 / DEF-244 rung-2 credit stands.",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 36, bounded by the Experience half, now with richer PRODUCTION_EVIDENCE from PRUNE-002's new pack section confirming BOTH halves broken: wiki 78% not active (5653 stale + 4740 orphan of 13403), 415 duplicate person names, contacts split across two tables (entities 947 vs persons 974), 13 unimported source-file candidates. PRUNE-001 removal still UNDEPLOYED (above 2e243a4); DRAFT 96 (was 94, 93, 92) \u2014 pile still growing. Evidence confirms the floor, does not move it."
+      ],
+      "snapshot": [
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 62,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 63,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 60,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 45,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 42,
+          "professional": 89,
+          "delta": 0
         },
         {
           "name": "Self-Pruning",
