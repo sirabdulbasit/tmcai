@@ -356,7 +356,28 @@ export async function cleanUpProbeMessage(
     for (const waitMs of PROBE_CLEANUP_BACKOFF_MS) {
       if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
       for (const attempt of attempts) {
-        for (const everyone of [true, false]) {
+        // DEF-326 — the revoke-for-everyone attempt is REMOVED, not reordered.
+        //
+        // Owner's number was re-paired 2026-09-04 12:43:11 and WhatsApp logged the session out
+        // at 12:48:12 — five minutes. The old number had run this same code for 1h45m and only
+        // stopped because he reset it, so the variable that changed was the NUMBER's age, not
+        // the software. But the probe is the one factor we control, and it fires within
+        // MILLISECONDS of `ready`: a self-message followed immediately by `delete(true)`, twice,
+        // on an account with no history. That is the most automation-shaped thing Brain does and
+        // it is aimed at a cold number, which is the profile WhatsApp polices hardest.
+        //
+        // Removing it costs nothing, because this file already argued the case against it four
+        // comments up: "`delete(true)` revokes for everyone ... in the account's OWN chat there
+        // is no one else to revoke for, and the goal here is only to remove it from the owner's
+        // view — which is exactly `delete(false)`, delete-for-me." It was tried FIRST anyway.
+        //
+        // Worst case if `delete(false)` also fails: a probe marker stays visible in his own
+        // self-chat. That is cosmetic, it is already the observed outcome today, and it is a
+        // trade every day of the week against a channel that goes dark for five days.
+        //
+        // NOT a claim that this caused the logout — WhatsApp never says. It is the one input we
+        // own, removed before he re-pairs, so the next session is not greeted by it.
+        for (const everyone of [false]) {
           try {
             const target = await attempt.get();
             if (!target || typeof target.delete !== 'function') {
@@ -392,7 +413,14 @@ export async function cleanUpProbeMessage(
     ]);
     if (!sent) return 'skipped_no_message';
     if (typeof (sent as any).delete !== 'function') return 'skipped_undeletable';
-    await (sent as any).delete(true);   // true = for everyone, including the owner's devices
+    // DEF-326 — the SECOND delete path, and it was still revoking for everyone.
+    //
+    // The echo path above was changed and this one sat four lines below it, unchanged, doing
+    // exactly what was just removed. That is the `protection-with-two-implementations` shape
+    // this codebase keeps re-learning: a guard fixed in one of its two copies is not fixed.
+    // Caught only because the DEF-276 suite exercises BOTH paths and one of its assertions
+    // still reported `true` after the other copy was corrected.
+    await (sent as any).delete(false);   // delete-for-me; nobody to revoke for in one's own chat
     return 'deleted';
   } catch {
     return 'failed';

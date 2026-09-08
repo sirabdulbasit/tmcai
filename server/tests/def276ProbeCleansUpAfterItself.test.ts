@@ -22,7 +22,10 @@ describe('DEF-276 — the probe cleans up after itself', () => {
   it('deletes the message when the send has already resolved', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     expect(await cleanUpProbeMessage(Promise.resolve(msg(del)))).toBe('deleted');
-    expect(del).toHaveBeenCalledWith(true);          // for everyone, incl. his own devices
+    // DEF-326 — delete-for-ME, not revoke-for-everyone, on the SEND-PROMISE path. This
+    // assertion is what caught the second copy: the echo path had been corrected and this one,
+    // four lines below it in the source, was still revoking.
+    expect(del).toHaveBeenCalledWith(false);
   });
 
   it('THE REGRESSION: deletes it even when the send resolves AFTER the probe passed', async () => {
@@ -71,7 +74,7 @@ describe('DEF-276c — the echo is the handle that actually exists', () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const r = await cleanUpProbeMessage(Promise.resolve(undefined), 10_000, msg(del));
     expect(r).toBe('deleted');
-    expect(del).toHaveBeenCalledWith(true);
+    expect(del).toHaveBeenCalledWith(false);
   });
 
   it('prefers the echo over the send result, so it never waits on the transport', async () => {
@@ -114,27 +117,35 @@ describe('DEF-276d — the echo is not deletable immediately', () => {
       if (calls < 2) throw new TypeError("Cannot read properties of undefined (reading 'id')");
       return undefined;
     });
-    expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('deleted');
-    expect(calls).toBe(2);   // revoke-for-everyone fails, delete-for-me succeeds
+    // DEF-326 — one strategy now, so the retry property is expressed against the backoff
+    // schedule itself rather than against a strategy count that no longer exists. With
+    // PROBE_CLEANUP_BACKOFF_MS = [0] there is exactly one attempt per handle, and the loop
+    // still spans the schedule if a future WA Web build makes the race real again.
+    expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('failed');
+    expect(calls).toBe(PROBE_CLEANUP_BACKOFF_MS.length);
   });
 
   it('gives up with a named failure rather than retrying forever', async () => {
     const del = vi.fn().mockRejectedValue(new Error('permanently gone'));
     expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('failed');
-    // two strategies per attempt: revoke-for-everyone, then delete-for-me
-    expect(del.mock.calls.length).toBe(PROBE_CLEANUP_BACKOFF_MS.length * 2);
+    // DEF-326 — ONE strategy per attempt now (delete-for-me). The bound is what this test
+    // protects: it gives up on a schedule rather than retrying forever.
+    expect(del.mock.calls.length).toBe(PROBE_CLEANUP_BACKOFF_MS.length);
   });
 
-  it('falls back to delete-for-me when revoke-for-everyone is refused', async () => {
-    // In the account's own chat there is nobody to revoke for; removing it from his view is
-    // delete(false). This is the strategy that matters for the owner's screenshot.
+  it('uses delete-for-me ONLY — revoke-for-everyone is never attempted', async () => {
+    // DEF-326 replaced this test's premise. It used to assert the fallback ORDER
+    // (true, then false). The revoke attempt is gone entirely, so the assertion is now that it
+    // never happens: in the account's own chat there is nobody to revoke for, and a revoke
+    // aimed at a five-minute-old pairing is the one input we control on why WhatsApp ended it.
     const del = vi.fn().mockImplementation(async (everyone: boolean) => {
       if (everyone) throw new Error('canSenderRevokeMsg is false');
       return undefined;
     });
     expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('deleted');
-    expect(del).toHaveBeenNthCalledWith(1, true);
-    expect(del).toHaveBeenNthCalledWith(2, false);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenNthCalledWith(1, false);
+    expect(del).not.toHaveBeenCalledWith(true);
   });
 
   it('does not sleep at all when the first attempt works', async () => {
@@ -166,7 +177,8 @@ describe('DEF-276f — a second strategy, and evidence when both fail', () => {
     const r = await cleanUpProbeMessage(null, 10_000, msg(echoDel), async () => msg(freshDel));
     expect(r).toBe('deleted');
     expect(echoDel).toHaveBeenCalled();      // the echo was tried first
-    expect(freshDel).toHaveBeenCalledWith(true);
+    // DEF-326 — the re-fetch fallback survives; only the revoke strategy is gone.
+    expect(freshDel).toHaveBeenCalledWith(false);
   });
 
   it('does not re-fetch when the echo deletes cleanly — no wasted page call', async () => {
