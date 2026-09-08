@@ -1,106 +1,186 @@
+/**
+ * DEF-327 — the one-message-per-day rollup, at the chokepoint every producer
+ * passes. Deck tag: `Getting several emails a day and calling it noise`.
+ *
+ * Owner, CL-057/CL-058: *"i should received one digest email per day instead
+ * of n number of email"*. DEF-325 built the rollup in `digestPolicy.ts`,
+ * reached only from `enqueueBrainPrompt` — but the LOUDEST producer,
+ * `openItemDraftAskJob`, calls `brainContactsUser` directly (289 draft-asks/day
+ * vs 2 brain prompts), so the rollup held nothing. Moved to
+ * `brainContactsUser` — the one gate (DEF-108) every producer passes — scoped
+ * to the existing `HOUSEKEEPING_KINDS` cadence tier, held (never dropped) into
+ * the DEF-277 suppression digest as the single daily receipt.
+ *
+ * Proven through the REAL chokepoint (the def277 harness), not a
+ * re-implementation. The falsifier: `open_item_draft_ask` SENT falls to zero,
+ * and the day yields one receipt plus whatever escalations occurred.
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// ONE MESSAGE PER DAY — owner ruling 2026-09-08 (CL-057 / DEF-325):
-// "i should received one digest email per day instead of n number of email".
-//
-// The per-item policy could not deliver this and the numbers are why: it digests per ITEM
-// and only from the 4th unanswered push about that item in 24h, while his traffic is ~2
-// pushes per item. Turning `digest_enabled` on would have changed nothing while reading as
-// a fix. These tests pin the rollup AND, more importantly, pin the two guards it must
-// never be able to reach.
-
-const count = vi.fn(async () => 0);
-vi.mock('../src/db/prisma', () => ({
-  default: { brainPromptQueue: { count: (...a: any[]) => count(...a) }, openItem: { findFirst: async () => null } },
+const waSent = vi.hoisted(() => [] as Array<{ body: string }>);
+const state = vi.hoisted(() => ({
+  created: [] as any[],
+  rollupOn: 1 as number,          // selfpruning.daily_rollup_enabled
+  heldRows: [] as Array<{ kind: string; summary: string }>,
+  digestAlreadySent: false,
+  llmText: 'Held a few items into your daily summary.',
 }));
 
-const behaviour: Record<string, number> = {};
+vi.mock('../src/db/prisma', () => {
+  const brainUserMessage = {
+    findFirst: async ({ where }: any) => {
+      if (where?.dedupKey) return null;
+      if (where?.kind === 'suppressed_pushes_digest') {
+        return state.digestAlreadySent ? { id: 'sent-1', createdAt: new Date(Date.now() - 2 * 60 * 60_000) } : null;
+      }
+      return null;
+    },
+    findMany: async ({ where }: any) => {
+      if (where?.metadata?.path?.[0] === 'suppressedBy') return state.heldRows;
+      return [];
+    },
+    count: async () => 0,
+    create: async ({ data }: any) => { state.created.push(data); return { id: `rec-${state.created.length}` }; },
+  };
+  const model = {
+    findUnique: async (args: any) => (args?.where?.clientNumber
+      ? { name: 'TMC', domain: 'tmcltd.com' }
+      : {
+        id: 2, name: 'Basit', email: 'b@tmcltd.ai', clientNumber: 'TMC-0001',
+        isActive: true, contactNumber: '+923000000000',
+        notificationPreferences: {
+          profile: { preferredTitle: 'Sir' },
+          brain_channel: { outboundEnabled: true, outboundPaused: false, timezone: 'UTC' },
+        },
+      }),
+    findFirst: async (args: any) => (
+      args?.where?.id === 2 && args?.where?.clientNumber === 'TMC-0001'
+        ? (await model.findUnique({ where: { id: 2 } } as any)) : null),
+    findMany: async () => [], create: async () => ({ id: 'x' }), update: async () => ({}),
+    updateMany: async () => ({ count: 0 }), upsert: async () => ({}), count: async () => 0,
+    aggregate: async () => ({}), groupBy: async () => [],
+  };
+  const p: any = new Proxy(
+    { brainUserMessage, $queryRaw: async () => [], $queryRawUnsafe: async () => [], $executeRaw: async () => 0, $executeRawUnsafe: async () => 0 },
+    { get: (t: any, k: string) => (k in t ? t[k] : model) },
+  );
+  return { __esModule: true, default: p, prisma: p };
+});
+
+vi.mock('../src/services/notifications/tenantWhatsappSender', () => ({
+  sendTenantWhatsAppText: async (_c: string, _p: string, body: string) => {
+    waSent.push({ body });
+    return { ok: true, waMessageId: `wa-${waSent.length}` };
+  },
+  sendTenantWhatsAppVoiceNote: async () => ({ ok: true, waMessageId: 'wa-v' }),
+}));
+
 vi.mock('../src/services/behaviorConfig', () => ({
   getBehaviorValue: async (key: string) => {
-    if (key in behaviour) return behaviour[key];
-    throw new Error(`unknown behavior key ${key}`);
+    if (key === 'notify.office_start_hour') return 0;
+    if (key === 'notify.office_end_hour') return 24;
+    if (key === 'notify.office_days_mask') return 127;
+    if (key === 'selfpruning.daily_rollup_enabled') return state.rollupOn;
+    return 50;
   },
 }));
-vi.mock('../src/services/configService', () => ({ getConfig: async () => null }));
 
-import { decideDigest } from '../src/services/selfpruning/digestPolicy';
+vi.mock('../src/services/llmRouter', () => ({
+  callLLM: async () => ({ text: state.llmText }),
+}));
 
-const base = {
-  clientNumber: '111', userId: 2, question: 'Your task is overdue.',
-  criticality: 'routine' as const, openItemId: 'item-1',
-  now: new Date('2026-09-08T12:00:00.000Z'),
+import {
+  brainContactsUser,
+  __resetSuppressionDigestClaimsForTests,
+  SUPPRESSION_DIGEST_KIND,
+} from '../src/services/notifications/brainOutboundService';
+
+const until = async (pred: () => boolean, ms = 8000) => {
+  const t0 = Date.now();
+  while (!pred() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 25));
 };
 
+const contact = (over: any = {}) => brainContactsUser({
+  userId: 2, clientNumber: 'TMC-0001',
+  kind: 'open_item_draft_ask', urgency: 'normal',
+  summary: 'What deadline for "Join Google Meet call"?',
+  body: 'What deadline should I put on this?',
+  ...over,
+});
+
 beforeEach(() => {
-  count.mockReset(); count.mockResolvedValue(0);
-  for (const k of Object.keys(behaviour)) delete behaviour[k];
-  behaviour['selfpruning.daily_rollup_enabled'] = 1;
-  behaviour['selfpruning.digest_enabled'] = 0;
-  behaviour['selfpruning.digest_after_pushes'] = 3;
-  behaviour['selfpruning.digest_window_hours'] = 24;
+  __resetSuppressionDigestClaimsForTests();
+  waSent.length = 0;
+  state.created = [];
+  state.rollupOn = 1;
+  state.heldRows = [];
+  state.digestAlreadySent = false;
 });
 
-describe('daily rollup — one message per user per day', () => {
-  it('digests a routine push into a per-DAY key, not a per-item one', async () => {
-    const d = await decideDigest({ ...base });
-    expect(d.action).toBe('digest');
-    expect(d.digest!.dedupKey).toBe('selfpruning:rollup:2:2026-09-08');
+describe('DEF-327 — the loud producer is held at the chokepoint, not sent', () => {
+  it('THE FALSIFIER: a draft-ask is HELD (suppressed/daily_rollup), never sent as its own email', async () => {
+    const res = await contact();
+    expect(res.sent).toBe(false);
+    const row = state.created.find((r) => r.kind === 'open_item_draft_ask');
+    expect(row.status).toBe('suppressed');
+    expect(row.metadata.suppressReason).toBe('daily_rollup');
+    // suppressedBy=budget so the DEF-277 digest counts it as owed to him.
+    expect(row.metadata.suppressedBy).toBe('budget');
+    // No individual draft-ask text reached WhatsApp.
+    expect(waSent.every((m) => !m.body.includes('What deadline'))).toBe(true);
   });
 
-  it('keys by USER and DAY, so two items on one day collapse to ONE message', async () => {
-    const a = await decideDigest({ ...base, openItemId: 'item-1' });
-    const b = await decideDigest({ ...base, openItemId: 'item-2' });
-    expect(a.digest!.dedupKey).toBe(b.digest!.dedupKey);
+  it('the held draft-ask fires the ONE daily receipt — the DEF-277 suppression digest', async () => {
+    state.heldRows = [
+      { kind: 'open_item_draft_ask', summary: 'deadline for A' },
+      { kind: 'open_item_draft_ask', summary: 'deadline for B' },
+    ];
+    await contact();
+    await until(() => state.created.some((r) => r.kind === SUPPRESSION_DIGEST_KIND && r.status === 'sent'));
+    expect(waSent).toHaveLength(1); // exactly one message reaches him
   });
 
-  it('rolls to a new key the next day, so "one per day" does not become one forever', async () => {
-    const today = await decideDigest({ ...base });
-    const tomorrow = await decideDigest({ ...base, now: new Date('2026-09-09T00:05:00.000Z') });
-    expect(tomorrow.digest!.dedupKey).not.toBe(today.digest!.dedupKey);
-    expect(tomorrow.digest!.dedupKey).toBe('selfpruning:rollup:2:2026-09-09');
-  });
-
-  it('fires on the FIRST push of the day — the per-item threshold does not gate it', async () => {
-    count.mockResolvedValue(0);           // nothing sent yet today
-    behaviour['selfpruning.digest_after_pushes'] = 3;
-    const d = await decideDigest({ ...base });
-    expect(d.action).toBe('digest');      // per-item policy would have said 'send'
+  it('every HOUSEKEEPING kind is held the same way — not just draft-asks', async () => {
+    for (const kind of ['open_item_draft_ask', 'brain_prompt', 'open_item_overdue']) {
+      state.created = [];
+      const res = await contact({ kind });
+      expect(res.sent, kind).toBe(false);
+      expect(state.created.find((r) => r.kind === kind).metadata.suppressReason).toBe('daily_rollup');
+    }
   });
 });
 
-describe('daily rollup — the guards it must never reach', () => {
-  it('NEVER muffles a high-criticality escalation', async () => {
-    const d = await decideDigest({ ...base, criticality: 'high' });
-    expect(d.action).toBe('send');
-    expect(d.reason).toMatch(/never digested/);
+describe('DEF-327 — the guards it must never reach', () => {
+  it('a HUMAN message is never held (DEF-308 floor survives)', async () => {
+    const res = await contact({ kind: 'wa_counterpart_message', body: 'Hi from Hamna' });
+    expect(res.sent).toBe(true);
+    expect(waSent.some((m) => m.body.includes('Hi from Hamna'))).toBe(true);
   });
 
-  it('NEVER muffles a top-criticality escalation', async () => {
-    const d = await decideDigest({ ...base, criticality: 'top' });
-    expect(d.action).toBe('send');
+  it('a HIGH-urgency housekeeping escalation is never held', async () => {
+    const res = await contact({ urgency: 'high' });
+    expect(res.sent).toBe(true);
   });
 
-  it('never digests a digest — the recursion cannot eat its own summary', async () => {
-    const d = await decideDigest({ ...base, metadata: { source: 'selfpruning_digest' } });
-    expect(d.action).toBe('send');
+  it('an EMERGENCY escalation is never held', async () => {
+    const res = await contact({ urgency: 'emergency' });
+    expect(res.sent).toBe(true);
   });
 
-  it('sends when the switch is off, so the default is unchanged behaviour', async () => {
-    behaviour['selfpruning.daily_rollup_enabled'] = 0;
-    const d = await decideDigest({ ...base });
-    expect(d.action).toBe('send');
+  it('the day brief (not a housekeeping kind) is never held', async () => {
+    const res = await contact({ kind: 'day_brief', body: 'Your day at a glance' });
+    expect(res.sent).toBe(true);
   });
 
-  it('FAILS OPEN: a broken count sends rather than costing him a message', async () => {
-    count.mockRejectedValue(new Error('db down'));
-    const d = await decideDigest({ ...base });
-    expect(d.action).toBe('send');
-    expect(d.reason).toMatch(/fail open/);
+  it('the switch OFF restores the old behaviour — the draft-ask flows to the tier cap and sends', async () => {
+    state.rollupOn = 0;
+    const res = await contact();
+    expect(res.sent).toBe(true); // held nowhere; below the 50% housekeeping budget with count=0
+    expect(state.created.find((r) => r.kind === 'open_item_draft_ask')?.metadata?.suppressReason).toBeUndefined();
   });
 
-  it('never reports more unanswered than were sent', async () => {
-    count.mockResolvedValue(4);
-    const d = await decideDigest({ ...base });
-    expect(d.digest!.coveredCount).toBe(4);
+  it('bypassRateLimit (admin probe) is never held', async () => {
+    const res = await contact({ bypassRateLimit: true });
+    expect(res.sent).toBe(true);
   });
 });

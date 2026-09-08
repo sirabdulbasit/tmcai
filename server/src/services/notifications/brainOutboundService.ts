@@ -434,6 +434,51 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     { kinds: HOUSEKEEPING_KINDS, configKey: 'notify.housekeeping_budget_pct', defaultPct: 50, label: 'housekeeping' },
   ];
 
+  // ── DEF-327: the per-user-per-day rollup, at the chokepoint every producer
+  // passes — `Getting several emails a day and calling it noise` ─────────────
+  //
+  // Owner, CL-057/CL-058: *"i should received one digest email per day instead
+  // of n number of email"*. DEF-325 built exactly that rollup — but in
+  // `digestPolicy.ts`, reached only from `enqueueBrainPrompt`. The LOUDEST
+  // producer, `openItemDraftAskJob`, calls `brainContactsUser` DIRECTLY (289
+  // draft-asks in one day vs 2 brain prompts), so it never touched the policy.
+  // The per-ITEM digest needs item identity and stays where it is; a
+  // per-DAY-per-USER decision needs no identity and belongs HERE, the one gate
+  // (DEF-108) every producer — queue and direct — passes. Moving it, not
+  // copying it: the redundant block is deleted from `digestPolicy.ts` in the
+  // same commit, so this is not the 12th `protection-with-two-implementations`.
+  //
+  // Scoped to `HOUSEKEEPING_KINDS` — the SAME set the volume tiers already
+  // classify as the low-priority drip (DEF-271), so the day brief, human
+  // messages, escalations and diagnostics are untouched WITHOUT a new list to
+  // drift. Held, never dropped (the DEF-156 direction): the message records
+  // `suppressed`/`daily_rollup` — fully retrievable — and the DEF-277
+  // suppression digest is its single daily receipt, deduped to one per rolling
+  // window. So `open_item_draft_ask` SENT falls to zero and he gets one email.
+  // Gated on the same `selfpruning.daily_rollup_enabled` switch DEF-325 used,
+  // so no tenant's cadence changes without the opt-in already in place; a high
+  // or emergency escalation of a housekeeping kind is never held.
+  if (
+    HOUSEKEEPING_KINDS.has(req.kind)
+    && urgency !== 'high' && urgency !== 'emergency'
+    && !req.bypassRateLimit
+  ) {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const rollupOn = await getBehaviorValue('selfpruning.daily_rollup_enabled', {
+      userId: user.id, clientNumber: user.clientNumber,
+    }).catch(() => 0);
+    if (rollupOn === 1) {
+      log.info('daily_rollup_hold', { userId: user.id, kind: req.kind });
+      const res = await record({
+        ...req, user, channel: 'text', urgency,
+        status: 'suppressed', summary: req.summary,
+        metadata: { ...(req.metadata ?? {}), suppressedBy: 'budget', suppressReason: 'daily_rollup' },
+      }, 'daily_rollup: folded into the one-per-day digest');
+      void maybeSendSuppressionDigest(user);
+      return res;
+    }
+  }
+
   for (const tier of TIERS) {
     if (!tier.kinds.has(req.kind)) continue;
     const { getBehaviorValue } = await import('../behaviorConfig');

@@ -3399,3 +3399,83 @@ next non-ASCII Day Brief subject renders correctly. What would prove me wrong: o
 of the five reviews finding a WEAK/WRONG in the wave — in which case the mandate
 worked exactly as designed and the finding gets its remediation turn before
 anything ships.
+
+## Iteration 76 (build, DEF-327) — 2026-09-09
+
+**CONTINUATION TURN, Self-Pruning, going deeper on the last attempt — which was
+mine.** DEF-325 (last cycle) built the one-per-day rollup the owner asked for
+(*"i should received one digest email per day instead of n number of email"*) but
+put it in `digestPolicy.ts`, reached only from `enqueueBrainPrompt`. **What was
+wrong: the loudest producer — `openItemDraftAskJob`, 289 draft-asks in a day vs 2
+brain prompts — calls `brainContactsUser` DIRECTLY and never passed through the
+policy.** DEF-327 diagnosed that from production; this turn fixes it. Deck tag
+`Getting several emails a day and calling it noise`.
+
+**Files, one coherent Self-Pruning increment (campaign SCOPE permits several):**
+- `brainOutboundService.ts` (`brainContactsUser`, before the tier loop) — the
+  per-day rollup MOVED here, the DEF-108 chokepoint every producer passes. A
+  `HOUSEKEEPING_KINDS` push (the existing low-priority cadence tier) under
+  `selfpruning.daily_rollup_enabled` is HELD — recorded `suppressed`/`daily_rollup`,
+  fully retrievable — and the DEF-277 suppression digest is its single daily
+  receipt. Not a fourth mechanism: it folds into the one that already delivers.
+- `digestPolicy.ts` — the redundant DEF-325 per-day block DELETED (moved, not
+  copied — the diagnosis row's explicit instruction, so it cannot become the 12th
+  `protection-with-two-implementations`). The per-ITEM digest, which needs item
+  identity, stays.
+- `dailyRollupOneMessagePerDay.test.ts` — rewritten to prove the rollup at its new
+  home through the REAL chokepoint (def277 harness).
+- `def108DispatchLedgerFed.test.ts` — one brittle pin re-anchored with reasoning
+  (it grepped the first "DEF-108" mention, which the new rollup comment legitimately
+  precedes; re-anchored on the ledger block's own comment).
+
+**Why this is safe on the most dangerous path (the row warned: DEF-156 dropped 9/10
+real messages):** the fix scopes to HOUSEKEEPING_KINDS — the set already deemed the
+low-priority drip — so the day brief, human messages (DEF-308 floor), and
+high/emergency escalations are untouched, proven by six exemption tests. Held, never
+dropped: everything is retrievable and the digest tells him. Governance: no new list
+of judgements — it reuses DEF-271's existing cadence tier; the guardrail is
+deterministic cadence, and wording stays the model's (the digest is composed by the
+model with a curated fallback).
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3569 passed | 0 failed** (305 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3598). The DEF-327
+  suite: **9 passed | 0 failed**; def277/def308/def172 (the machinery it folds into)
+  green.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: the hold path is (clientNumber, userId)-scoped via
+  `record`; the switch defaults 0; a housekeeping push with the switch off flows to
+  the pre-existing tier cap unchanged (pinned by the switch-off test).
+
+**Governing docs (rule 5): circling at the class, structural fix given** — this is
+DEF-311's bypass a second time (same producer, same missing chokepoint); the fix
+routes it through the one gate rather than patching the producer, so a third
+consequence of the same bypass cannot recur. DEF-327 row → FIXED; DEF-325's row is
+its lineage.
+
+**CAPABILITY:** Self-Pruning (campaign target, aligned) — the loud producer's noise
+withdraws into one daily digest without being asked, which is CL-033's whole
+complaint.
+**PREDICTED:** one rollup email per day plus escalations; `open_item_draft_ask`
+SENT → 0. No score claim until a live day exercises it.
+**MECHANISM:** the per-day decision at the one gate every producer passes, held into
+the existing DEF-277 receipt.
+**FALSIFIER:** any post-deploy day with more than one non-escalation email; or an
+individual draft-ask sent while the switch is on; or a human/day-brief/escalation
+swept into the rollup.
+
+**Symptom tag closed (verbatim, in the commit):** `Getting several emails a day and
+calling it noise`.
+
+**What I did NOT do, named:** DEF-324 (the `[brain_prompt]` kind-tag leaking into
+the email subject — a separate Communicates defect, next commit if this turn has
+room, but a different capability so it waits per the one-capability rule); the
+QR re-pair (human-only); the B04 binding and DEF-311 gating (Accurate Communication,
+off-target this turn). Prompt-cost: none — this is a cadence gate, not a prompt block.
+
+**Honest prediction:** with WhatsApp still dark, email is his only channel, and
+after deploy his housekeeping drip becomes one digest a day. What would prove me
+wrong: a rollup-eligible message he actually WANTED daily that isn't the day brief
+(none is currently in HOUSEKEEPING_KINDS, but if he reports missing a specific
+overdue nudge, the tier membership — not the rollup — is what to revisit).

@@ -45,8 +45,13 @@ describe('the owner-facing send path feeds the ledger', () => {
     expect(OUTBOUND).toContain('DEF-108');
   });
 
+  // ↻ DEF-327: anchor on the ledger block's own comment, not the first "DEF-108"
+  // mention. The token is a legitimate cross-reference that now appears earlier
+  // in the file (the DEF-327 rollup comment cites the DEF-108 chokepoint), which
+  // moved the old indexOf('DEF-108') window off the ledger code it exists to
+  // guard. The intent — the record()→artifact block stays honest — is unchanged.
   it('records ONLY real outcomes — never suppressed or rate-limited', () => {
-    const at = OUTBOUND.indexOf('DEF-108');
+    const at = OUTBOUND.indexOf('the dispatch ledger must see this send');
     const block = OUTBOUND.slice(at, at + 3200);
     // The guard that keeps the ledger honest.
     expect(block).toMatch(/o\.status === 'sent' \|\| o\.status === 'partial' \|\| o\.status === 'failed'/);
@@ -55,13 +60,13 @@ describe('the owner-facing send path feeds the ledger', () => {
   });
 
   it('maps a failed send to failed, not to succeeded', () => {
-    const at = OUTBOUND.indexOf('DEF-108');
+    const at = OUTBOUND.indexOf('the dispatch ledger must see this send');
     const block = OUTBOUND.slice(at, at + 3200);
     expect(block).toMatch(/o\.status === 'failed' \? 'failed' : 'succeeded'/);
   });
 
   it('never lets bookkeeping break a delivered send', () => {
-    const at = OUTBOUND.indexOf('DEF-108');
+    const at = OUTBOUND.indexOf('the dispatch ledger must see this send');
     const block = OUTBOUND.slice(at, at + 3200);
     expect(block).toContain('catch');
     // …but the miss must be audible, since a silent one is how it went empty.
