@@ -95,6 +95,54 @@ stays in the script, deterministic and auditable.
 **Self-Pruning is not disk cleanup. It is the removal of PARALLEL OWNERSHIP — and, since
 2026-08-31, it is also where SIMPLICITY is scored.**
 
+### OWNER RULING, 2026-09-08 — the two aspects it must cover
+
+*"Self Pruning should look into aspects — 1. Database: where it will removed all redundant,
+duplications or noisy information if any and it will always keep database at optimal level
+without loss of any useful data. 2. Files and Codebase: It will also review entire codebase
+and files are created and remove all those which are not required any more and optimized
+code as per best need using current all features."*
+
+Written here because the Self-Healing ruling of 2026-08-14 taught the cost of not doing it:
+that capability carried a number and no definition for weeks, so the scorer rated it against
+its own idea of the word and the Builder had nothing to build toward. The three seats read
+this file; this is where a definition binds.
+
+**ASPECT 1 — THE DATABASE, kept at an optimal level without losing anything useful.**
+
+Redundant, duplicated and noisy are three different faults and each has its own test:
+
+| fault | what it means | what proves it |
+|---|---|---|
+| duplicated | the same fact stored twice | two rows a human would call one thing — duplicate contact names, a person in both `entities` and `persons` |
+| redundant | one concern owned by two stores | a fact retrievable from more than one table, so a write to one leaves the other wrong |
+| noisy | rows that exist but no answer should ever use | stale and orphan wiki pages, dead tuples, caches past their TTL, empty-but-swept tables |
+
+**"Without loss of any useful data" is the binding half of this clause, not a courtesy.**
+Audit rows, receipt tables and applied migration history are Class 4 — *empty is not
+unused*. A prune that cannot state what it kept and why is refused, and the standing rule
+holds: **nothing is deletable because it looks unused.**
+
+**ASPECT 2 — THE FILES AND THE CODEBASE, reviewed whole and modernised.**
+
+Two obligations, and the second is new here:
+
+1. **Remove what is no longer required** — by the four classes below, never by filename.
+   This includes the artifacts a deletion leaves behind: `tsc` does not delete output for a
+   deleted input, so a stale `.js` outlives its `.ts` in `dist` and keeps shipping.
+2. **Optimise the code to current capability** — *"as per best need using current all
+   features"*. Where a hand-rolled mechanism has been superseded by something the platform
+   or the codebase now provides, collapse onto the newer one. This is Class 3 work with the
+   direction named: the surviving owner should be the current idiom, not merely the older
+   one.
+
+**The measurement obligation that comes with both.** On 2026-09-08 the evidence pack carried
+**zero** lines about database redundancy and **zero** about the codebase — so neither aspect
+was measurable and the score could only ever be a code-read of this document. That is exactly
+how `Learn` sat at 42 with nothing measuring it. Both aspects now have evidence lines in
+`evidence-pack.sh`; **a future aspect added here without an evidence line is not a
+capability, it is a wish.**
+
 ### Why the merge, and the one way it must not be abused
 
 Simple & Smart scored **36** — the lowest of the nine, and the orchestrator's declared target

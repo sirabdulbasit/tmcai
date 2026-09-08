@@ -93,6 +93,95 @@ q "SELECT 'interaction learning logs: '||count(*)||', latest '
      FROM brain_interaction_learning_logs" 2>/dev/null || echo "brain_interaction_learning_logs: unavailable"
 echo '```'
 echo
+echo "### Self-Pruning — the two aspects the owner named on 2026-09-08"
+echo
+echo "**Aspect 1 — the database: redundant, duplicated, noisy.** Three different faults."
+echo '```'
+# NOISE. `status` is a real column on wiki_pages with three values, and this is the corpus
+# brainRetrievalPlanner actually retrieves from — so a stale or orphan page is not disk, it
+# is a wrong answer waiting to be retrieved (BRAIN_VISION.md).
+q "SELECT 'wiki corpus: '||count(*)||' pages — '
+     ||count(*) FILTER (WHERE status='active')||' active, '
+     ||count(*) FILTER (WHERE status='stale')||' stale, '
+     ||count(*) FILTER (WHERE status='orphan')||' orphan ('
+     ||round(100.0*count(*) FILTER (WHERE status<>'active')/greatest(count(*),1))
+     ||'% of what retrieval reads is not active)'
+     FROM wiki_pages" 2>/dev/null || echo "wiki_pages: unavailable"
+# DUPLICATION — the same person stored twice, by the name a human would call one thing.
+q "SELECT 'duplicate person names: '||coalesce(count(*),0)
+     FROM (SELECT lower(trim(display_name)) n FROM persons
+            WHERE display_name IS NOT NULL GROUP BY 1 HAVING count(*)>1) d" 2>/dev/null \
+  || echo "persons: unavailable"
+# REDUNDANCY — one concern, two live stores. A write to one leaves the other wrong.
+q "SELECT 'contacts split across two tables: entities '||(SELECT count(*) FROM entities)
+     ||' vs persons '||(SELECT count(*) FROM persons)" 2>/dev/null || echo "contact split: unavailable"
+# BLOAT — "optimal level" in the owner's words. Dead tuples are rows the planner still walks.
+q "SELECT 'heaviest dead-tuple tables: '||string_agg(relname||' '||n_dead_tup, ', ' ORDER BY n_dead_tup DESC)
+     FROM (SELECT relname, n_dead_tup FROM pg_stat_user_tables
+            WHERE n_dead_tup > 500 ORDER BY n_dead_tup DESC LIMIT 5) t" 2>/dev/null \
+  || echo "pg_stat_user_tables: unavailable"
+echo '```'
+echo
+echo "**Aspect 2 — the files and the codebase.** Measured from the tree, not asserted."
+echo '```'
+# This script had no need for the filesystem until aspect 2, so it never defined a root.
+# The literal is the convention every other script in this directory follows; NEXEO_ROOT
+# overrides it so a clean-room clone measures ITS tree rather than the production one.
+# (A ${BASH_SOURCE}-derived path was tried first and resolved empty under this script's
+# own shell options — a derivation that silently yields "" is worse than a literal.)
+PACK_ROOT="${NEXEO_ROOT:-/var/www/tmcai}"
+SRC="$PACK_ROOT/server/src"
+if [ -d "$SRC" ]; then
+  printf 'live TypeScript: %s files, %s lines under server/src\n' \
+    "$(find "$SRC" -name '*.ts' -type f | wc -l)" \
+    "$(find "$SRC" -name '*.ts' -type f -exec cat {} + 2>/dev/null | wc -l)"
+  # STALE EMITTED ARTIFACTS. `tsc` does not delete output for a deleted input, so a .js
+  # outlives its .ts and keeps shipping inside dist. This is the one pruning fault that
+  # reaches production by itself, which is why it is counted rather than described.
+  if [ -d "$PACK_ROOT/server/dist" ]; then
+    printf 'emitted .js in dist with no matching .ts in src: %s\n' \
+      "$(cd "$PACK_ROOT/server/dist" && find . -name '*.js' -type f -printf '%P\n' 2>/dev/null \
+         | sed 's/\.js$//' \
+         | while read -r f; do [ -f "$SRC/$f.ts" ] || echo "$f"; done | wc -l)"
+  fi
+  # NO INBOUND REFERENCE — an approximation, and labelled as one. One pass collects every
+  # basename any file imports; anything never named is a CANDIDATE for Class 1, not a
+  # verdict: dynamic imports and registry lookups do not appear as text.
+  python3 - "$SRC" <<'PYDEAD' 2>/dev/null || echo "dead-file scan: unavailable"
+import os, re, sys
+root = sys.argv[1]
+files = {}
+text = []
+for d, _, ns in os.walk(root):
+    for n in ns:
+        if n.endswith('.ts') and not n.endswith('.d.ts'):
+            p = os.path.join(d, n)
+            # src/scripts/ holds OPERATOR ENTRY POINTS — run by hand or by the loop, never
+            # imported, and already triaged by tests/operatorScriptParity.test.ts. Counting
+            # them here reported 27 candidates that were all known entry points, which
+            # buries the ones that are actually orphaned.
+            if os.sep + 'scripts' + os.sep in p:
+                continue
+            files[n[:-3]] = p
+            try: text.append(open(p, errors='replace').read())
+            except Exception: pass
+blob = '\n'.join(text)
+named = set(re.findall(r"[\w./-]+/([\w.-]+)['\"]", blob)) | set(re.findall(r"\b(\w+)\.(?:ts|js)\b", blob))
+# Tests and type declarations are never imported BY DESIGN — vitest discovers *.test.ts,
+# and a .d.ts is consumed by the compiler, not by a require. Leaving them in made the
+# first run report 40 candidates whose first four were test files, which is how a measure
+# teaches its reader to ignore it.
+orphans = [b for b in files
+           if b not in named
+           and not b.startswith('index')
+           and not b.endswith(('.test', '.spec', '.d'))]
+print(f"source files never named by any import (CANDIDATES, not a verdict): {len(orphans)} of {len(files)}")
+if orphans:
+    print("  e.g. " + ", ".join(sorted(orphans)[:6]))
+PYDEAD
+fi
+echo '```'
+echo
 echo "### What this pack does NOT tell you"
 echo
 echo "- Whether a send was DELIVERED. A provider receipt is the only proof, and there"

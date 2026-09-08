@@ -423,6 +423,54 @@ Recorded because they cost the owner real time and must not repeat.
 
 ## D. Undeployed work waiting on the box
 
+**PRUNE-002 — Self-Pruning gets its definition AND its instrument (owner ruling,
+2026-09-08).** *"Self Pruning should look into aspects — 1. Database … remove all
+redundant, duplications or noisy information … keep database at optimal level without loss
+of any useful data. 2. Files and Codebase … review entire codebase … remove all those which
+are not required any more and optimized code as per best need using current all features."*
+
+Written into `BRAIN_VISION.md` because that is the file all three seats read, and because
+the 2026-08-14 Self-Healing ruling taught what happens otherwise: a capability with a
+number and no definition gets rated against the scorer's own idea of the word.
+
+**The trap this ruling walked straight into, caught before it cost anything.** On the day
+it was given, `evidence-pack.sh` carried **zero** lines about database redundancy and
+**zero** about the codebase — so both aspects would have been scored `code-read` off the
+new paragraph, exactly as `Learn` sat at 42 with nothing measuring it ([LEARN-002]). A
+definition without an evidence line is not a capability, it is a wish, and that sentence is
+now in the vision doc as a standing rule.
+
+**Aspect 1 now measured — three faults, three tests, from the live database:**
+`wiki corpus: 13,395 pages — 3,009 active, 5,643 stale, 4,743 orphan (78% of what
+retrieval reads is not active)` · `duplicate person names: 415` · `contacts split across
+two tables: entities 947 vs persons 974` · `heaviest dead-tuple tables: llm_spend 20,604,
+criticality_fusion_cache 1,155, gate_rule_firings 969, feed_events 719`.
+
+**415 duplicate person names against the 24 recorded on 08-31** — the junk is growing, not
+holding.
+
+**Aspect 2 now measured — from the tree, not asserted:** `live TypeScript: 659 files,
+153,574 lines` · `emitted .js in dist with no matching .ts in src: 4` · `source files never
+named by any import (CANDIDATES, not a verdict): 13 of 573`.
+
+Two of those lines earn their place immediately. **The stale-artifact count caught my own
+residue on its first run** — the 4 are exactly the files [PRUNE-001] deleted the day
+before, proving the hazard `tsc` leaves behind is real and now visible. And the 13 orphan
+candidates are named services the vision doc already lists as Class 2 — `delegationFollowUpJob`,
+`delegateeFollowupWorker`, `delegateeEmailProducer` — so the heuristic finds what a human
+audit found, without the audit.
+
+**The scan is labelled a CANDIDATE list, never a verdict**, and it excludes what is never
+imported BY DESIGN: `*.test.ts` (vitest discovers them), `*.d.ts` (the compiler consumes
+them), and `src/scripts/` operator entry points (triaged separately by
+`operatorScriptParity`). Unfiltered it reported 40 candidates whose first four were test
+files — which is how a measure teaches its reader to ignore it.
+
+**State:** `evidence-pack.sh` and `BRAIN_VISION.md` are read from source at run time, so
+**the next pulse scores Self-Pruning against these numbers** with no deploy. Pack runtime
+rose ~3s → ~4s. Nothing has been pruned by this entry: it makes the 36 explicable and
+attackable, and the doing is the loop's work.
+
 **OPS-002 — a pulse now builds EVERY open gap in its target capability (owner ruling,
 2026-09-07: *"every build should build all open gaps"* → *"yes do it for now"*).**
 
