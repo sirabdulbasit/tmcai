@@ -3336,3 +3336,66 @@ commits. What would prove me wrong: the pulse route's LIVE data shifting between
 my run and the deploy gate such that a different boundary case appears — the
 tolerance now covers every exactly-half mean, so that would take a genuine
 arithmetic slip, which is what the guard is for.
+
+
+## Iteration 76 (certification) — 2026-09-09
+
+**EARLY-EXIT CLAUSE INVOKED, with evidence — the standing precedent under this
+mandate.** The turn's only job is MAKE HEAD DEPLOYABLE, and the newest review
+(Iteration 76, on `36d7a45..6d8f39b`) settles the question: **verdict SOUND,
+rollback no, and its single release-blocking condition is explicitly "the loop's
+sequencing to fix, not the Builder's"** — five unreviewed Brain commits (DEF-322,
+PRUNE-001, LEARN-001/002, OPS-001) sit between `2e243a4` and HEAD, and the
+reviewer's directive #1 is to route them through review before D-105 ships them
+wholesale. A builder cannot review commits; inventing code under a mandate that
+forbids "no new defect, no opportunistic fix" would add exactly the surface the
+reviewer warns about.
+
+**HEAD (`2017546`) verified in place — the code tree IS HEAD** (the only dirt is
+orchestrator docs/state: review_log, scorecard, deployed-sha, the QR architecture
+doc; zero files under `server/src|tests|prisma`):
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3556 passed | 0 failed** (303 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3585) — **matching
+  the reviewer's own independent re-run to the digit**, and confirming the review
+  header's RED was measured pre-`6d8f39b`, as the review itself established.
+- `git diff --check` → exit 0 · **no migration in `2e243a4..HEAD`** — build +
+  restart only · `npm run build` NOT run — dist immutable (CLAUDE.md).
+
+**The reviewer's directives, accounted for one by one:**
+1. **Review the five-commit wave before D-105** — orchestrator's (scheduling
+   reviews is the loop's sequencing; the reviewer says so verbatim). The builder
+   half of this is already true: each commit is one DEF/increment with its own
+   tests and row, exactly the reviewable shape the one-commit-each ruling demands.
+2. **The B04 binding fix** — "standing directive #1, three iterations": the next
+   BUILD turn's first job, excluded by this mandate; carried forward by name,
+   again, so it cannot be lost. It is live in deployed `2e243a4`.
+3. **The DEF-311 gating experiment** — same: next build, and the suspect is my own
+   sends section; carried by name.
+4. **Tree litter** — orchestrator's, flagged since iteration 60, now with the
+   reviewer's note that the target-line contradiction is finally resolved.
+
+**Governing docs (rule 5):** no Brain change made; no DEF row moves — stated per
+the contract. Verdict on the mandate: *progressing* — the blocker inventory is one
+named orchestrator item (schedule five reviews), and HEAD's greenness is now
+attested by two independent runs.
+
+**CAPABILITY:** RELIABILITY-ONLY (+0). What D-105 delivers when the reviews clear:
+the mojibake fix (DEF-322, messaging path) and the PRUNE/LEARN/OPS wave.
+**PREDICTED:** +0 from certification.
+**MECHANISM:** in-place verification valid because the code tree is exactly HEAD;
+numbers cross-checked against the reviewer's independent run.
+**FALSIFIER:** the deploy-phase matrix disagreeing with two matching measurements.
+
+**Symptom tag:** none open on the deck and none closed — said plainly.
+
+**What I did NOT do, named:** the B04 binding DEF and the DEF-311 gating
+experiment (mandate-excluded, next build's #1 and #2); reviewing the wave (not the
+builder's seat); the QR re-pair (human-only, day 5); touching orchestrator state.
+
+**Honest prediction:** once the orchestrator gives the five commits their review
+turns (or arbitrates), D-105 ships a green, migration-free HEAD and the owner's
+next non-ASCII Day Brief subject renders correctly. What would prove me wrong: one
+of the five reviews finding a WEAK/WRONG in the wave — in which case the mandate
+worked exactly as designed and the finding gets its remediation turn before
+anything ships.
