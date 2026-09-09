@@ -3479,3 +3479,63 @@ after deploy his housekeeping drip becomes one digest a day. What would prove me
 wrong: a rollup-eligible message he actually WANTED daily that isn't the day brief
 (none is currently in HOUSEKEEPING_KINDS, but if he reports missing a specific
 overdue nudge, the tier membership — not the rollup — is what to revisit).
+
+## Iteration 76 (certification of 2daa59f) — 2026-09-09
+
+**CAMPAIGN SUSPENDED — MAKE HEAD DEPLOYABLE was the whole mandate, and HEAD already
+is.** The newest review (Iteration 76 build, DEF-327) rules **SOUND, ROLLBACK: no**,
+every high-yield check cleared, "Nothing here is dangerous," no blocking finding on
+the diff. Under a mandate that forbids new defects, refactors and opportunistic
+fixes, the correct turn is certification with evidence, not new review surface —
+so this turn invokes the early-exit clause: no `server/src|tests|prisma` file is
+named because changing one is exactly what the mandate prohibits.
+
+**The reviewer's one release-relevant condition, resolved with evidence:** "confirm
+the intervening commits are reviewed before D-107." `git rev-list 788218d..HEAD` is
+three commits; per-commit `diff-tree`: **`2daa59f` is the ONLY one touching Brain
+code** (the reviewed-SOUND diff itself — brainOutboundService, digestPolicy, two
+test files); `d604ebe` is docs-only (the CL-058/DEF-327 diagnosis rows) and
+`3715187` is the D-106 deploy record. No unreviewed Brain code stands between
+deployed and HEAD, and no migration is in the range — the deploy is build + restart.
+
+**Matrix at HEAD (`2daa59f`), this session, tree exactly HEAD in code paths (dirt is
+orchestrator docs/state only):**
+- `npx tsc --noEmit` (from `server/`) → exit **0**
+- `npx vitest run` → **3569 passed | 0 failed** (Test Files 305 passed | 1 skipped;
+  7 expected fail | 21 skipped | 1 todo, of 3598) — matching the reviewer's
+  independent re-run and the build-time figure to the digit. **Disclosed:** the
+  FIRST run this session showed 1 failed | 3568 passed; two immediate re-runs at the
+  same tree were fully green. The failing test's name was not captured by the count
+  filter; the suite contains timing-polled tests (`until()`-style, incl. mine) that
+  are load-sensitive under a full run. One flake in three runs at an unchanged tree
+  is an observation for the orchestrator's flake ledger, not a release blocker — but
+  it is stated here so nobody reads "green" as "green three of three."
+- `git diff --check` → exit 0. `npm run build` NOT run — dist immutable (CLAUDE.md).
+
+**Harness contradiction, named rather than obeyed silently:** the Continuation
+status says "ATTEMPT 3 ON Learn … do not change capability," while the campaign
+section says SUSPENDED, only-job-is-deployability. The suspension governs (owner
+ruling 2026-08-14: deployed before the next one starts); no Learn work was done, and
+none has ever been assigned to this seat — the Learn/55.1 framing appears to be
+tracking a different loop's state. Flagging for the orchestrator.
+
+**Carried forward by name (not this turn's mandate):**
+1. Reviewer directive #1 — the rotation-vs-gate tension escalation (orchestrator's
+   call) and then the **B04 binding fix**, top fixQueue item five turns running:
+   bare answer + unanswered brainPromptQueue prompt ⇒ bind to THAT item; the next
+   BUILD turn's first job, now with the reviewer's watch item that DEF-327's rollup
+   makes ambiguous answers MORE likely once the switch is on.
+2. **DEF-324** — `[brain_prompt]` in his email subjects; reviewer directive #2, the
+   build log's own named next item; should ride the same deploy wave as DEF-327 if
+   built before D-107.
+3. **Live-verify DEF-327** after a real day with the switch on: one rollup email,
+   `open_item_draft_ask` SENT → 0, humans/day-brief/escalations immediate.
+4. Orchestrator-owned: stale-RED-header timing (third consecutive recurrence),
+   untracked root litter before D-107.
+
+**CAPABILITY:** RELIABILITY-ONLY (certification; no code changed).
+**PREDICTED:** +0 this turn; the deploy of `2daa59f` is what changes what the owner
+receives — one daily rollup instead of the drip, once the switch is on.
+**MECHANISM:** none — evidence that HEAD is deployable, which is the mandate.
+**FALSIFIER:** the orchestrator's D-107 health probe failing on this range, or any
+Brain-code commit found in `788218d..HEAD` other than the reviewed `2daa59f`.
