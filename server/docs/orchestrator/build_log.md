@@ -3539,3 +3539,60 @@ receives — one daily rollup instead of the drip, once the switch is on.
 **MECHANISM:** none — evidence that HEAD is deployable, which is the mandate.
 **FALSIFIER:** the orchestrator's D-107 health probe failing on this range, or any
 Brain-code commit found in `788218d..HEAD` other than the reviewed `2daa59f`.
+
+## Iteration 76 (third certification — the blocker is the deploy phase) — 2026-09-10
+
+**Early-exit clause invoked; no `server/src|tests|prisma` file is named because the
+mandate ("MAKE HEAD DEPLOYABLE — no new defect, no refactor, no opportunistic fix")
+prohibits changing one, and nothing on the build side remains to close.** This is
+the THIRD consecutive turn carrying the identical suspended-campaign mandate for the
+same single commit, and the blocking state has not changed because it cannot be
+changed from this seat:
+
+- The newest review section is still "Iteration 76 (build, DEF-327)": **SOUND,
+  ROLLBACK: no**, "Nothing here is dangerous," zero blocking findings on the diff.
+  No newer section exists (grep of section headers; the review_log's uncommitted
+  working-tree delta is an orchestrator backfill of Iteration-57-era sections, not
+  a new finding).
+- The range condition was already resolved with evidence in `bbc6888`: `2daa59f` is
+  the only Brain-code commit in `788218d..HEAD`; no migration in range.
+- Matrix re-run THIS session at the same tree: `npx tsc --noEmit` exit **0** ·
+  `npx vitest run` **3569 passed | 0 failed** (Test Files 305 passed | 1 skipped;
+  7 expected fail | 21 skipped | 1 todo of 3598) · `git diff --check` clean —
+  fully green on the FIRST run this time (last session's single flake did not
+  recur), and matching the reviewer's independent figures to the digit.
+
+**The finding, stated plainly as the continuation banner invites:** the work is not
+reaching production, and that is the entire obstacle. `2daa59f` has now been green,
+reviewed SOUND, and certified deployable across two builder turns, while the harness
+keeps re-suspending the campaign on the same commit. The builder is forbidden to
+deploy ("the orchestrator owns pm2 restart and the deploy phase"), so re-issuing
+this mandate to this seat cannot advance the loop — **the next action is D-107, and
+it belongs to the orchestrator.** Two operational notes for that deploy, from the
+analyst and the review, so they are not lost between seats:
+
+1. **Deploy alone is inert.** The rollup is gated on
+   `selfpruning.daily_rollup_enabled`, default **0**. The owner's own sentence —
+   "i should received one digest email per day instead of n number of email"
+   (CL-057) — is the explicit consent the switch was designed to wait for; flipping
+   it for his tenant at deploy time is what makes his inbox change. Without it,
+   D-107 changes nothing he sees and the DEF-327 falsifier cannot run.
+2. **Live-verify after the first switched-on day:** exactly one rollup email;
+   `open_item_draft_ask` SENT = 0; humans, day brief and escalations immediate.
+
+**Also flagged again:** the continuation banner ("ATTEMPT 4 ON Self Follow-Up …
+BRAIN overall still 55.1") contradicts the suspension section and tracks state this
+seat has never worked; the suspension governs, as it did the last two turns. Deck
+tag `stale-contact-data`: not closed this turn — no code change is permitted under
+the mandate; it remains the top deck item for the next unsuspended BUILD turn's
+capability, alongside the carried B04 binding fix and DEF-324 (now broadened to a
+second leaking tag, `[open_item_draft_ask]`, per the analyst — same
+human-readable-boundary fix, one producer-agnostic strip, NOT per-call-site).
+
+**CAPABILITY:** RELIABILITY-ONLY (certification; no code changed).
+**PREDICTED:** +0 from this turn. D-107 with the switch on is what changes what he
+receives.
+**MECHANISM:** none — evidence, plus the routing of the two deploy-time notes.
+**FALSIFIER:** a review section newer than "Iteration 76 (build, DEF-327)" naming a
+release blocker on `788218d..HEAD` (none exists at this writing), or the D-107
+health probe failing on this range.
