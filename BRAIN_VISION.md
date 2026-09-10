@@ -95,53 +95,79 @@ stays in the script, deterministic and auditable.
 **Self-Pruning is not disk cleanup. It is the removal of PARALLEL OWNERSHIP — and, since
 2026-08-31, it is also where SIMPLICITY is scored.**
 
-### OWNER RULING, 2026-09-08 — the two aspects it must cover
+### OWNER RULING, 2026-09-10 — the THREE aspects it must cover
 
-*"Self Pruning should look into aspects — 1. Database: where it will removed all redundant,
-duplications or noisy information if any and it will always keep database at optimal level
-without loss of any useful data. 2. Files and Codebase: It will also review entire codebase
-and files are created and remove all those which are not required any more and optimized
-code as per best need using current all features."*
+*"Self Pruning has following aspects — 1. Files Pruning: where it analyze and remove
+redundant and uncessary files (that was created during building). 2. Code Pruning: It will
+analyze and remove uncessary and redundant code and make it more smart in coding (UI and
+Functionality should not be changed). 3. DB Pruning: here it will read all tables and its
+data and remove redundant and uncessary tables and their data, it will also remove
+duplication records like in pruning contacts and wiki and anyother."*
 
-Written here because the Self-Healing ruling of 2026-08-14 taught the cost of not doing it:
-that capability carried a number and no definition for weeks, so the scorer rated it against
-its own idea of the word and the Builder had nothing to build toward. The three seats read
-this file; this is where a definition binds.
+This **replaces** the two-aspect ruling of 2026-09-08, which folded files and code into one
+bucket. They are separated here because they fail differently and are proved differently: a
+leftover file costs nothing until it is served, whereas rewriting live code can change what
+the owner sees. The classes below still govern every deletion, and the merge rule below
+still bounds the score.
 
-**ASPECT 1 — THE DATABASE, kept at an optimal level without losing anything useful.**
+**ASPECT 1 — FILES PRUNING: what the building left behind.**
 
-Redundant, duplicated and noisy are three different faults and each has its own test:
+Not source. The *residue* of having built: emitted artifacts whose source is gone, dated
+backups, retired logs, old snapshots, generated output that outlived its input. The named
+hazard is that **`tsc` does not delete output for a deleted input**, so a `.js` outlives its
+`.ts` inside `dist` and keeps shipping — the one pruning fault that reaches production by
+itself. Measured on 2026-09-08 the day PRUNE-001 deleted four sources: four orphaned `.js`
+were still in `dist`, found by the pack rather than by a person.
+
+**ASPECT 2 — CODE PRUNING: less code, smarter code, and NOTHING the owner sees changes.**
+
+Two obligations:
+
+1. **Remove** unnecessary and redundant code — by the four classes, never by filename.
+2. **Modernise** what survives. Where a hand-rolled mechanism has been superseded by
+   something the platform or the codebase now provides, collapse onto the newer one. In a
+   Class 3 collapse the surviving owner should be the current idiom, not merely the older
+   one.
+
+**THE BINDING CONSTRAINT, and it is the owner's own words: the UI and the functionality do
+not change.** This is what separates pruning from rewriting. A code prune is therefore a
+*behaviour-preserving* change and must be provable as one:
+
+- the full suite green **before and after**, with no test edited to accommodate the change —
+  a test changed to fit a refactor is the refactor marking its own homework;
+- no change to what the client renders, unless the ruling being applied is about the UI;
+- **never batched with a Brain messaging-path change** (the standing prohibition below), so
+  that if the owner's experience does shift, the cause is not ambiguous.
+
+"Smarter" is not licence to redesign. If a simplification would change a reply, a screen or
+an order of operations, it is a product change and needs its own decision — it is not
+pruning.
+
+**ASPECT 3 — DB PRUNING: read every table, then remove what no answer should ever use.**
+
+Whole tables as well as rows — an empty or superseded table is a candidate, dropped only
+through a hand-written idempotent migration. Three faults, three tests, because they need
+different fixes:
 
 | fault | what it means | what proves it |
 |---|---|---|
 | duplicated | the same fact stored twice | two rows a human would call one thing — duplicate contact names, a person in both `entities` and `persons` |
 | redundant | one concern owned by two stores | a fact retrievable from more than one table, so a write to one leaves the other wrong |
-| noisy | rows that exist but no answer should ever use | stale and orphan wiki pages, dead tuples, caches past their TTL, empty-but-swept tables |
+| noisy | rows that exist but no answer should ever use | stale and orphan wiki pages, dead tuples, caches past their TTL |
 
-**"Without loss of any useful data" is the binding half of this clause, not a courtesy.**
-Audit rows, receipt tables and applied migration history are Class 4 — *empty is not
-unused*. A prune that cannot state what it kept and why is refused, and the standing rule
-holds: **nothing is deletable because it looks unused.**
+Contacts and wiki are named by the owner, **"and anyother"** — so the sweep reads every
+table rather than a curated list.
 
-**ASPECT 2 — THE FILES AND THE CODEBASE, reviewed whole and modernised.**
+**"Without loss of any useful data" remains binding, not a courtesy.** Audit rows, receipt
+tables and applied migration history are Class 4 — *empty is not unused*. A prune that
+cannot state what it kept and why is refused, and nothing is deletable because it looks
+unused.
 
-Two obligations, and the second is new here:
-
-1. **Remove what is no longer required** — by the four classes below, never by filename.
-   This includes the artifacts a deletion leaves behind: `tsc` does not delete output for a
-   deleted input, so a stale `.js` outlives its `.ts` in `dist` and keeps shipping.
-2. **Optimise the code to current capability** — *"as per best need using current all
-   features"*. Where a hand-rolled mechanism has been superseded by something the platform
-   or the codebase now provides, collapse onto the newer one. This is Class 3 work with the
-   direction named: the surviving owner should be the current idiom, not merely the older
-   one.
-
-**The measurement obligation that comes with both.** On 2026-09-08 the evidence pack carried
-**zero** lines about database redundancy and **zero** about the codebase — so neither aspect
-was measurable and the score could only ever be a code-read of this document. That is exactly
-how `Learn` sat at 42 with nothing measuring it. Both aspects now have evidence lines in
-`evidence-pack.sh`; **a future aspect added here without an evidence line is not a
-capability, it is a wish.**
+**THE MEASUREMENT OBLIGATION THAT COMES WITH ALL THREE.** On 2026-09-08 the evidence pack
+carried **zero** lines about database redundancy and **zero** about the codebase, so both
+would have been scored as a read of this document — exactly how `Learn` sat at 42 with
+nothing measuring it. Every aspect above has evidence lines in `evidence-pack.sh`. **An
+aspect added here without an evidence line is not a capability, it is a wish.**
 
 ### Why the merge, and the one way it must not be abused
 

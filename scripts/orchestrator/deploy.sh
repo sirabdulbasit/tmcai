@@ -395,6 +395,34 @@ say "DEPLOYED $(git rev-parse --short "$DEPLOY_SHA") · defects: ${DEFS:-none na
 $NEWERR"
 say "live acceptance of individual DEFs is NOT verified by this phase — that needs real traffic"
 
+# ── RETENTION, because this phase is itself a producer of residue ─────────────
+#
+# ASPECT 1 of Self-Pruning (owner ruling 2026-09-10): "remove redundant and uncessary files
+# that was created during building". This script writes a dated dist snapshot before every
+# build and NOTHING has ever collected them. Measured 2026-09-10: 59 directories, 1.1 GB —
+# accumulating since the phase was written, and several of them created this week by me.
+#
+# Kept: the newest three. That is a rollback depth of three deploys, which is more than the
+# one this phase can actually use — it restores THIS run's snapshot — and enough to recover
+# by hand from a bad deploy that was only noticed a day later.
+#
+# It runs AFTER the probe has passed, deliberately. Pruning before or during a deploy could
+# remove the very snapshot a failing probe is about to restore, which would turn a routine
+# rollback into an outage — the guard destroying the thing it guards.
+# SORTED BY NAME, NOT BY MTIME, and the dry run is why. `cp -a` PRESERVES timestamps, so a
+# backup directory carries the mtime of the dist it copied — not the moment it was taken.
+# `ls -t` therefore ordered these by when production was last built, and the first version
+# of this line would have kept the three OLDEST snapshots and deleted every recent one:
+# retention that destroys exactly what retention is for. The NAME carries the true backup
+# instant (nexeo-dist-backup-YYYYMMDD-HHMMSS) and sorts chronologically as text.
+KEEP_BACKUPS="${NEXEO_KEEP_DIST_BACKUPS:-3}"
+PRUNED="$(ls -1d /tmp/nexeo-dist-backup-* 2>/dev/null | LC_ALL=C sort -r | tail -n +$((KEEP_BACKUPS + 1)) || true)"
+if [ -n "$PRUNED" ]; then
+  N="$(printf '%s\n' "$PRUNED" | wc -l)"
+  printf '%s\n' "$PRUNED" | while read -r d; do [ -d "$d" ] && rm -rf "$d"; done
+  say "pruned $N dist backup(s), kept the newest $KEEP_BACKUPS"
+fi
+
 # ── 8. THE DEPLOY COMMIT ─────────────────────────────────────────────────────
 #
 # WHY THIS EXISTS, and it is the most expensive omission in the loop (found 2026-09-07).

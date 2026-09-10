@@ -93,9 +93,9 @@ q "SELECT 'interaction learning logs: '||count(*)||', latest '
      FROM brain_interaction_learning_logs" 2>/dev/null || echo "brain_interaction_learning_logs: unavailable"
 echo '```'
 echo
-echo "### Self-Pruning — the two aspects the owner named on 2026-09-08"
+echo "### Self-Pruning — the three aspects the owner named on 2026-09-10"
 echo
-echo "**Aspect 1 — the database: redundant, duplicated, noisy.** Three different faults."
+echo "**Aspect 3 — DB PRUNING: redundant, duplicated, noisy.** Three different faults."
 echo '```'
 # NOISE. `status` is a real column on wiki_pages with three values, and this is the corpus
 # brainRetrievalPlanner actually retrieves from — so a stale or orphan page is not disk, it
@@ -120,9 +120,15 @@ q "SELECT 'heaviest dead-tuple tables: '||string_agg(relname||' '||n_dead_tup, '
      FROM (SELECT relname, n_dead_tup FROM pg_stat_user_tables
             WHERE n_dead_tup > 500 ORDER BY n_dead_tup DESC LIMIT 5) t" 2>/dev/null \
   || echo "pg_stat_user_tables: unavailable"
+# WHOLE TABLES, not only rows — the owner's aspect 3 says "remove redundant and uncessary
+# TABLES and their data". An empty table is a CANDIDATE and never a verdict: Class 4 is
+# explicit that audit and receipt tables are kept precisely because empty is not unused.
+q "SELECT 'tables: '||count(*)||' total, '||count(*) FILTER (WHERE n_live_tup = 0)
+     ||' holding zero rows (CANDIDATES — empty is not unused, Class 4 keeps audit/receipt tables)'
+     FROM pg_stat_user_tables" 2>/dev/null || echo "table census: unavailable"
 echo '```'
 echo
-echo "**Aspect 2 — the files and the codebase.** Measured from the tree, not asserted."
+echo "**Aspects 1 and 2 — FILES and CODE.** Measured from the tree, not asserted."
 echo '```'
 # This script had no need for the filesystem until aspect 2, so it never defined a root.
 # The literal is the convention every other script in this directory follows; NEXEO_ROOT
@@ -144,6 +150,13 @@ if [ -d "$SRC" ]; then
          | sed 's/\.js$//' \
          | while read -r f; do [ -f "$SRC/$f.ts" ] || echo "$f"; done | wc -l)"
   fi
+  # ASPECT 1 — THE RESIDUE OF HAVING BUILT, outside dist. Dated dist backups are written
+  # by deploy.sh before every build and never collected, and this session alone created
+  # several. Counted rather than described, because "some old backups" is not a measure.
+  printf 'dist backups left in /tmp by past deploys: %s (%s)\n' \
+    "$(find /tmp -maxdepth 1 -name 'nexeo-dist-backup-*' -type d 2>/dev/null | wc -l)" \
+    "$(du -shc /tmp/nexeo-dist-backup-* 2>/dev/null | tail -1 | awk '{print $1}' || echo '0')"
+
   # NO INBOUND REFERENCE — an approximation, and labelled as one. One pass collects every
   # basename any file imports; anything never named is a CANDIDATE for Class 1, not a
   # verdict: dynamic imports and registry lookups do not appear as text.
