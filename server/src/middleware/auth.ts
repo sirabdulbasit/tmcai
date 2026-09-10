@@ -85,8 +85,31 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
 /**
  * Admin-only middleware — must be used after requireAuth.
  */
+/**
+ * NOT SIGNED IN AND NOT ALLOWED ARE DIFFERENT FACTS (fixed 2026-09-10).
+ *
+ * This answered both with "Admin access required", and the Build Pulse deck renders that
+ * string verbatim: *"Pulse unreadable (Admin access required) — showing the last good
+ * frame, 174409s old."* The owner read it, reasonably, as a permissions problem and asked
+ * about his access — while his account was `SA` (isAdmin true), active, and fine. What had
+ * actually happened is that `optionalAuth` found no valid session, so `req.user` was
+ * undefined and this branch fired on the FIRST condition.
+ *
+ * An error that names the wrong cause is worse than a vague one: it sends the reader to
+ * inspect the thing that is not broken. Two conditions, two sentences.
+ *
+ * The STATUS CODE is deliberately left at 403 for both. 401 is the more correct semantic
+ * for "not signed in", but this middleware guards many routes and some clients branch on
+ * the code; changing it is a wider behavioural change than the bug being fixed here
+ * warrants, and would belong with its own review. The message carries the distinction,
+ * which is what the reader actually sees.
+ */
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
-  if (!req.user?.isAdmin) {
+  if (!req.user) {
+    res.status(403).json({ error: 'Not signed in — session expired or missing, sign in again' });
+    return;
+  }
+  if (!req.user.isAdmin) {
     res.status(403).json({ error: 'Admin access required' });
     return;
   }
