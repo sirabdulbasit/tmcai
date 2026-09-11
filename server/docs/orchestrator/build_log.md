@@ -3596,3 +3596,69 @@ receives.
 **FALSIFIER:** a review section newer than "Iteration 76 (build, DEF-327)" naming a
 release blocker on `788218d..HEAD` (none exists at this writing), or the D-107
 health probe failing on this range.
+
+## Iteration 76 (fourth pass — DEF-328 row backfilled; one unreviewed commit is the remaining gate) — 2026-09-11
+
+**Mandate: MAKE HEAD DEPLOYABLE. What actually stands between HEAD and a deploy
+changed since the last certification, and this turn closes the one gap closable
+from this seat.** Early-exit clause on code: no `server/src|tests|prisma` file is
+changed, because the mandate forbids new surface and the two Brain-code commits in
+the range are finished, green work.
+
+**The range, re-established at HEAD `33f22f1`** (`git rev-list` + per-commit
+diff-tree, superseding `bbc6888`'s now-stale certification):
+- `2daa59f` (DEF-327) — Brain code, reviewed **SOUND, rollback: no**. Unchanged.
+- `c9c75b0` (DEF-328, authored by another seat 09-10) — Brain code
+  (`server/src/middleware/auth.ts` + `requireAdminNamesTheRightCause.test.ts`):
+  expired-session vs not-an-admin get two different sentences; 403 deliberately
+  pinned. **UNREVIEWED — no review_log section exists for it** (newest section is
+  still "Iteration 76 (build, DEF-327)"). Under DEPLOY_ON='sound' this is the one
+  remaining release gate, and it is the REVIEW seat's to clear, not the builder's.
+- `33f22f1` (PRUNE-003) — BRAIN_VISION.md + `scripts/orchestrator/**` only; the
+  orchestrator's own area, no Brain code, not deploy-gating.
+- `78cb891`/`bbc6888` — certification docs. No migration anywhere in
+  `788218d..HEAD`; deploy remains build + restart.
+
+**What this turn changed: the missing DEF-328 change-log row (Rule 2).** The
+analyst measured `grep -c DEF-328` = 0 — the fix landed with tests but without its
+row, exactly the "defect that lives only in a commit message" failure Rule 2
+exists to prevent. Row written into §A (newest-first, before DEF-324) from the
+commit's own evidence: mechanism (requireAdmin's first branch answering with the
+not-an-admin sentence; deck renders API strings verbatim), the deliberate-403
+pin, the mutation evidence (4 passed, 3/3 mutants die), the fixed-strings
+governance note (transport-layer API constants, model unreachable by construction
+— the sanctioned case), and its four-line capability block. Status: FIXED, NOT
+DEPLOYED, UNREVIEWED — stated in the row so nobody reads the row as shippable.
+
+**Matrix at HEAD `33f22f1`, this session, after the row edit:**
+`npx tsc --noEmit` exit **0** · `npx vitest run` **3573 passed | 0 failed**
+(Test Files 306 passed | 1 skipped of 307; 7 expected fail | 21 skipped | 1 todo
+of 3602) · `git diff --check` clean. These independently confirm c9c75b0's
+commit-message numbers to the digit (+4 tests, +1 file over the 3569/305 measured
+at 2daa59f).
+
+**The deploy decision, framed for the orchestrator (both paths sound):**
+1. **Review `c9c75b0`, then ship HEAD** — one small, well-evidenced diff to rule
+   on; ships DEF-327 + DEF-328 together. Preferred: the analyst ranks DEF-328 as
+   a real owner-facing miscue, and D-107 at HEAD nets both.
+2. **Ship `2daa59f` directly** — everything in that range is reviewed; DEF-328
+   waits for D-108.
+   Either way the standing notes hold: flip `selfpruning.daily_rollup_enabled`
+   to 1 for the owner's tenant (his CL-057 sentence is the consent; at default 0
+   the deploy changes nothing he sees), and live-verify DEF-327's falsifier on
+   the first switched-on day.
+
+**Also named:** continuation banner ("ATTEMPT 5 ON Memory … 55.1") again tracks a
+loop this seat has never run; the suspension governs, as the last three turns.
+Deck tag `stale-contact-data`: NOT closed — no code permitted under the mandate;
+it remains first in line for the next unsuspended build turn, with the carried
+B04 binding fix and DEF-324 (two leaking tags, one boundary fix).
+
+**CAPABILITY:** RELIABILITY-ONLY (no code changed; a Rule-2 row backfill plus
+range certification).
+**PREDICTED:** +0 from this turn; D-107 with the switch on is what changes what he
+receives.
+**MECHANISM:** none — evidence and bookkeeping the loop's own rules require.
+**FALSIFIER:** a review_log section for `c9c75b0` already existing (none does at
+this writing — grep of section headers), or the D-107 probe failing on whichever
+path the orchestrator takes.
