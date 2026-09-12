@@ -3662,3 +3662,33 @@ receives.
 **FALSIFIER:** a review_log section for `c9c75b0` already existing (none does at
 this writing — grep of section headers), or the D-107 probe failing on whichever
 path the orchestrator takes.
+
+## Iteration 76 (fifth pass — no change in the gate; the mandate is addressed to the wrong seat) — 2026-09-12
+
+**Early exit, one paragraph, per the precondition.** The mandate is again MAKE HEAD
+DEPLOYABLE, and nothing about the blocking state has changed since the last two
+turns closed everything closable from this seat: the review log still ends at
+"Iteration 76 (build, DEF-327)" — **no review section exists for `c9c75b0`
+(DEF-328), and that Codex ruling is the single remaining gate** under
+DEPLOY_ON='sound'. `2daa59f` is reviewed SOUND; the DEF-328 row exists
+(backfilled in `4abef68`); the range is certified; there is no migration. The
+builder cannot review, cannot deploy, and is forbidden new code under this
+mandate — so the only action that advances the loop is the orchestrator routing
+`c9c75b0` to the review seat (or shipping `2daa59f` directly), and the suspension
+logic re-issuing this mandate nightly to the BUILD seat cannot converge: it does
+not distinguish "undeployed because a review has not been scheduled" from
+"undeployed because the builder left blockers open." Evidence this remains true
+at this writing: `git diff --stat 33f22f1..HEAD -- server/src server/tests
+server/prisma` is EMPTY (code tree bit-identical to the certified one), and the
+matrix re-run fresh this session: `npx tsc --noEmit` exit **0** · `npx vitest
+run` **3573 passed | 0 failed** (306 files passed | 1 skipped of 307; 7 expected
+fail | 21 skipped | 1 todo of 3602) · `git diff --check` clean. Deploy-time
+notes stand as written (flip `selfpruning.daily_rollup_enabled` to 1 — CL-057 is
+the consent; live-verify DEF-327's falsifier on the first switched-on day). Deck
+tags `whatsapp-lid-activity-rejected` and `stale-contact-data`: NOT closed — no
+code is permitted under this mandate; first in line when the suspension lifts,
+with the carried B04 binding fix and DEF-324. The continuation banner ("ATTEMPT
+6 ON Authorized Action … 55.1") again tracks a loop this seat has never run; the
+suspension governs. CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0 · MECHANISM:
+none — evidence only · FALSIFIER: a review_log section for `c9c75b0` existing at
+this writing (none does), or D-107's probe failing on this range.
