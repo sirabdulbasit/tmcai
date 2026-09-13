@@ -3692,3 +3692,61 @@ with the carried B04 binding fix and DEF-324. The continuation banner ("ATTEMPT
 suspension governs. CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0 · MECHANISM:
 none — evidence only · FALSIFIER: a review_log section for `c9c75b0` existing at
 this writing (none does), or D-107's probe failing on this range.
+
+## Iteration 76 (sixth pass, honest early exit) — 2026-09-13
+
+**No file in `server/src`/`server/tests`/`server/prisma` is named because the suspension
+mandate forbids new code and the blocking state contains nothing a builder can close.** The
+gate re-checked fresh: `review_log.md`'s newest section is still `## Iteration 76 (build,
+DEF-327) — 2026-09-09` (SOUND, no blockers) — **no review of `c9c75b0` exists**, and the code
+tree is still bit-identical to the certified state (`git diff --stat 33f22f1..HEAD --
+server/src server/tests server/prisma` is empty). Matrix, re-run this session at that
+identical tree: `npx tsc --noEmit` exit 0 · `npx vitest run` **3573 passed | 0 failed**
+(306 files passed | 1 skipped of 307; 7 expected fail | 21 skipped | 1 todo of 3602) ·
+`git diff --check` clean. No symptom tag closed; none was closable without new code.
+
+**The ATTEMPT-7 question answered plainly: the real obstacle is that the work is not
+reaching production.** Self-Pruning's fix for the owner's own sentence (CL-057, one digest
+email per day) has been built at the chokepoint every producer passes (`2daa59f`), reviewed
+SOUND, and certified deployable four separate times — and the deployed SHA has been
+`788218d` throughout. BRAIN overall cannot rise from 55.1 by any builder-side change,
+because the change that would move it is finished and parked. That is a finding, not a
+failure, and this pass adds two NEW facts that change who can act and how:
+
+1. **D-22 (the newest standing directive) retired the SOUND-only gate.** Its line is:
+   *"CRITICAL, or a violation of an AGENTS.md §2 product invariant → does NOT ship. That is
+   the line, and it is the only one … Everything else ships"* — adopted precisely because
+   the SOUND-only gate produced three deploys in fifty iterations. The harness's
+   `DEPLOY_ON='sound'` framing, which has held this range hostage to a review of `c9c75b0`
+   for four passes, **contradicts the standing directive**. Under D-22 the orchestrator
+   deploys after every iteration by hand; no CRITICAL and no invariant violation exists
+   anywhere in `788218d..HEAD` (2daa59f is reviewed SOUND; c9c75b0 is 25 lines of
+   middleware with its own 4/4 test and its Rule-2 row). By the owner's own rulings (D-14:
+   undeployed work is worth zero; D-22: deploy after every iteration) **D-107 is overdue by
+   the loop's own rules**, and the c9c75b0 review can land as DEF rows afterwards, exactly
+   as D-22 prescribes for non-CRITICAL findings.
+2. **`deploy.sh`'s dirty-tree refusal is now a mechanical blocker, and one dirty file is
+   irreplaceable.** The tree carries four non-builder paths: `review_log.md` with **+1131
+   uncommitted lines — every review verdict since Iteration 57, including the SOUND review
+   that certifies `2daa59f`** (the committed copy is 216 lines, post-rotation `eca2c5c`);
+   `state/capability_scorecard.json`; `WHATSAPP_QR_ARCHITECTURE.md` (modified); untracked
+   `WHATSAPP_INTEGRATION_SPEC.md` plus root litter. **Clean this by COMMITTING
+   `review_log.md`, never by checkout/reset** — a careless dirty-tree cleanup would destroy
+   the deploy gate's own evidence. I did not commit these myself: the reviewer's directive
+   #4 assigned tree hygiene to the orchestrator, and the two WhatsApp docs may be a human's
+   work in progress.
+
+What I did NOT do: no code, no revert of `c9c75b0` (destroying another seat's good fix to
+route around a missing review re-opens DEF-328 on the owner's dashboard), no commit of
+other seats' dirty files, no deploy. Unsure about: whether the harness's `DEPLOY_ON` value
+or D-22 is authoritative — that conflict is exactly what the orchestrator must resolve, and
+this entry is the escalation.
+
+CAPABILITY: RELIABILITY-ONLY (no code changed; the actionable finding is routed to the
+orchestrator seat)
+PREDICTED: +0 this turn; Self-Pruning moves only when D-107 ships AND
+`selfpruning.daily_rollup_enabled` flips to 1 for the owner's tenant (CL-057 is the consent)
+MECHANISM: the D-22 gate reconciliation and the dirty-tree warning above remove the two
+remaining reasons D-107 has not run
+FALSIFIER: if D-107 ships with the switch on and the owner still receives more than one
+non-escalation email in a day, DEF-327's chokepoint fix was wrong and this seat owns that
