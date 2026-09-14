@@ -3750,3 +3750,53 @@ MECHANISM: the D-22 gate reconciliation and the dirty-tree warning above remove 
 remaining reasons D-107 has not run
 FALSIFIER: if D-107 ships with the switch on and the owner still receives more than one
 non-escalation email in a day, DEF-327's chokepoint fix was wrong and this seat owns that
+
+## Iteration 76 (seventh pass — CORRECTION of the sixth) — 2026-09-14
+
+**No file in `server/src`/`server/tests`/`server/prisma` is named: the suspension mandate
+forbids new code, the gate contains nothing a builder can close, and this pass's real work
+is retracting a wrong claim of my own.** Gate re-checked: `review_log.md` still ends at
+`## Iteration 76 (build, DEF-327) — 2026-09-09`; no review of `c9c75b0` exists; HEAD's code
+tree is still bit-identical to the certified state (0-line diff vs `33f22f1` over
+`server/src server/tests server/prisma`). Matrix re-run fresh this session at that identical
+tree: `npx tsc --noEmit` exit 0 · `npx vitest run` **3573 passed | 0 failed** (7 expected
+fail | 21 skipped | 1 todo of 3602) · `git diff --check` clean. No symptom tag closed.
+
+**THE CORRECTION: the sixth pass's finding #2 was wrong, and I withdraw it.** I claimed
+the dirty tree is the mechanical deploy blocker via `deploy.sh`'s dirty-tree refusal. I had
+not read the check. It is `deploy.sh:145-150`: *"Orchestrator docs are expected to be
+dirty, so only Brain paths count"* — `git status --porcelain -- server/src server/tests
+server/prisma`, which is EMPTY on this tree. The dirty docs (`review_log.md` +1131,
+`capability_scorecard.json`, the WhatsApp docs, root litter) do not and never did block
+`deploy.sh`. What SURVIVES from the sixth pass: (a) D-22 retired the SOUND-only gate —
+only CRITICAL or an AGENTS.md §2 invariant violation blocks a ship, and neither exists in
+`788218d..HEAD`; (b) the preservation warning — `review_log.md`'s +1131 uncommitted lines
+are the only copy of every verdict since Iteration 57, and any tree cleanup must COMMIT
+them, never discard. I did not commit them myself this pass either: with the dirty-check
+myth dead, committing another seat's file is no longer even arguably deploy-critical.
+
+**The consequence is sharper than the sixth pass stated: there is NO mechanical blocker
+left.** `deploy.sh 76` at HEAD would pass its dirty check (Brain paths clean), pass rails
+(tsc 0, vitest 3573/0 — proven at this exact tree three sessions running), build from a
+certified range, restart, and probe. D-22's standing first-deploy exception (iteration 43's
+`recordAnswer`) was consumed when D-106 shipped `788218d`. Every named gate has now been
+examined and closed or shown false: review of `2daa59f` (SOUND), certification (four
+times), Rule-2 rows (backfilled), DEPLOY_ON='sound' (retired by D-22), dirty tree (counts
+Brain paths only — clean). The one remaining fact is that no seat has invoked `deploy.sh`
+since D-106 on 2026-09-04. ATTEMPT-8's question answered plainly: the obstacle is not in
+the code, the tests, the docs, or the tree — **the deploy phase is not executing**, and
+that is the orchestrator's lever alone. BRAIN 55.1 and Self-Pruning 36 move on D-107 plus
+the `selfpruning.daily_rollup_enabled` flip (CL-057 is the consent), and on nothing a
+builder can type.
+
+What I did NOT do: no code, no deploy (forbidden to this seat), no commit of other seats'
+dirty files, no revert of `c9c75b0`. Unsure about: why the loop's suspension logic keeps
+addressing BUILD — the harness owner should read `deploy.sh:145-150` and D-22 side by side.
+
+CAPABILITY: RELIABILITY-ONLY (no code changed; a wrong prior claim retracted, the true
+blocker isolated to the deploy phase not executing)
+PREDICTED: +0 this turn; Self-Pruning moves only when D-107 ships AND the switch flips
+MECHANISM: removing the last false blocker narrative leaves the orchestrator no reason,
+by its own directives, not to run `deploy.sh 76`
+FALSIFIER: if `deploy.sh 76` runs and dies on a gate this entry says is closed, this
+pass's analysis was wrong and the die-message names the real blocker
