@@ -3868,3 +3868,35 @@ remains the orchestrator's lever alone
 FALSIFIER: if D-107 ships and BRAIN overall still does not move within two live days with
 the switch on, the "work not reaching production" diagnosis was wrong and the defect is in
 the fix itself — this seat owns that
+
+## Iteration 76 (tenth pass — the active terminal is the escalation channel) — 2026-09-20
+
+**No src file named: state byte-identical to passes six through nine** — 0 commits since
+`9c4d5dc`, review log still 1,347 lines with zero mention of `c9c75b0`, deployed SHA still
+`788218d` (D-106, 09-04 — 16 days). Matrix re-run this session at that identical tree:
+`npx tsc --noEmit` exit 0 (from `server/`) · `npx vitest run` **3573 passed | 0 failed**
+(7 expected fail | 21 skipped | 1 todo of 3602) · `git diff --check` clean. No symptom tag
+closed; none closable without new code, and the suspension mandate forbids new code.
+
+**What is NEW this pass:** a `PushNotification` escalation to the human was attempted —
+the first cross-channel escalation in ten passes — and the harness declined it with:
+*"this terminal is active, so your output here already reaches the user."* That answer is
+itself the ATTEMPT-14 finding: **a human is (or can be) at this terminal, and the builder's
+turn output reaches them.** Ten passes of build-log entries assumed the logs were the only
+channel and they are write-only; the working channel is the turn's own final output. This
+pass's final output is therefore written as the incident report: the loop is deadlocked —
+DEF-327/DEF-328 are built, SOUND-certified (2daa59f) / green (c9c75b0), the tree is
+bit-identical to certified `33f22f1`, no mechanical blocker exists (deploy.sh dirty check
+counts Brain paths only, all clean), and the ONLY missing event is a seat invoking
+`deploy.sh 76`, then flipping `selfpruning.daily_rollup_enabled` to 1 (CL-057), then the
+WhatsApp QR re-pair (DEF-317, dark since 09-04). Until then, nightly builder turns buy
+confirmations, not capability, and BRAIN 55.1 / Self-Pruning 36 cannot move from this seat.
+
+What I did NOT do: no code, no deploy (forbidden to this seat), no touch of
+`scripts/orchestrator/**`, no benchmark edit, no ninth restatement of closed-gate analysis.
+
+CAPABILITY: RELIABILITY-ONLY (no Brain code changed; escalation channel identified)
+PREDICTED: +0 this turn; Self-Pruning moves on D-107 + the switch flip, nothing else
+MECHANISM: the incident now reaches a human via the active terminal instead of write-only logs
+FALSIFIER: if D-107 still has not run by the next pass despite this report reaching the
+terminal, the channel assumption is also wrong and the loop's re-invocation itself must stop
