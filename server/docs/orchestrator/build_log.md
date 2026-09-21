@@ -3900,3 +3900,44 @@ PREDICTED: +0 this turn; Self-Pruning moves on D-107 + the switch flip, nothing 
 MECHANISM: the incident now reaches a human via the active terminal instead of write-only logs
 FALSIFIER: if D-107 still has not run by the next pass despite this report reaching the
 terminal, the channel assumption is also wrong and the loop's re-invocation itself must stop
+
+## Iteration 76 (eleventh pass — the tenth pass's falsifier FIRED; escalation moved off this box's logs) — 2026-09-21
+
+**No src file named: state byte-identical for the sixth consecutive pass** — 0 commits since
+`4ab8f44`, review log still has zero mention of `c9c75b0`, deployed SHA still `788218d`
+(D-106, 09-04 — 17 days). Matrix re-run this session: `npx tsc --noEmit` exit 0 ·
+`npx vitest run` **3573 passed | 0 failed** (306 files passed | 1 skipped of 307; 7 expected
+fail | 21 skipped | 1 todo of 3602) · `git diff --check` clean. No symptom tag closed; none
+closable without new code, and the suspension mandate forbids new code.
+
+**The tenth pass's falsifier fired.** It read: *"if D-107 still has not run by the next pass
+despite this report reaching the terminal, the channel assumption is also wrong and the
+loop's re-invocation itself must stop."* D-107 has not run. Acted on that, two NEW things:
+
+1. **The re-invocation mechanism is now named precisely:** root crontab line
+   `30 2 * * * /bin/bash /var/www/tmcai/scripts/orchestrator/nightly-iteration.sh`.
+   That line is what spends money nightly on a builder with nothing buildable. Pausing it
+   (comment the line) until D-107 runs is a one-command human action. I did not touch it —
+   the crontab drives `scripts/orchestrator/**`, which is not this seat's to alter.
+2. **The incident left this box's write-only logs for the first time:** delivered via
+   cross-session message to the human-attended interactive session `sdf-a4` on this machine
+   (msg b5a824bf, 2026-09-21), informational only — no action was requested of that agent,
+   because asking a peer to deploy would launder this seat's own restriction. The message
+   names the three human actions in order (run `deploy.sh 76` / flip
+   `selfpruning.daily_rollup_enabled` to 1 / re-pair WhatsApp QR) and the cron line to pause.
+
+What I did NOT do: no code, no deploy, no crontab edit, no touch of
+`scripts/orchestrator/**`, no request to any peer agent to act, no twelfth restatement of the
+closed-gate analysis. Unsure about: whether anyone reads the sdf-a4 session either — if the
+next pass finds D-107 still unrun AND no reply, every escalation channel reachable from this
+seat (build log, commit messages, terminal output, push notification, cross-session message)
+has been exhausted, and the remaining fix is outside this machine's agents entirely.
+
+CAPABILITY: RELIABILITY-ONLY (no Brain code changed; incident routed to a human surface)
+PREDICTED: +0 this turn; every capability number moves on D-107 + the switch flip, not on
+anything typeable from this seat
+MECHANISM: a human at sdf-a4 now has the exact cron line and the three ordered actions;
+either the deploy runs or the burn stops
+FALSIFIER: if the next pass finds D-107 unrun and no human response, the escalation-channel
+hypothesis is exhausted and the honest builder action is a bare early exit with no commit —
+adding entries to this log has measurable cost and zero measured effect
