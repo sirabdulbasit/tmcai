@@ -3970,3 +3970,72 @@ in every recent harvest window) now carries the deploy request and the cron-paus
 FALSIFIER: if a future pass finds this email unactioned after a reasonable interval, the
 finding stands that no reachable channel prompts action, and the loop should idle (bare
 exits) until a human or the orchestrator moves — no new escalations exist to invent
+
+## Iteration 76 (build, DEF-329 — the consumer was dark, and the cause is a dead billing account) — 2026-10-02
+
+**Target divergence, declared:** rotation says Memory, campaign says Self-Pruning; this
+turn built **Self-Healing** under the campaign's own exception clause — a live regression
+reaching the owner. The analyst's #1 finding (481 inbound events unactioned in 14 days,
+a deployed capability dark) outranks both, and the suspension mandate's "no new defect"
+clause yields to it for the same reason: his twice-repeated ask (S20/S23) stopped working
+in production on 09-29 and nothing on the deployed tree would ever say so.
+
+**Diagnosis completed this turn (the analyst established effect; this seat established
+cause, from pm2 logs, read-only):** every Gemini call in production 403s with *"This API
+method requires billing to be enabled... project #tmcai-491811"* — first occurrence
+**2026-09-29T08:36:22Z**, 373 hits that day, 15,651 in one rotated log on 10-01. That
+volume exceeds what the derivation job alone can produce: **every model-governed path is
+failing, not just this consumer.** The job itself never died — it sweeps every 15 min,
+scans 5, and each judgement fails; per the DEF-246 retry contract each row "stays `new`
+for the next tick," forever. And the sweep summary printed **`errors: 0`** the whole time
+(`if (!judged) continue;` counted nothing), so the receipt claimed health during a total
+outage. Three channels died at once because they share the one credential.
+
+**Three-docs verdict: PROGRESSING** — new root cause, first occurrence of this class (a
+judgement dependency dying with no liveness floor). No §3 recurrence tag names it; the kin
+are D-105's theme ("fixes that exist and are not running") and `fabricated-status` (a
+healthy sweep log is a fabricated claim). No CL row: there is no owner chat — a never-acted
+failure produces no reply to report, which is exactly why it ran 23 days unseen.
+
+**The change (one DEF, one commit):**
+- `server/src/jobs/emailItemDerivationJob.ts` — `DerivationSummary.judgementFailures`
+  (truthful receipt; sweep log can no longer print healthy while 100% of judgements fail);
+  module-level liveness latch (4 consecutive full-failure sweeps ≈1h → alarm once per 24h
+  per affected owner through `brainContactsUser`, urgency high, dedup
+  `derivation_judgement_outage`, body = provider's own error text + waiting-row count);
+  reset on first successful judgement; quiet sweeps neither advance nor reset; alarm fully
+  fenced so it can never break the sweep. Mechanics mirror the certified connector-stale
+  alert — no second implementation of anything.
+- `server/tests/def329JudgementOutageAlarm.test.ts` — 4 named tests: receipt truth,
+  single-fire + 24h window, reset-on-recovery (mutation check on the reset), quiet-sweep
+  neutrality.
+- Guardrail named (required for code taking authority): **no-claim-without-a-receipt**,
+  applied to the consumer's own health. Wording: the alarm body carries provider FACTS;
+  rendering goes through the canonical outbound path whose curated fallback is sanctioned
+  precisely when the model is unreachable — which is this failure mode by definition.
+
+**Verification (re-run after the last code edit):** `npx tsc --noEmit` exit 0 ·
+`npx vitest run` **3577 passed | 0 failed** (307 files passed | 1 skipped of 308;
+7 expected fail | 21 skipped | 1 todo of 3606) · `git diff --check` clean ·
+`def329JudgementOutageAlarm.test.ts` 4/4.
+
+**What I did NOT do:** did not touch billing (impossible from code; OWNER ACTION: re-enable
+billing on GCP project `tmcai-491811` — until then every model call fails and this alarm
+itself will be the first thing the fix delivers); did not deploy (forbidden seat); did not
+backfill the >48h abandoned backlog (deliberate DEF-246 bound — the owner's call); did not
+take Codex's ranked items 1–2 (B04 binding, DEF-324) — deferred again behind D-107, named
+not dropped; did not touch the benchmark or `scripts/orchestrator/**`. Unsure about:
+whether `urgency: high`'s dual-dispatch is the right volume for this alarm — Codex should
+weigh it against the connector-alert precedent that chose 'normal' for a lesser failure.
+
+**Honest prediction:** no score moves this turn (undeployed, and the model the benchmark
+itself needs is dark — note the overall dropped 95→54.9-adjacent readings are consistent
+with judge calls failing). After D-107 ships AND billing is restored: Self-Healing should
+move because the class "deployed consumer dies silently" is closed at the receipt level.
+FALSIFIER: a future judgement outage >2h with this code live and no owner alarm.
+
+CAPABILITY: Self-Healing
+PREDICTED: +0 until D-107 ships and billing is restored; then the dark-consumer class is closed
+MECHANISM: the consumer's own sweep receipt can no longer claim health through a total
+judgement outage, and a persistent outage reaches the owner as one receipted alarm per day
+FALSIFIER: judgement outage >2h in production with this code live and no alarm delivered

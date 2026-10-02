@@ -43,6 +43,35 @@ const log = createLogger('email-item-derivation');
 
 const WINDOW_HOURS = 48;
 
+// ── DEF-329 — `email-derivation-consumer-dark`: the liveness latch ─────────
+//
+// "A failed judgement leaves the row `new` for the next tick" (the DEF-246
+// contract above) has no floor: when the judgement dependency dies outright
+// (measured: provider 403 "requires billing", 2026-09-29 08:36 → 10-02, all
+// three channels at once because they share one credential), every row stays
+// `new` forever, the sweep log prints a healthy summary, and 481 inbound
+// events accumulate silently. A never-acted failure produces no bad reply,
+// so no chat log ever reports it — the outage is invisible by construction.
+// Guardrail enforced: no-claim-without-a-receipt, applied to the consumer's
+// OWN health — it may not keep claiming quiet sweeps while 100% of its
+// judgements fail. The latch is deterministic ops mechanics (counts in vs
+// out); the ALERT body carries provider facts, and its wording goes through
+// the same outbound path as every Brain contact (model-rendered, curated
+// fallback only when the model is unreachable — which, in this failure mode,
+// it is: the sanctioned case for a string that carries the fact).
+const OUTAGE_SWEEP_THRESHOLD = 4; // ≈1h of 15-min ticks — one flaky call never alarms
+const OUTAGE_REALERT_MS = 24 * 60 * 60 * 1000; // mirror connector-stale: once/24h, never spam
+let consecutiveFullFailureSweeps = 0;
+let lastOutageAlertAt = 0;
+let lastJudgementErrorHead: string | null = null;
+
+/** Test seam — liveness state is module-scoped by design (one process, one consumer). */
+export function resetDerivationLiveness(): void {
+  consecutiveFullFailureSweeps = 0;
+  lastOutageAlertAt = 0;
+  lastJudgementErrorHead = null;
+}
+
 export interface DerivationSummary {
   scanned: number;
   created: number;
@@ -53,6 +82,12 @@ export interface DerivationSummary {
    *  (fulfilled → closed/annotated, or advanced → annotated). */
   reconciled: number;
   errors: number;
+  /** DEF-329 — judgements that returned null (threw, or malformed JSON).
+   *  Rows legitimately stay `new` for retry, but the SWEEP RECEIPT must say
+   *  so: on 2026-09-29→10-02 every judgement failed for 9 days (provider 403,
+   *  billing) and this summary printed `errors: 0` throughout — a healthy
+   *  claim with no receipt behind it, during a total outage. */
+  judgementFailures: number;
 }
 
 interface Judgement {
@@ -94,6 +129,7 @@ export async function judgeEmailActionability(email: {
     if (typeof parsed?.actionable !== 'boolean') return null;
     return parsed;
   } catch (e: any) {
+    lastJudgementErrorHead = e?.message?.slice(0, 160) ?? null;
     log.warn('judgement failed — row stays new for the next tick', { error: e?.message?.slice(0, 150) });
     return null;
   }
@@ -151,6 +187,7 @@ export async function judgeThreadReconciliation(args: {
     if (!['fulfils', 'advances', 'unrelated'].includes(parsed?.relation as string)) return null;
     return parsed;
   } catch (e: any) {
+    lastJudgementErrorHead = e?.message?.slice(0, 160) ?? null;
     log.warn('thread reconciliation judgement failed — event stays new for retry', { error: e?.message?.slice(0, 150) });
     return null;
   }
@@ -161,7 +198,12 @@ const ACTIVE_STATUSES = ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_
 export async function runEmailItemDerivation(): Promise<DerivationSummary> {
   const out: DerivationSummary = {
     scanned: 0, created: 0, drafted: 0, skippedNotActionable: 0, skippedDuplicate: 0, reconciled: 0, errors: 0,
+    judgementFailures: 0,
   };
+  // DEF-329 — sweep-local liveness inputs: did ANY judgement succeed, and
+  // which owners are affected when none do (they receive the alarm).
+  let judgementSuccesses = 0;
+  const failedFor = new Map<number, string>();
   try {
     const { getBehaviorValue } = await import('../services/behaviorConfig');
 
@@ -274,7 +316,12 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
               item: { title: matched.title, description: matched.description, status: matched.status },
               email: pEmail,
             });
-            if (!rel) continue; // judgement failed — event stays `new`, retried
+            if (!rel) { // judgement failed — event stays `new`, retried
+              out.judgementFailures += 1;
+              failedFor.set(row.userId, row.clientNumber);
+              continue;
+            }
+            judgementSuccesses += 1;
             if (rel.relation !== 'unrelated') {
               const note = String(rel.note ?? '').slice(0, 200) || 'answered by a later email on the same thread';
               let closed = false;
@@ -374,7 +421,12 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
         out.scanned += 1;
 
         const judged = await judgeEmailActionability(email);
-        if (!judged) continue; // stays `new`; retried next tick
+        if (!judged) { // stays `new`; retried next tick
+          out.judgementFailures += 1;
+          failedFor.set(row.userId, row.clientNumber);
+          continue;
+        }
+        judgementSuccesses += 1;
 
         if (!judged.actionable) {
           await prisma.feedEvent.update({
@@ -467,8 +519,70 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
     out.errors += 1;
     log.warn('derivation sweep failed', { error: e?.message?.slice(0, 200) });
   }
-  if (out.scanned > 0 || out.errors > 0) log.info('sweep', out as any);
+  await assessJudgementLiveness(out, judgementSuccesses, failedFor);
+  if (out.scanned > 0 || out.errors > 0 || out.judgementFailures > 0) log.info('sweep', out as any);
   return out;
+}
+
+/**
+ * DEF-329 — the latch itself. A sweep with at least one failed judgement and
+ * ZERO successful ones advances the counter; any success resets it (and arms
+ * the alarm afresh for a future outage). At the threshold, each affected
+ * owner is told ONCE per 24h window, through the canonical outbound
+ * chokepoint — same mechanics as the connector-stale alert, which is the
+ * certified precedent for exactly this shape of failure. The alarm must
+ * never break the sweep: it is fully fenced.
+ */
+async function assessJudgementLiveness(
+  out: DerivationSummary,
+  judgementSuccesses: number,
+  failedFor: Map<number, string>,
+): Promise<void> {
+  try {
+    if (judgementSuccesses > 0) {
+      consecutiveFullFailureSweeps = 0;
+      lastOutageAlertAt = 0;
+      return;
+    }
+    if (out.judgementFailures === 0) return; // nothing attempted — no evidence either way
+    consecutiveFullFailureSweeps += 1;
+    if (consecutiveFullFailureSweeps < OUTAGE_SWEEP_THRESHOLD) return;
+    if (Date.now() - lastOutageAlertAt < OUTAGE_REALERT_MS) return;
+    lastOutageAlertAt = Date.now();
+    const { brainContactsUser } = await import('../services/notifications/brainOutboundService');
+    for (const [userId, clientNumber] of failedFor) {
+      const since = new Date(Date.now() - WINDOW_HOURS * 60 * 60 * 1000);
+      const waiting = await prisma.feedEvent.count({
+        where: {
+          clientNumber, userId,
+          sourceType: { in: ['gmail', 'gchat', 'gcal'] },
+          status: 'new',
+          createdAt: { gte: since },
+        },
+      }).catch(() => out.judgementFailures);
+      const lines = [
+        `⚠️ Inbound triage is stalled: the AI judgement call has failed on every attempt for ${consecutiveFullFailureSweeps} consecutive sweeps (~${consecutiveFullFailureSweeps * 15} min).`,
+        `${waiting} inbound email/chat/calendar events are waiting, and none can become open items until this recovers.`,
+        ...(lastJudgementErrorHead ? [`Provider error: ${lastJudgementErrorHead}`] : []),
+      ];
+      await brainContactsUser({
+        userId,
+        clientNumber,
+        kind: 'derivation_judgement_outage',
+        summary: 'Inbound triage stalled — AI judgement calls failing',
+        body: lines.join('\n'),
+        urgency: 'high',
+        dedupKey: 'derivation_judgement_outage',
+        dedupWindowMs: OUTAGE_REALERT_MS,
+        metadata: { consecutiveFullFailureSweeps, waiting, errorHead: lastJudgementErrorHead } as any,
+      }).catch((e: any) => log.warn('outage alert send failed', { userId, error: e?.message?.slice(0, 120) }));
+    }
+    log.warn('judgement outage alarm raised', {
+      sweeps: consecutiveFullFailureSweeps, users: failedFor.size, errorHead: lastJudgementErrorHead,
+    });
+  } catch (e: any) {
+    log.warn('liveness assessment failed', { error: e?.message?.slice(0, 120) });
+  }
 }
 
 export function scheduleEmailItemDerivation(): void {
