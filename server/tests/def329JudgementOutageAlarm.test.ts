@@ -30,6 +30,7 @@ const state = {
   eventUpdates: [] as Array<{ id: string; data: any }>,
   itemCreates: [] as any[],
   alerts: [] as any[],
+  adminEmails: [] as any[],
   judgement: null as any,
   judgeThrows: true,
   waitingCount: 7,
@@ -92,6 +93,18 @@ vi.mock('../src/services/notifications/brainOutboundService', () => ({
   brainContactsUser: async (req: any) => { state.alerts.push(req); return { sent: true, channelsUsed: ['whatsapp'], waMessageIds: [] }; },
 }));
 
+// DEF-329 remediation — the direct SA/AD email leg, independent of the
+// user-facing opt-in gate (the chokepoint leg above was measured suppressed
+// in production for 23.5h while the model was dead).
+vi.mock('../src/services/notifications/adminOpsAlert', () => ({
+  __esModule: true,
+  sendAdminOpsEmail: async (params: any) => {
+    state.adminEmails.push(params);
+    return { total: 1, results: [{ email: 'haseeb@tmcltd.com', ok: true, error: null }] };
+  },
+  escapeOpsHtml: (s: string) => String(s),
+}));
+
 import { runEmailItemDerivation, resetDerivationLiveness } from '../src/jobs/emailItemDerivationJob';
 
 const inboundRow = (over: Record<string, unknown> = {}) => ({
@@ -126,6 +139,7 @@ describe('DEF-329 — a dead judgement dependency alarms instead of printing hea
     state.eventUpdates = [];
     state.itemCreates = [];
     state.alerts = [];
+    state.adminEmails = [];
     state.judgeThrows = true;
     state.judgement = null;
     state.waitingCount = 7;
@@ -158,6 +172,22 @@ describe('DEF-329 — a dead judgement dependency alarms instead of printing hea
 
     await runEmailItemDerivation(); // 5th — inside the 24h window
     expect(state.alerts.length).toBe(1); // no re-alert spam
+  });
+
+  it('the direct SA/AD email leg fires with the chokepoint leg — same latch, same window, facts in the body (remediation of the opt-in silencing measured live)', async () => {
+    for (let i = 0; i < 3; i += 1) await runEmailItemDerivation();
+    expect(state.adminEmails).toEqual([]); // same threshold as the chokepoint leg
+
+    await runEmailItemDerivation(); // 4th
+    expect(state.adminEmails.length).toBe(1);
+    const mail = state.adminEmails[0];
+    expect(mail.clientNumber).toBe('TMC-0001');
+    expect(mail.subject).toContain('Inbound triage stalled');
+    expect(mail.html).toContain('requires billing'); // the provider's own fact rides the direct leg too
+    expect(mail.html).toContain('7'); // the waiting-row count
+
+    await runEmailItemDerivation(); // 5th — inside the 24h window
+    expect(state.adminEmails.length).toBe(1); // one alarm per outage window on BOTH legs
   });
 
   it('one successful judgement resets the latch — the counter starts over after recovery', async () => {

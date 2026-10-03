@@ -576,6 +576,47 @@ async function assessJudgementLiveness(
         dedupWindowMs: OUTAGE_REALERT_MS,
         metadata: { consecutiveFullFailureSweeps, waiting, errorHead: lastJudgementErrorHead } as any,
       }).catch((e: any) => log.warn('outage alert send failed', { userId, error: e?.message?.slice(0, 120) }));
+
+      // DEF-329 remediation (Codex iteration-76 §3 MEDIUM, measured live:
+      // the alarm above never reached the owner's inbox in the 23.5h after
+      // D-107 deployed it — suppressed one layer up by the user-facing
+      // opt-in gate). The SECOND route, like DEF-321's: a direct SA/AD email
+      // through the shared ops helper, independent of `outboundEnabled`.
+      // Facts only — this path exists precisely because the model is dead.
+      try {
+        const { sendAdminOpsEmail, escapeOpsHtml } = await import('../services/notifications/adminOpsAlert');
+        const subject = `[Nexeo] Inbound triage stalled — AI judgement calls failing (${clientNumber})`;
+        const html = `
+          <div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px;">
+            <p style="margin: 0 0 16px;"><strong>Every AI judgement call on tenant <code>${escapeOpsHtml(clientNumber)}</code> has failed for ${consecutiveFullFailureSweeps} consecutive sweeps (~${consecutiveFullFailureSweeps * 15} min).</strong></p>
+            <table style="border-collapse: collapse; width: 100%; font-size: 13px;">
+              <tr><td style="padding: 6px 10px; color: #666;">Waiting inbound events (48h window)</td><td style="padding: 6px 10px;">${waiting}</td></tr>
+              ${lastJudgementErrorHead ? `<tr><td style="padding: 6px 10px; color: #666;">Provider error</td><td style="padding: 6px 10px;"><code>${escapeOpsHtml(lastJudgementErrorHead)}</code></td></tr>` : ''}
+              <tr><td style="padding: 6px 10px; color: #666;">Detected</td><td style="padding: 6px 10px;">${new Date().toISOString()}</td></tr>
+            </table>
+            <div style="margin-top: 16px; padding: 12px 14px; background: #fff8e6; border: 1px solid #f5d97f; border-radius: 6px; font-size: 13px;">
+              <strong>Action required:</strong><br />
+              Resolve the provider error above (credential, quota, or billing on the project it names).
+              Until it recovers, no inbound email, chat or calendar event becomes an open item — rows wait at
+              <code>status:new</code> and are retried, never dropped.
+            </div>
+          </div>
+        `;
+        const { total, results } = await sendAdminOpsEmail({ clientNumber, subject, html });
+        const sentOk = results.filter((r) => r.ok).length;
+        if (total === 0 || sentOk === 0) {
+          // An undeliverable "the model is dead" alert is an incident of its
+          // own (DEF-321's lesson, verbatim shape).
+          log.error('judgement outage alert reached NO ONE over email', {
+            clientNumber, total,
+            failures: results.filter((r) => !r.ok).map((f) => ({ email: f.email, error: f.error })),
+          });
+        } else {
+          log.info('judgement outage admin email sent', { clientNumber, sent: sentOk, total });
+        }
+      } catch (e: any) {
+        log.warn('judgement outage admin email threw', { clientNumber, error: e?.message?.slice(0, 120) });
+      }
     }
     log.warn('judgement outage alarm raised', {
       sweeps: consecutiveFullFailureSweeps, users: failedFor.size, errorHead: lastJudgementErrorHead,

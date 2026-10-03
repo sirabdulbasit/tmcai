@@ -404,6 +404,11 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   const DIAGNOSTIC_KINDS = new Set([
     'brain_health_alert', 'brain_daily_digest', 'deploy_report',
     'self_upgrade', 'unnotified_answered_ask', 'connector_stale',
+    // DEF-329 remediation (Codex iteration-76 §3 MEDIUM): the judgement-outage
+    // alarm was UNTIERED, competing against the daily cap like any nag — an
+    // ops-liveness signal must ride the reserved diagnostic slice, same as
+    // connector_stale, whose precedent it mirrors.
+    'derivation_judgement_outage',
   ]);
 
   // DEF-271 — HOUSEKEEPING gets a slice too, for the same reason and by the same rule.

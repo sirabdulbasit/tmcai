@@ -4039,3 +4039,72 @@ PREDICTED: +0 until D-107 ships and billing is restored; then the dark-consumer 
 MECHANISM: the consumer's own sweep receipt can no longer claim health through a total
 judgement outage, and a persistent outage reaches the owner as one receipted alarm per day
 FALSIFIER: judgement outage >2h in production with this code live and no alarm delivered
+
+## Iteration 77 (remediation of DEF-329's MEDIUM — the alarm that could be silenced) — 2026-10-03
+
+**Codex's ranked directive governed this turn** (review iteration-76 §6): item 1 (verify the
+alarm arrived / surface billing) and item 2 (harden alarm delivery). Taken in that order.
+
+**Directive 1 — verified, and the finding is live:** Gmail search of the owner's mailbox,
+23.5h after D-107 deployed DEF-329: **the "Inbound triage stalled" alarm never arrived.**
+Codex's §3 MEDIUM is not hypothetical — the ops alarm was silenced in production exactly as
+predicted (opt-in gate + untiered against the cap). Billing on `tmcai-491811` is still dead
+(the analyst's fresh harvest: 434/434 gmail unactioned). A one-time billing-incident email
+to the owner follows this commit, dedup-checked first; recorded here so no future pass
+re-sends it.
+
+**Directive 2 — built, with one deliberate deviation from the prescription:** Codex offered
+"DIAGNOSTIC_KINDS + `bypassOptIn: true`" OR "a direct admin-email leg like DEF-321."
+`bypassOptIn`'s own contract says **"NEVER use from background jobs"** (reserved for
+user-clicked probes where the click is the consent) — so the first option would erode a
+documented contract, and I took the second:
+- `server/src/services/notifications/adminOpsAlert.ts` (NEW) — the ONE implementation of
+  "email the operators directly": recipient resolution (active SA + tenant AD) and
+  per-recipient sends with captured reasons. Mechanics only; logging stays with callers.
+- `server/src/services/whatsapp/connectionWatchdog.ts` — `alertWhatsAppDisconnect` now
+  delegates recipients+send to the helper; every log line and the zero-recipient semantics
+  byte-identical (pinned by def321's 8 tests, all green unchanged).
+- `server/src/services/notifications/brainOutboundService.ts` — `derivation_judgement_outage`
+  added to `DIAGNOSTIC_KINDS`: the reserved slice, same as `connector_stale`.
+- `server/src/jobs/emailItemDerivationJob.ts` — the alarm now fires BOTH legs at the same
+  latch: chokepoint (audit row + model-rendered wording + DEF-296 email fallback) and the
+  direct SA/AD email (facts only, provider error verbatim), fully fenced.
+- `server/tests/def329JudgementOutageAlarm.test.ts` — fifth test: direct leg fires at the
+  same threshold, once per 24h window, with the provider fact in the body.
+
+**Three-docs verdict: circling-adjacent, resolved structurally** — the silenced-alarm shape
+is DEF-321's class ("the alert went out over the channel that had just died"), already in
+the record; per rule 5 the fix is structural (one shared ops-email implementation, not a
+third copy), not another instance patch.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 · `npx vitest run`
+**3578 passed | 0 failed** (307 files passed | 1 skipped of 308; 7 expected fail | 21
+skipped | 1 todo of 3607) · `git diff --check` clean · def329 5/5, def321 8/8, def104 6/6.
+
+**Campaign C-3 (Self-Pruning), said plainly: no increment this turn.** Codex's ranked
+directive outranked it and consumed the turn. Two facts for the next campaign turn:
+(a) increment-1-shaped code ALREADY EXISTS and is now deployed at `ef9891f` —
+`selfpruning/inboundNoiseLedger.ts`, `jobs/inboundNoiseReportJob.ts`,
+`scripts/nexeoInboundNoiseReport.ts` — so the next turn must establish whether increment 1
+is in fact done (its "quote the CL-033 burst back to the owner" clause is billing-blocked
+anyway) rather than rebuild it; (b) nothing in C-3 can be observed live until billing is
+restored. Codex items 3 (B04/DEF-324) and 4 (benchmark gauge) remain named-not-dropped;
+item 5 (per-tenant latch state, tree litter) is the orchestrator's.
+
+**What I did NOT do:** no `bypassOptIn` from a background job (contract); no campaign
+increment (stated above); no benchmark or `scripts/orchestrator/**` touch; no flag flips in
+production. Unsure about: whether the direct leg should also fire on the LOW-latent
+per-tenant masking path Codex flagged — deferred with it.
+
+**Prediction:** no score moves (the gauge itself is dark until billing). After billing is
+restored, the NEXT outage of this class reaches SA/AD inboxes within ~75 minutes even for an
+opted-out tenant. FALSIFIER: a judgement outage with this code live and zero rows in the
+SA/AD inboxes' Nexeo alert thread — then the direct leg failed too and this remediation was
+insufficient.
+
+CAPABILITY: Self-Healing
+PREDICTED: +0 this turn; the closure Codex rated SUPPORTED is now unconditional on the
+user toggle, which was its stated caveat
+MECHANISM: the outage alarm rides the reserved diagnostic slice AND a direct operator-email
+leg that no user-facing setting can silence
+FALSIFIER: next live judgement outage with no email in any SA/AD inbox

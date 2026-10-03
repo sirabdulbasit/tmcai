@@ -21,7 +21,6 @@
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
-import { sendEmail } from '../emailService';
 
 const log = createLogger('whatsapp:watchdog');
 
@@ -302,25 +301,6 @@ export async function alertWhatsAppDisconnect(params: {
   requiresAction: string;
   attemptCount?: number;
 }): Promise<void> {
-  // Recipients: every active SuperAdmin + every active admin of the
-  // affected tenant. SuperAdmin needs the cross-tenant operational view;
-  // tenant admin actually has to scan the QR.
-  const recipients = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT DISTINCT email, name, user_type, client_number
-       FROM users
-      WHERE is_active = TRUE
-        AND ( user_type = 'SA'
-              OR (user_type = 'AD' AND client_number = $1) )
-        AND email IS NOT NULL
-        AND email <> ''`,
-    params.clientNumber,
-  ).catch(() => [] as any[]);
-
-  if (recipients.length === 0) {
-    log.warn('no SA/AD recipients for disconnect alert', { clientNumber: params.clientNumber });
-    return;
-  }
-
   const subject = `[Nexeo] WhatsApp disconnected — ${params.clientNumber}`;
   const html = `
     <div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px;">
@@ -358,16 +338,16 @@ export async function alertWhatsAppDisconnect(params: {
   //      implementations`, 11th: one notification path with a fallback chain
   //      and one without, and the one without is the one that says "you can
   //      no longer reach me".
-  const results = await Promise.all(
-    recipients.map(async (r) => {
-      try {
-        const ok = await sendEmail(r.email, subject, html);
-        return { email: r.email, ok, error: ok ? null : 'sendEmail returned false' };
-      } catch (e: any) {
-        return { email: r.email, ok: false, error: String(e?.message ?? e).slice(0, 200) };
-      }
-    }),
-  );
+  // DEF-329 remediation — recipient resolution + per-recipient sends live in
+  // the ONE shared helper now (adminOpsAlert.ts); a second copy here and a
+  // second copy in the judgement-outage alarm would drift the moment either
+  // changed. Interpretation and every log line below are unchanged.
+  const { sendAdminOpsEmail } = await import('../notifications/adminOpsAlert');
+  const { total, results } = await sendAdminOpsEmail({ clientNumber: params.clientNumber, subject, html });
+  if (total === 0) {
+    log.warn('no SA/AD recipients for disconnect alert', { clientNumber: params.clientNumber });
+    return;
+  }
   const sent = results.filter((r) => r.ok).length;
   const failed = results.filter((r) => !r.ok);
   if (sent === 0) {
@@ -380,7 +360,7 @@ export async function alertWhatsAppDisconnect(params: {
     });
   } else {
     log.info('disconnect alert sent', {
-      clientNumber: params.clientNumber, sent, failed: failed.length, total: recipients.length,
+      clientNumber: params.clientNumber, sent, failed: failed.length, total,
       ...(failed.length ? { failures: failed.map((f) => ({ email: f.email, error: f.error })) } : {}),
     });
   }
