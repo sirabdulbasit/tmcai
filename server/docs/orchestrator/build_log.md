@@ -4108,3 +4108,66 @@ user toggle, which was its stated caveat
 MECHANISM: the outage alarm rides the reserved diagnostic slice AND a direct operator-email
 leg that no user-facing setting can silence
 FALSIFIER: next live judgement outage with no email in any SA/AD inbox
+
+## Iteration 77 (build, DEF-330 — C-3 increment 2, the same-sender burst hold) — 2026-10-04
+
+**Codex directive #2 executed as written: audited before building, and the audit changed the
+build.** The campaign said "take the first increment that is not done"; the audit found far
+more DONE than the campaign state admits:
+- **Increment 1 is code-complete, deployed, scheduled** (DEF-217 job wired in `server.ts`,
+  hourly behind `protectedJob`; DEF-230 fixed its ranking rule; DEF-170 its counters). It is
+  currently and CORRECTLY quiet: with WhatsApp dark since 09-04 and the model dark since
+  09-29, almost nothing has *reached* the owner in any 36h window, so every user sits below
+  the ≥5-push floor. Its "Done when" (the quote-back observed live) is blocked by billing +
+  QR, not by missing code. **Nothing to build.**
+- **Increment 2 half-exists**: `digest_enabled` (DEF-173) digests per ITEM;
+  `daily_rollup_enabled` (DEF-327) folds housekeeping per DAY. **The uncovered shape is
+  CL-033 itself** — a same-SENDER burst of HUMAN relays, which every existing switch
+  deliberately exempts (DEF-156/308 protect humans from suppression).
+- **Increment 3 also substantially exists** (`withdrawal_notice_enabled`, DEF-191/202/208/242
+  lineage) — noted for the campaign ledger; not this turn's concern.
+
+**The change (DEF-330, the genuine gap):** a flag-gated same-sender burst hold at the same
+chokepoint, beside DEF-327's block, reusing its exact receipt mechanics — see the DEF row for
+the full contract. Three new behavior keys (`burst_rollup_enabled` def 0, `burst_threshold`
+def 4, `burst_window_minutes` def 90). Files: `brainOutboundService.ts` (the hold block),
+`behaviorConfig.ts` (keys), `def330SameSenderBurstRollup.test.ts` (7 tests through the REAL
+chokepoint harness). Sender grounding comes from the existing `wa_counterpart:<sender>:`
+dedupKey convention — no new metadata contract, no enumeration added; HUMAN_KINDS membership
+is read, not widened.
+
+**Three-docs verdict: progressing** — first occurrence of the same-sender-burst class as a
+BUILD (CL-033 reported it 2026-08; every prior fix addressed adjacent shapes). Not a §3
+recurrence: no symptom tag names it; deck tags (`stale-contact-data`,
+`whatsapp-ptt-media-not-ready`) are untouched and I am not inventing one — lineage is CL-033.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 · `npx vitest run`
+**3585 passed | 0 failed** (308 files passed | 1 skipped of 309; 7 expected fail | 21 skipped
+| 1 todo of 3614) · `git diff --check` clean · def330 7/7, def327 7/7, def277 + def308
+unchanged (40/40 across the four chokepoint suites).
+
+**Directive items not taken, named:** #1's inbox check (did the D-108 direct-leg alarm land)
+is impossible this turn — Gmail disconnected again; it stays the first check whenever the
+connector returns, and billing remains the standing #1 human action. #3 (B04/DEF-324) stays
+behind the campaign per the cap. Rotation says Thinking; campaign cap says Self-Pruning and
+wins by its own text — divergence declared.
+
+**What I did NOT do:** no suppression beyond the consent flag (default 0 — deploying changes
+nothing until the owner opts in); no per-sender breakdown added to the digest BODY (the burst
+receipts carry sender+counts in metadata; if Codex wants the sender named in the digest
+sentence, that is a small follow-up in `maybeSendSuppressionDigest`, named here so it is a
+decision, not an omission); no touch of HUMAN_KINDS membership, the benchmark, or
+`scripts/orchestrator/**`. Unsure about: threshold/window defaults (4 in 90min) — chosen from
+CL-033's "ten in a morning" shape; the owner can tune both keys without a deploy.
+
+**Prediction:** no score moves this turn (gauge dark). When billing returns, WhatsApp is
+re-paired, AND the owner flips `burst_rollup_enabled`, a CL-033-shaped burst produces
+threshold-many relays plus one digest — the campaign's increment-2 "done when". FALSIFIER:
+flag=1 live and a 10-push same-sender burst still arrives as 10 pushes.
+
+CAPABILITY: Self-Pruning
+PREDICTED: +0 until deployed + flag=1 + a live burst observed; then increment 2's
+owner-visible half exists for the first time
+MECHANISM: the CL-033 burst shape now has a consent-gated fold at the one gate every
+producer passes, with receipts and a single digest
+FALSIFIER: a live same-sender burst with the flag on that still reaches him push by push

@@ -484,6 +484,74 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     }
   }
 
+  // ── DEF-330 — C-3 increment 2, the same-SENDER half. CL-033 verbatim:
+  // "ten unactionable pushes from one unknown number in a single morning" ────
+  //
+  // The per-ITEM digest (digest_enabled, DEF-173) needs item identity and the
+  // per-DAY rollup above is scoped to housekeeping kinds — so the one shape
+  // CL-033 actually describes, a burst of HUMAN relays from a single sender,
+  // passed every existing switch untouched. This holds the EXCESS of such a
+  // burst: the first threshold-many always deliver (he must see the sender is
+  // active; a sender is never silenced outright), the rest record
+  // `suppressed`/`burst_rollup` — fully retrievable — with the DEF-277
+  // suppression digest as the receipt. Grounding: sender identity is read
+  // from the relay's own dedupKey convention (`wa_counterpart:<sender>:…`),
+  // the same prefix senderTriage already counts volume by — no key, no hold,
+  // never a guess. Urgency high/emergency and admin probes are never held.
+  // Default 0 (consent to suppress is the owner's, like digest_enabled);
+  // flag-on is the opt-in. Held, never dropped — no-claim-without-a-receipt.
+  if (
+    HUMAN_KINDS.has(req.kind)
+    && urgency !== 'high' && urgency !== 'emergency'
+    && !req.bypassRateLimit
+    && typeof req.dedupKey === 'string'
+    && req.dedupKey.startsWith('wa_counterpart:')
+  ) {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const burstOn = await getBehaviorValue('selfpruning.burst_rollup_enabled', {
+      userId: user.id, clientNumber: user.clientNumber,
+    }).catch(() => 0);
+    if (Number(burstOn) === 1) {
+      const threshold = Math.max(2, Number(await getBehaviorValue('selfpruning.burst_threshold', {
+        userId: user.id, clientNumber: user.clientNumber,
+      }).catch(() => 4)));
+      const windowMin = Math.max(5, Number(await getBehaviorValue('selfpruning.burst_window_minutes', {
+        userId: user.id, clientNumber: user.clientNumber,
+      }).catch(() => 90)));
+      // `wa_counterpart:<sender>:<messageId>` — the sender prefix is the
+      // first two segments. Everything after is per-message identity.
+      const senderPrefix = `${req.dedupKey.split(':').slice(0, 2).join(':')}:`;
+      const sinceWindow = new Date(Date.now() - windowMin * 60_000);
+      const deliveredRecently = await prisma.brainUserMessage.count({
+        where: {
+          clientNumber: user.clientNumber,
+          userId: user.id,
+          kind: req.kind,
+          dedupKey: { startsWith: senderPrefix },
+          createdAt: { gte: sinceWindow },
+          status: { in: ['sent', 'partial'] },
+        },
+      }).catch(() => 0);
+      if (deliveredRecently >= threshold) {
+        log.info('burst_rollup_hold', {
+          userId: user.id, kind: req.kind, sender: senderPrefix,
+          deliveredRecently, threshold, windowMin,
+        });
+        const res = await record({
+          ...req, user, channel: 'text', urgency,
+          status: 'suppressed', summary: req.summary,
+          metadata: {
+            ...(req.metadata ?? {}),
+            suppressedBy: 'budget', suppressReason: 'burst_rollup',
+            burst: { sender: senderPrefix, deliveredRecently, threshold, windowMin },
+          },
+        }, 'burst_rollup: same-sender burst folded into the suppression digest');
+        void maybeSendSuppressionDigest(user);
+        return res;
+      }
+    }
+  }
+
   for (const tier of TIERS) {
     if (!tier.kinds.has(req.kind)) continue;
     const { getBehaviorValue } = await import('../behaviorConfig');
