@@ -173,6 +173,15 @@ describe('DEF-330 — the same-sender burst is held at the chokepoint', () => {
     expect(heldRecords()).toHaveLength(0);
   });
 
+  it('the gate matches the `<channel>_counterpart:` CONVENTION, not a channel list — a future gchat relay inherits the fold with no gate edit', async () => {
+    state.burstRecentCount = 4;
+    const res = await relay({ dedupKey: 'gchat_counterpart:spaces/AAA-yousuf:msg-1' });
+    expect(res.sent).toBe(false);
+    const held = heldRecords();
+    expect(held).toHaveLength(1);
+    expect(held[0].metadata.burst.sender).toBe('gchat_counterpart:spaces/AAA-yousuf:');
+  });
+
   it('a held burst fires the suppression digest as its receipt', async () => {
     state.burstRecentCount = 4;
     state.heldRows = [{ kind: 'wa_counterpart_message', summary: 'Message from +923001112223' }];

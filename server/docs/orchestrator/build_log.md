@@ -4171,3 +4171,65 @@ owner-visible half exists for the first time
 MECHANISM: the CL-033 burst shape now has a consent-gated fold at the one gate every
 producer passes, with receipts and a single digest
 FALSIFIER: a live same-sender burst with the flag on that still reaches him push by push
+
+## Iteration 77 (build 2, DEF-330 class closure — the convention, not the channel) — 2026-10-05
+
+**Codex it-77 (DEF-330 review) verdict SOUND, no open findings; this turn takes the analyst's
+forward gap and lands it smaller than asked.** The analyst said: extend the burst fold beyond
+`wa_counterpart` because the same burst shape is visible on gchat. Audit first: **no
+per-message gchat relay producer exists at HEAD** — `gchatFeedPoller` only ingests to
+`feed_events`; the "(Not attached to an open request…)" relay marker is produced solely on the
+WhatsApp senderTriage path. A gchat burst therefore CANNOT arrive as individual relay pushes
+today, and extending the gate to gchat would guard a path nothing takes (the 42%-of-defects
+class). The genuine class fix is the brief's own rule — REMOVE THE ENUMERATION:
+- `brainOutboundService.ts` — the gate's grounding changes from the `wa_counterpart:` literal
+  (a channel list of size 1) to the `<channel>_counterpart:<sender>:` convention
+  (`/^[a-z0-9]+_counterpart:./`). Any future relay that joins HUMAN_KINDS and keys by the
+  convention inherits the fold with no gate edit — gate and producer cannot disagree by
+  construction. **Zero live behavior change**: only `wa_counterpart:` producers exist.
+- `def330SameSenderBurstRollup.test.ts` — eighth test pins the convention (a
+  `gchat_counterpart:` key folds identically); the no-grounding negative test unchanged.
+
+**Campaign state for the orchestrator (Codex directive #2 — the ledger is not in builder
+territory, so the reconcile is recorded here):** C-3 increments 1, 2 AND 3 are ALL
+code-complete and deployed as of D-109. Inc 1: DEF-217/230/170, hourly, correctly quiet while
+channels are dark. Inc 2: per-item (DEF-173) + per-day (DEF-327) + per-sender-burst (DEF-330,
+now convention-grounded) + hold receipts (DEF-277). Inc 3: withdrawal/quarantine
+(DEF-191/202/208/242, `withdrawal_notice_enabled` def 1). **Nothing remains to BUILD in C-3.**
+The exit condition is now entirely non-code: restore billing → re-pair QR → flip
+`daily_rollup_enabled` + `burst_rollup_enabled` (+ optionally `digest_enabled`) → observe a
+live day → quote the evidence back to the owner. A future campaign turn that "builds" C-3
+should be treated as drift.
+
+**Three-docs verdict: progressing** (enumeration removal, first occurrence — this is the
+anti-`protection-with-two-implementations` direction, not a new instance). No deck symptom tag
+exists for this (deck is empty this pass — every reported symptom has a shipped fix naming
+it); lineage remains CL-033.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 · `npx vitest run`
+**3586 passed | 0 failed** (308 files passed | 1 skipped of 309; 7 expected fail | 21 skipped
+| 1 todo of 3615) · `git diff --check` clean · def330 8/8, def327 + def277 suites unchanged
+(27/27 across the three).
+
+**Directive items not taken, named:** #1 billing (human; Gmail connector down again this turn
+so the SA/AD-inbox confirmation still waits — though the analyst's feed evidence shows the
+alarm IS firing); #3 B04/DEF-324 (Codex sequences them "first measurable turn after billing");
+#4 VIP exemption + digest sender-naming (Codex: only once it can run live). Also done this
+turn, second commit: the analyst's change-log hygiene flag — the two unrelated DEF-277 rows —
+renumbered (aging half → DEF-331) with code comments aligned. Rotation says Learn; campaign
+cap says Self-Pruning and wins by its own text — divergence declared.
+
+**What I did NOT do:** no gchat relay producer invented; no behavior change reachable on the
+live path; no benchmark or `scripts/orchestrator/**` touch; no flag flips.
+
+**Prediction:** no score moves (gauge dark; change inert by design). When a second relay
+channel ever ships, its bursts fold on day one without touching this gate. FALSIFIER: a future
+`<channel>_counterpart:`-keyed HUMAN relay whose burst still arrives push-by-push with the
+flag on.
+
+CAPABILITY: Self-Pruning
+PREDICTED: +0 (inert, convention-only); the increment-2 class is now closed by construction
+across channels, not per channel
+MECHANISM: the burst gate grounds on the relay dedupKey convention instead of a channel
+literal, so producers and gate cannot disagree
+FALSIFIER: a convention-keyed relay burst that does not fold with the flag on

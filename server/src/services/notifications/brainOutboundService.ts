@@ -495,9 +495,16 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   // active; a sender is never silenced outright), the rest record
   // `suppressed`/`burst_rollup` — fully retrievable — with the DEF-277
   // suppression digest as the receipt. Grounding: sender identity is read
-  // from the relay's own dedupKey convention (`wa_counterpart:<sender>:…`),
-  // the same prefix senderTriage already counts volume by — no key, no hold,
-  // never a guess. Urgency high/emergency and admin probes are never held.
+  // from the relay's own dedupKey convention (`<channel>_counterpart:<sender>:…`
+  // — today only senderTriage's `wa_counterpart:` exists, and it is the same
+  // prefix senderTriage already counts volume by). The gate matches the
+  // CONVENTION, not a channel list, so a future gchat/email relay that joins
+  // HUMAN_KINDS and keys `<channel>_counterpart:<sender>:` inherits the fold
+  // with no edit here — gate and producer cannot disagree (the 10-04 analyst
+  // pass showed the same burst shape arriving on gchat; no per-message gchat
+  // relay EXISTS at HEAD, so the convention is the class fix and a channel
+  // list would have been a guess). No key, no hold, never a guess.
+  // Urgency high/emergency and admin probes are never held.
   // Default 0 (consent to suppress is the owner's, like digest_enabled);
   // flag-on is the opt-in. Held, never dropped — no-claim-without-a-receipt.
   if (
@@ -505,7 +512,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     && urgency !== 'high' && urgency !== 'emergency'
     && !req.bypassRateLimit
     && typeof req.dedupKey === 'string'
-    && req.dedupKey.startsWith('wa_counterpart:')
+    && /^[a-z0-9]+_counterpart:./.test(req.dedupKey)
   ) {
     const { getBehaviorValue } = await import('../behaviorConfig');
     const burstOn = await getBehaviorValue('selfpruning.burst_rollup_enabled', {
@@ -518,8 +525,8 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       const windowMin = Math.max(5, Number(await getBehaviorValue('selfpruning.burst_window_minutes', {
         userId: user.id, clientNumber: user.clientNumber,
       }).catch(() => 90)));
-      // `wa_counterpart:<sender>:<messageId>` — the sender prefix is the
-      // first two segments. Everything after is per-message identity.
+      // `<channel>_counterpart:<sender>:<messageId>` — the sender prefix is
+      // the first two segments. Everything after is per-message identity.
       const senderPrefix = `${req.dedupKey.split(':').slice(0, 2).join(':')}:`;
       const sinceWindow = new Date(Date.now() - windowMin * 60_000);
       const deliveredRecently = await prisma.brainUserMessage.count({
