@@ -600,17 +600,17 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
   // ('routine' / 'high' / 'top') and alphabetical desc would put
   // 'top' > 'routine' > 'high' — wrong. Fetch the small candidate set
   // and sort by explicit weight in Node.
-  // DEF-277: `top` is deliberately far out of reach of the aging bonus below, rather than
+  // DEF-331: `top` is deliberately far out of reach of the aging bonus below, rather than
   // relying on that bonus's cap to hold it. With the old adjacent values (3/2/1) a routine
   // prompt that earned two tiers TIED `top` at 3 and then won the age tie-break — so a month
   // -old question about a stranger could lead a critical one. `top` means first, categorically;
   // `high` over `routine` is a preference that waiting is allowed to overturn.
   const CRIT_WEIGHT: Record<string, number> = { top: 100, high: 2, routine: 1 };
-  // DEF-277: how long a prompt must wait to earn one tier of sort weight, and the ceiling on
+  // DEF-331: how long a prompt must wait to earn one tier of sort weight, and the ceiling on
   // what waiting can earn. 12h means a routine prompt queued this morning is competing with
   // `high` by tonight and can lead by tomorrow, rather than never.
   const PROMPT_AGING_HOURS_PER_TIER = 12;
-  // DEF-277b — a SHARED ceiling for the non-top tiers, not a per-prompt bonus cap.
+  // DEF-331b — a SHARED ceiling for the non-top tiers, not a per-prompt bonus cap.
   //
   // The first version capped the bonus at 2 tiers, which quietly failed to fix anything: aging
   // applies to `high` too, so a maxed `routine` reached 3 and a maxed `high` reached 4, and
@@ -758,7 +758,7 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
     : [...freshCandidates]);
   if (sendable.length === 0) return null;
 
-  // ── DEF-277 — the routine tier was a write-only queue ──────────────────────────────────
+  // ── DEF-331 — the routine tier was a write-only queue ──────────────────────────────────
   //
   // `CRIT_WEIGHT` never changed with age, and one prompt goes per in-flight cycle. So while any
   // `high` prompt is queued, no `routine` one can be picked — and the `high` queue REFILLS every

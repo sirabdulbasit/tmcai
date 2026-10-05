@@ -1,5 +1,5 @@
 /**
- * DEF-277 — the `routine` tier was a write-only queue.
+ * DEF-331 — the `routine` tier was a write-only queue.
  *
  * Found by testing my own fix from twelve hours earlier. DEF-272 added an ask — *"someone has
  * messaged you N times and the transport does not share their number; who are they?"* — at
@@ -49,7 +49,7 @@ beforeEach(() => {
 
 const queue = (candidates: any[]) => H.prismaMock.brainPromptQueue.findMany.mockResolvedValue(candidates);
 
-describe('DEF-277 — waiting earns priority', () => {
+describe('DEF-331 — waiting earns priority', () => {
   it('THE REGRESSION: a two-day-old routine prompt is no longer stuck behind a fresh high one', async () => {
     queue([
       prompt({ id: 'aliasAsk', criticality: 'routine', question: 'Who are they?', queuedAt: hoursAgo(48) }),
@@ -95,7 +95,7 @@ describe('DEF-277 — waiting earns priority', () => {
     expect(String(H.brainContactsUser.mock.calls[0][0].body)).toContain('critical thing');
   });
 
-  it('DEF-277b: a long-waiting routine prompt beats a MAXED-OUT high one — the real guarantee', async () => {
+  it('DEF-331b: a long-waiting routine prompt beats a MAXED-OUT high one — the real guarantee', async () => {
     // The first version of this fix capped the bonus per prompt, which fixed nothing: aging
     // applies to `high` too, so maxed routine (3) still lost to maxed high (4). With 13 aged
     // high prompts outstanding and DEF-261 re-queueing more daily, #517 would have waited

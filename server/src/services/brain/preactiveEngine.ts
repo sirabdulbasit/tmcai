@@ -323,7 +323,7 @@ export async function runPreactiveForAllUsers(): Promise<{ users: number; preps:
  * `due-nudge:<item>:<today>`, so "one per item per day" was the only limit and an item nobody
  * answers is asked about again tomorrow, and the day after, indefinitely.
  *
- * That is not merely irritating. Those nudges are `high` when overdue, and DEF-277 established
+ * That is not merely irritating. Those nudges are `high` when overdue, and DEF-331 established
  * that the outbound queue drains roughly one prompt per in-flight cycle — so ~13 self-replenishing
  * nags per day consumed the entire channel, starving every `routine` prompt (the identity ask sat
  * unsent for hours) and, on 2026-09-01, pushing two of the owner's real relayed messages out of

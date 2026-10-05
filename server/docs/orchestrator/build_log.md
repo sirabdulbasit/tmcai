@@ -4233,3 +4233,20 @@ across channels, not per channel
 MECHANISM: the burst gate grounds on the relay dedupKey convention instead of a channel
 literal, so producers and gate cannot disagree
 FALSIFIER: a convention-keyed relay burst that does not fold with the flag on
+
+## Iteration 77 (build 3 — DEF-277/DEF-331 traceability split) — 2026-10-05
+
+The analyst's hygiene flag, closed: one DEF id held two unrelated root causes (CL-043
+suppression-digest receipt; CL-045 prompt starvation), which breaks tag→row matching for
+every future agent. The aging/starvation half is now **DEF-331** everywhere: change-log row
+(renumber note in place), `brainPromptQueueService.ts` comments (4 sites, incl. DEF-331b),
+`preactiveEngine.ts:326`, and the test file renamed
+`def331RoutinePromptStarvation.test.ts` (internals aligned). The digest half keeps DEF-277.
+No behavior change — comments, docs and a filename only. Matrix after last edit:
+tsc exit 0 · vitest **3586 passed | 0 failed** (308 files passed | 1 skipped of 309) ·
+`git diff --check` clean · def331 + def277 suites 19/19.
+
+CAPABILITY: RELIABILITY-ONLY (traceability repair; no runtime path touched)
+PREDICTED: +0
+MECHANISM: one DEF id → one root cause, so tag→row matching cannot hit two unrelated rows
+FALSIFIER: any remaining reference resolving DEF-277 to the starvation half (grep is the check)
