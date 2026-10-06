@@ -4290,3 +4290,34 @@ CAPABILITY: Accurate Communication
 PREDICTED: +0 directly; this is the prerequisite that makes DEF-324's owner-visible fix safe
 MECHANISM: self-echo recognition moves from subject costume to recorded Gmail identity
 FALSIFIER: post-deploy, a Brain-sent clean-subject email re-ingested as inbound
+
+## Iteration 77 (build 5, DEF-324 `bracketed-marker-leak` — the subject is for the owner) — 2026-10-06
+
+Second of the two ordered commits (DEF-332 was the prerequisite). The diagnosis DEF-324's row
+asked for: ONE writer — the email-fallback subject in `brainOutboundService.ts`
+(`[${req.kind}] ${req.summary}`); the "second path" suspicion (DEF-287 inbound) is that same
+mail re-collected. The token was load-bearing for echo recognition, which is exactly why this
+row sat open — with DEF-332's identity correlation in place, the subject becomes
+`req.summary` only. The kind is NOT lost: it rides the audit row and metadata as before.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3592 passed | 0 failed** (310 files passed | 1 skipped of 311; 7 expected
+fail | 21 skipped | 1 todo of 3621) · `git diff --check` clean · def324 2/2, def332 4/4,
+def287 9/9.
+
+**What I did NOT do:** no change to inbound parsing beyond DEF-332 (the legacy bracket matcher
+stays until in-flight bracketed mail ages out); no touch of the day-brief's own legitimate
+`[day_brief]` tag question (different surface, not this writer — if it leaks it has its own
+row); no benchmark or `scripts/orchestrator/**` touch. Unsure about: whether any owner-side
+Gmail FILTER keys on the bracket (unknowable from code; if his mail rules sorted by `[kind]`,
+subjects change shape post-deploy — flagged for the deploy report).
+
+**Prediction:** owner-visible on the first fallback email after the next deploy: a clean
+subject. The gauge will not move (benchmark exercises WhatsApp-path conversation, and it is
+dark anyway). FALSIFIER: any post-deploy Brain email whose subject starts with a bracketed
+internal token.
+
+CAPABILITY: Accurate Communication
+PREDICTED: +0 on the gauge; the owner stops seeing queue internals in his inbox
+MECHANISM: the subject carries the summary because echo recognition no longer needs a costume
+FALSIFIER: a post-deploy Brain email subject starting with an internal bracket token

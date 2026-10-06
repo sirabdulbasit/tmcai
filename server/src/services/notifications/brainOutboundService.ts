@@ -920,7 +920,12 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   if (channelsUsed.length === 0 && user.email && req.kind !== 'admin_test_brain') {
     try {
       const { sendUserEmail } = await import('../gmailService');
-      const emailSubject = `[${req.kind}] ${req.summary}`.slice(0, 200);
+      // DEF-324 `bracketed-marker-leak` — the subject is an owner-facing
+      // line and carries the SUMMARY only. The internal kind token lived
+      // here because DEF-287's echo guard matched it (recognition by
+      // costume); DEF-332 moved recognition to the recorded gmail id, so
+      // the costume retires. The kind still rides the audit row + metadata.
+      const emailSubject = req.summary.slice(0, 200);
       const emailBody = [
         `<div style="font-family: -apple-system, system-ui, sans-serif;">`,
         `<p><em>Delivered via email fallback — WhatsApp channel unavailable.</em></p>`,
