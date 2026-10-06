@@ -101,7 +101,13 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
   // forwarded or quoted notification from a third party would carry it too, which is why the
   // message must ALSO be self-addressed. Genuine self-notes the owner emails himself are common
   // and are untouched, because they do not carry the stamp.
-  if (input.sourceType === 'gmail' && isOwnOutboundEcho(input.payload)) {
+  // DEF-332 — identity first, costume second: a gmail event whose message id
+  // matches a RECORDED outbound send is Brain's own mail whatever its subject
+  // says. The legacy stamp match stays for mail sent before ids were recorded
+  // and decays naturally once no subject carries a bracket (DEF-324).
+  if (input.sourceType === 'gmail'
+    && (isOwnOutboundEcho(input.payload)
+      || await isRecordedOutboundEmail(input.clientNumber, input.sourceId))) {
     console.log(`[feedIngest] refused Brain's own notification as inbound — ${input.clientNumber} ${String((input.payload as any)?.subject ?? '').slice(0, 70)}`);
     return { status: 'self_echo', contentHash };
   }
@@ -720,4 +726,31 @@ export function isOwnOutboundEcho(payload: Record<string, unknown> | null | unde
   const to = addr((payload as any)?.to);
   if (!from || !to) return false;
   return from === to;
+}
+
+/**
+ * DEF-332 — DEF-287's guard recognized Brain's outbound by its COSTUME (a
+ * `[brain*]` subject prefix), an enumeration that already missed
+ * `[open_item_draft_ask]` echoes — and it is what forces internal kind-tags
+ * into owner-visible subjects (DEF-324). This recognizes it by IDENTITY:
+ * `brainContactsUser`'s email leg records the gmail message id on its audit
+ * row, and `feedEvent.sourceId` IS the gmail message id, so the two sides
+ * cannot disagree — no costume required, no kind list to drift. Guardrail:
+ * target grounding (the self-echo claim is grounded in Gmail's own send
+ * receipt, never a subject heuristic). Tenant-scoped read; fails OPEN
+ * (a failed lookup ingests the mail — DEF-287's address check still bounds
+ * the damage, and a missed echo is recoverable where a dropped human email
+ * is not). Exported because the rule is the fix (the DEF-287 pattern).
+ */
+export async function isRecordedOutboundEmail(clientNumber: string, sourceId: string | null | undefined): Promise<boolean> {
+  const id = String(sourceId ?? '').trim();
+  if (!id) return false;
+  const hit = await prisma.brainUserMessage.findFirst({
+    where: {
+      clientNumber,
+      metadata: { path: ['gmailMessageId'], equals: id } as any,
+    },
+    select: { id: true },
+  }).catch(() => null);
+  return !!hit;
 }

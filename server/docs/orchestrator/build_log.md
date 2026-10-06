@@ -4250,3 +4250,43 @@ CAPABILITY: RELIABILITY-ONLY (traceability repair; no runtime path touched)
 PREDICTED: +0
 MECHANISM: one DEF id → one root cause, so tag→row matching cannot hit two unrelated rows
 FALSIFIER: any remaining reference resolving DEF-277 to the starvation half (grep is the check)
+
+## Iteration 77 (build 4, DEF-332 — echo recognition by identity, unblocking DEF-324) — 2026-10-06
+
+**Structural finding while opening DEF-324 (the bracket leak):** the leaking token is
+LOAD-BEARING — `feedIngestionService.isOwnOutboundEcho` recognizes Brain's own outbound email
+by the `[brain*]` subject prefix (DEF-287), so stripping the subject without replacing the
+recognition would make Brain re-ingest its own mail (the exact "Hamna sent no email"
+misattribution class). Worse, the costume-match is an enumeration that ALREADY misses
+`[open_item_draft_ask]` echoes (the regex covers brain-prefixed kinds only). Note: the
+analyst's tail cited `findOwnMessageIdByEcho` as built-but-uncalled — **it does not exist in
+src** (that detail was stale), and DEF-319 is WhatsApp wa_message_id correlation, a different
+defect. So this is new: **DEF-332**, finished alone per the structural rule, as the first of
+two ordered commits (DEF-324's subject cleanup follows and depends on it).
+
+**The change:** `brainOutboundService.ts` email leg stashes `emailResult.messageId` into the
+audit row metadata (`gmailMessageId`); `feedIngestionService.ts` gains `isRecordedOutboundEmail`
+(tenant-scoped, fails OPEN) and the echo gate becomes identity-first, costume-second (legacy
+stamp retained for in-flight mail). `feedEvent.sourceId` IS the gmail message id, so producer
+and guard cannot disagree by construction — the enumeration is removed, which is the
+governance ruling's accepted shape. Guardrail: target grounding.
+
+**Three-docs verdict: circling-adjacent, resolved structurally** — DEF-287's class
+(`fabricated-status` kin: Brain citing its own voice as someone else's) re-examined at the
+mechanism level rather than patched per-kind.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 · `npx vitest run`
+**3590 passed | 0 failed** (309 files passed | 1 skipped of 310; 7 expected fail | 21 skipped
+| 1 todo of 3619) · `git diff --check` clean · def332 4/4, def287 9/9 unchanged.
+
+**Divergence declared:** rotation says Self-Healing; campaign cap says Self-Pruning — but C-3
+has nothing left to build (reconciled on record, build 2; Codex endorsed treating further C-3
+"building" as drift), and this is the one open owner-visible code defect chain in the ranked
+analysis (#4, DEF-324, with DEF-332 as its structural prerequisite). CAPABILITY: Accurate
+Communication. Billing remains the #1 human action (day 7; alarm firing on cadence, feed
+still not draining).
+
+CAPABILITY: Accurate Communication
+PREDICTED: +0 directly; this is the prerequisite that makes DEF-324's owner-visible fix safe
+MECHANISM: self-echo recognition moves from subject costume to recorded Gmail identity
+FALSIFIER: post-deploy, a Brain-sent clean-subject email re-ingested as inbound

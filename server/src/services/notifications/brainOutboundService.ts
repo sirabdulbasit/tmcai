@@ -931,6 +931,15 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       const emailResult = await sendUserEmail(user.id, user.email, emailSubject, emailBody);
       if (emailResult.success) {
         channelsUsed.push('email');
+        // DEF-332 — the sent mail's own gmail id rides this audit row so the
+        // ingestion echo guard recognizes Brain's outbound by IDENTITY
+        // (feedEvent.sourceId IS the gmail message id), not by the subject
+        // costume DEF-287 matched — a `[brain*]` prefix whose enumeration
+        // already missed `[open_item_draft_ask]` echoes. Grounding: the id
+        // comes from Gmail's own send receipt, never a guess.
+        if (emailResult.messageId) {
+          req = { ...req, metadata: { ...(req.metadata ?? {}), gmailMessageId: emailResult.messageId } };
+        }
         log.info('email fallback succeeded after WA failure', {
           userId: user.id, kind: req.kind, waError: lastError,
         });
