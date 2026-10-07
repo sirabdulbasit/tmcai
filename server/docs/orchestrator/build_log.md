@@ -4321,3 +4321,60 @@ CAPABILITY: Accurate Communication
 PREDICTED: +0 on the gauge; the owner stops seeing queue internals in his inbox
 MECHANISM: the subject carries the summary because echo recognition no longer needs a costume
 FALSIFIER: a post-deploy Brain email subject starting with an internal bracket token
+
+## Iteration 78 (build, DEF-332 hardening — the copy-invariant Message-ID) — 2026-10-07
+
+**Codex it-77 (DEF-332/324 review) verdict SOUND with one open risk, and this turn closes it.**
+The reviewer's §3: DEF-324 made the gmail-API-id round-trip the SOLE recognizer for new
+Brain mail, and that round-trip is Gmail-behaviour-dependent (send-response id vs the
+re-ingested INBOX copy's id) — unprovable from code, INERT today, LATENT until billing
+returns, at which point accumulated clean-subject self-echoes get judged and can resurface
+DEF-287 ("a named person emailed you" when she did not). Directive #1's live check cannot
+conclude yet: D-111 deployed this morning and the once/24h alarm — the only live fallback
+producer — had not fired since. Directive #2 was conditional on #1 failing; it is taken
+PROACTIVELY because the condition cannot be evaluated before the window closes, and the
+hardening is additive, fails open, and makes the round-trip hold EITHER way.
+
+**The change (one commit, DEF-332's row carries the addendum):**
+- `gmailService.ts` — Brain MINTS the RFC 5322 Message-ID (`<nexeo-{uuid}@tmcltd.ai>`) into
+  the raw MIME (the standard grants the sender that right; the header is identical on every
+  copy of the message by the standard, unlike per-mailbox API ids), returns it as
+  `rfc822MessageId`; `getInbox` adds `Message-ID` to the metadata headers it already fetches
+  (same API call, one more header) and surfaces `messageIdHeader`.
+- `brainOutboundService.ts` — the minted key recorded beside `gmailMessageId` on the audit row.
+- `gmailFeedPoller.ts` — `messageIdHeader` rides the ingest payload.
+- `feedIngestionService.ts` — `isRecordedOutboundEmail` matches EITHER key (OR), still
+  tenant-scoped, still fails open, blank keys never query.
+- Tests: def332 6/6 (new: the reviewer's exact failure scenario — differing inbox-copy id +
+  recorded Message-ID → echo; a foreign Message-ID still ingests), def324 2/2 extended
+  (minted key on the audit row), def287 9/9 unchanged.
+Sender and guard now share a token Brain itself minted — they cannot diverge whatever Gmail
+does with its ids. Guardrail: target grounding (self-echo claims ground in Brain's own
+minted, recorded identity). The IMAP/SMTP fallback route carries no minted id (named, not
+hidden): its sends still rely on the legacy stamp-less... correction: on the gmail-API-id
+key alone when routed via Gmail, and on nothing new when routed via IMAP — the legacy
+bracket matcher is gone from new mail either way, so an IMAP-routed fallback send remains
+the residual unproven path; flagged for the deploy report.
+
+**Three-docs verdict: progressing** (hardening of a one-day-old mechanism against a
+reviewer-named failure mode, not a recurrence; no §3 tag names it).
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3594 passed | 0 failed** (310 files passed | 1 skipped of 311; 7 expected
+fail | 21 skipped | 1 todo of 3623) · `git diff --check` clean · def332 6/6, def324 2/2,
+def287 9/9.
+
+**Directive items not taken, named:** #1's billing restore is human; its round-trip live
+check now has TWO keys to hold and should be run by the pulse on the first post-deploy
+fallback email. #3 B04 waits for a measurable turn. #4 (metadata index, tree litter) is the
+orchestrator's. Rotation + campaign say Self-Pruning; C-3 has nothing left to build (thrice
+on record) — divergence declared: this is the reviewer's own ranked remediation, remediation
+wins on scope. No deck symptom tag closed (deck is empty); this extends DEF-332's row.
+
+CAPABILITY: Accurate Communication
+PREDICTED: +0; the DEF-287 misattribution class cannot resurface via diverging Gmail ids
+when billing returns
+MECHANISM: sender and echo guard share one Brain-minted, standard-carried Message-ID — the
+keys cannot disagree by construction
+FALSIFIER: a post-deploy Brain fallback email (Gmail-routed) re-ingested as inbound despite
+a recorded rfc822MessageId

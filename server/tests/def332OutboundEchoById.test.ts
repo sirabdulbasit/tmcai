@@ -19,6 +19,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const state = vi.hoisted(() => ({
   recorded: new Set<string>(),
+  recordedRfc: new Set<string>(),
   lastWhere: null as any,
   throwOnLookup: false,
 }));
@@ -33,8 +34,15 @@ vi.mock('../src/db/prisma', () => {
     findFirst: async ({ where }: any) => {
       state.lastWhere = where;
       if (state.throwOnLookup) throw new Error('db down');
-      const id = where?.metadata?.equals;
-      return state.recorded.has(id) && where?.clientNumber ? { id: 'bum-1' } : null;
+      if (!where?.clientNumber) return null;
+      const conds = where.OR ?? [{ metadata: where.metadata }];
+      for (const c of conds) {
+        const path = c?.metadata?.path?.[0];
+        const val = c?.metadata?.equals;
+        if (path === 'gmailMessageId' && state.recorded.has(val)) return { id: 'bum-1' };
+        if (path === 'rfc822MessageId' && state.recordedRfc.has(val)) return { id: 'bum-2' };
+      }
+      return null;
     },
   };
   const p: any = new Proxy(
@@ -48,6 +56,7 @@ import { isRecordedOutboundEmail } from '../src/services/feed/feedIngestionServi
 
 beforeEach(() => {
   state.recorded = new Set(['gmail-msg-777']);
+  state.recordedRfc = new Set(['<nexeo-abc123@tmcltd.ai>']);
   state.lastWhere = null;
   state.throwOnLookup = false;
 });
@@ -56,7 +65,19 @@ describe('DEF-332 — echo recognition by recorded gmail message id', () => {
   it('a recorded outbound id is recognized, and the read is tenant-scoped', async () => {
     await expect(isRecordedOutboundEmail('TMC-0001', 'gmail-msg-777')).resolves.toBe(true);
     expect(state.lastWhere.clientNumber).toBe('TMC-0001');
-    expect(state.lastWhere.metadata.path).toEqual(['gmailMessageId']);
+    expect(state.lastWhere.OR[0].metadata.path).toEqual(['gmailMessageId']);
+  });
+
+  it('HARDENING: the minted RFC 5322 Message-ID matches even when the per-mailbox API id differs (the Codex it-77 §3 failure scenario)', async () => {
+    await expect(
+      isRecordedOutboundEmail('TMC-0001', 'a-DIFFERENT-inbox-copy-id', '<nexeo-abc123@tmcltd.ai>'),
+    ).resolves.toBe(true);
+  });
+
+  it('an unrecorded Message-ID with an unrecorded id still ingests — a real inbound carrying someone else\'s Message-ID is untouched', async () => {
+    await expect(
+      isRecordedOutboundEmail('TMC-0001', 'unknown-id', '<someone-else@example.com>'),
+    ).resolves.toBe(false);
   });
 
   it("an unrecorded id does not match — the owner's self-notes still ingest", async () => {

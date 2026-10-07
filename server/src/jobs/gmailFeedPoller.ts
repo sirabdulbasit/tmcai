@@ -54,7 +54,7 @@ export async function pollAllActiveUsers(): Promise<PollResult[]> {
 
 async function pollUser(userId: number, clientNumber: string): Promise<PollResult> {
   const r = await getInbox(userId, MAX_PER_USER);
-  const emails = (r.emails ?? []) as Array<{ id: string; threadId: string; subject: string; from: string; snippet: string; date: string }>;
+  const emails = (r.emails ?? []) as Array<{ id: string; threadId: string; subject: string; from: string; snippet: string; date: string; messageIdHeader?: string }>;
 
   let ingested = 0;
   let duplicates = 0;
@@ -75,6 +75,9 @@ async function pollUser(userId: number, clientNumber: string): Promise<PollResul
           from: e.from,
           snippet: e.snippet,
           date: e.date,
+          // DEF-332 hardening — the copy-invariant RFC 5322 Message-ID rides
+          // the payload so the self-echo guard can correlate on it.
+          messageIdHeader: e.messageIdHeader,
         },
       });
       if (result.status === 'new') ingested += 1;

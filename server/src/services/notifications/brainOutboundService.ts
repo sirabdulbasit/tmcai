@@ -942,8 +942,18 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
         // costume DEF-287 matched — a `[brain*]` prefix whose enumeration
         // already missed `[open_item_draft_ask]` echoes. Grounding: the id
         // comes from Gmail's own send receipt, never a guess.
-        if (emailResult.messageId) {
-          req = { ...req, metadata: { ...(req.metadata ?? {}), gmailMessageId: emailResult.messageId } };
+        if (emailResult.messageId || (emailResult as any).rfc822MessageId) {
+          req = {
+            ...req,
+            metadata: {
+              ...(req.metadata ?? {}),
+              ...(emailResult.messageId ? { gmailMessageId: emailResult.messageId } : {}),
+              // DEF-332 hardening — the minted RFC 5322 Message-ID is the
+              // copy-invariant key; the per-mailbox API id above may differ
+              // between the SENT copy and the re-ingested INBOX copy.
+              ...((emailResult as any).rfc822MessageId ? { rfc822MessageId: (emailResult as any).rfc822MessageId } : {}),
+            },
+          };
         }
         log.info('email fallback succeeded after WA failure', {
           userId: user.id, kind: req.kind, waError: lastError,

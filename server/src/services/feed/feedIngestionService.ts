@@ -107,7 +107,8 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
   // and decays naturally once no subject carries a bracket (DEF-324).
   if (input.sourceType === 'gmail'
     && (isOwnOutboundEcho(input.payload)
-      || await isRecordedOutboundEmail(input.clientNumber, input.sourceId))) {
+      || await isRecordedOutboundEmail(input.clientNumber, input.sourceId,
+        String((input.payload as any)?.messageIdHeader ?? '')))) {
     console.log(`[feedIngest] refused Brain's own notification as inbound — ${input.clientNumber} ${String((input.payload as any)?.subject ?? '').slice(0, 70)}`);
     return { status: 'self_echo', contentHash };
   }
@@ -742,13 +743,26 @@ export function isOwnOutboundEcho(payload: Record<string, unknown> | null | unde
  * the damage, and a missed echo is recoverable where a dropped human email
  * is not). Exported because the rule is the fix (the DEF-287 pattern).
  */
-export async function isRecordedOutboundEmail(clientNumber: string, sourceId: string | null | undefined): Promise<boolean> {
+export async function isRecordedOutboundEmail(
+  clientNumber: string,
+  sourceId: string | null | undefined,
+  /** DEF-332 hardening (Codex it-77 §6.2) — the RFC 5322 Message-ID from the
+   *  ingested copy's headers. Unlike the per-mailbox Gmail API id, this is
+   *  identical on every copy of a message BY THE MAIL STANDARD, and Brain
+   *  MINTS its own at send — so sender and guard share one token that cannot
+   *  diverge even if Gmail's send-response id differs from the INBOX copy's. */
+  messageIdHeader?: string | null,
+): Promise<boolean> {
   const id = String(sourceId ?? '').trim();
-  if (!id) return false;
+  const rfcId = String(messageIdHeader ?? '').trim();
+  if (!id && !rfcId) return false;
   const hit = await prisma.brainUserMessage.findFirst({
     where: {
       clientNumber,
-      metadata: { path: ['gmailMessageId'], equals: id } as any,
+      OR: [
+        ...(id ? [{ metadata: { path: ['gmailMessageId'], equals: id } as any }] : []),
+        ...(rfcId ? [{ metadata: { path: ['rfc822MessageId'], equals: rfcId } as any }] : []),
+      ],
     },
     select: { id: true },
   }).catch(() => null);

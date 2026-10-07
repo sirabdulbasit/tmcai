@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { google } from 'googleapis';
 import { getAuthenticatedClient } from './integrationService';
 
@@ -23,6 +24,10 @@ export interface EmailSummary {
   date: string;
   isUnread: boolean;
   labels: string[];
+  /** RFC 5322 Message-ID header. Unlike the Gmail API's per-mailbox id,
+   *  this is identical on every copy of a message (SENT and INBOX), which
+   *  is what makes it a reliable self-echo key (DEF-332 hardening). */
+  messageIdHeader?: string;
 }
 
 export interface EmailDetail extends EmailSummary {
@@ -58,7 +63,7 @@ export async function getInbox(userId: number, maxResults = 10, query?: string):
       const chunk = messages.slice(i, i + CHUNK);
       const results = await Promise.all(chunk.map(async (msg) => {
         try {
-          const detail = await gmail.users.messages.get({ userId: 'me', id: msg.id!, format: 'metadata', metadataHeaders: ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date'] });
+          const detail = await gmail.users.messages.get({ userId: 'me', id: msg.id!, format: 'metadata', metadataHeaders: ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date', 'Message-ID'] });
           const headers = detail.data.payload?.headers || [];
           const getHeader = (name: string) => headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
           return {
@@ -71,6 +76,7 @@ export async function getInbox(userId: number, maxResults = 10, query?: string):
             subject: getHeader('Subject'),
             snippet: detail.data.snippet || '',
             date: getHeader('Date'),
+            messageIdHeader: getHeader('Message-ID'),
             isUnread: detail.data.labelIds?.includes('UNREAD') || false,
             labels: detail.data.labelIds || [],
           } as EmailSummary;
@@ -181,6 +187,11 @@ export async function sendUserEmail(
   success: boolean;
   messageId?: string;
   threadId?: string;
+  /** DEF-332 hardening — the RFC 5322 Message-ID WE minted into the raw
+   *  MIME. Identical on every copy of the message (SENT and INBOX), unlike
+   *  the per-mailbox Gmail API `messageId`, so it is the reliable self-echo
+   *  correlation key. Absent on the IMAP/SMTP fallback route. */
+  rfc822MessageId?: string;
   error?: string;
   /** True when a post-send fetch confirmed the message is in the
    *  Sent label. False when send API returned OK but the verification
@@ -230,6 +241,8 @@ export async function sendUserEmail(
     // mail clients that fall back to subject-matching for threading
     // group correctly. Gmail itself uses threadId, but other readers do not.
     const finalSubject = opts?.threadId && !/^re:/i.test(subject) ? `Re: ${subject}` : subject;
+    // DEF-332 hardening — see the Message-ID header comment below.
+    const mintedMessageId = `<nexeo-${crypto.randomUUID()}@tmcltd.ai>`;
 
     // Build RFC 2822 message. In-Reply-To and References give external
     // mail readers proper threading; threadId on the API call covers Gmail.
@@ -248,6 +261,12 @@ export async function sendUserEmail(
       // Non-ASCII in a header must be an RFC 2047 encoded-word. `Buffer.from(message)` was
       // never the bug — it correctly emits UTF-8; the bug is that a header may not CARRY UTF-8.
       `Subject: ${encodeHeaderValue(finalSubject)}`,
+      // DEF-332 hardening (Codex it-77 §6.2) — WE mint the RFC 5322
+      // Message-ID, so the send side KNOWS the one token that is identical
+      // on every copy of this message (SENT and the re-ingested INBOX copy),
+      // independent of Gmail's per-mailbox API ids. Gmail preserves a valid
+      // sender-set Message-ID on raw-MIME sends.
+      `Message-ID: ${mintedMessageId}`,
       opts?.inReplyTo ? `In-Reply-To: ${opts.inReplyTo}` : '',
       opts?.references ? `References: ${opts.references}` : '',
       'Content-Type: text/html; charset=utf-8',
@@ -328,6 +347,7 @@ export async function sendUserEmail(
       success: true,
       messageId: messageId || undefined,
       threadId: threadId || undefined,
+      rfc822MessageId: mintedMessageId,
       verified,
       sentFromAddress,
     } as any;

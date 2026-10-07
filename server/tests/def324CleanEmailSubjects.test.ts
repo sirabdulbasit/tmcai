@@ -67,7 +67,7 @@ vi.mock('../src/services/notifications/tenantWhatsappSender', () => ({
 vi.mock('../src/services/gmailService', () => ({
   sendUserEmail: async (_userId: number, to: string, subject: string, body: string) => {
     state.emails.push({ to, subject, body });
-    return { success: true, messageId: 'gm-sent-42' };
+    return { success: true, messageId: 'gm-sent-42', rfc822MessageId: '<nexeo-fixed@tmcltd.ai>' };
   },
 }));
 
@@ -120,6 +120,7 @@ describe('DEF-324 — the owner-facing subject carries no internal token', () =>
     const sent = state.created.find((d) => d?.metadata?.gmailMessageId);
     expect(sent).toBeTruthy();
     expect(sent.metadata.gmailMessageId).toBe('gm-sent-42');
+    expect(sent.metadata.rfc822MessageId).toBe('<nexeo-fixed@tmcltd.ai>'); // the copy-invariant key rides the same row
     expect(sent.kind).toBe('brain_prompt'); // the ledger keeps the kind; only the subject lost it
   });
 });
