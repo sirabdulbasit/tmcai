@@ -152,6 +152,12 @@ export async function sendEmail(args: {
   bodyText: string;
   bodyHtml?: string;
   inReplyTo?: string;
+  /** DEF-332 hardening (Codex it-78 §6.1) — the RFC 5322 Message-ID the
+   *  caller minted. SMTP grants the sender the same right the Gmail raw-MIME
+   *  path uses, so the copy-invariant echo key covers the one send route
+   *  that is ACTIVE while the Gmail API is down. Optional: nodemailer mints
+   *  its own when absent. */
+  messageId?: string;
 }): Promise<{ ok: boolean; messageId?: string; error?: string }> {
   const cfg = await loadConfig(args.userId);
   if (!cfg) return { ok: false, error: 'no connected imap_smtp connector for this user' };
@@ -169,6 +175,7 @@ export async function sendEmail(args: {
       text: args.bodyText,
       html: args.bodyHtml,
       ...(args.inReplyTo ? { inReplyTo: args.inReplyTo, references: args.inReplyTo } : {}),
+      ...(args.messageId ? { messageId: args.messageId } : {}),
     });
     log.info('imap_smtp email sent', { userId: args.userId, to: args.to, messageId: info.messageId });
     return { ok: true, messageId: info.messageId };

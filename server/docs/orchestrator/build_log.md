@@ -4378,3 +4378,49 @@ MECHANISM: sender and echo guard share one Brain-minted, standard-carried Messag
 keys cannot disagree by construction
 FALSIFIER: a post-deploy Brain fallback email (Gmail-routed) re-ingested as inbound despite
 a recorded rfc822MessageId
+
+## Iteration 78 (build 2, DEF-332 hardening II — the IMAP route carries the same key) — 2026-10-08
+
+**Codex it-78 verdict SOUND; its §6.1 directive taken exactly:** the IMAP/SMTP fallback
+(`gmailService.ts` → `imapSmtpService.sendEmail`) was the one send route with no echo key —
+and it is the route that is ACTIVE while the Gmail API 403s, i.e. the emails most likely to
+become foreign-keyed echoes during THIS outage. Now `sendUserEmail` mints the Message-ID
+ONCE, before the provider branch, and both routes carry it: the Gmail raw-MIME path
+(unchanged behavior, same variable) and the IMAP path (nodemailer's native `messageId`
+option), with `rfc822MessageId` returned to the caller either way so the audit row records
+the identical key. The alternative half of the directive ("confirm no IMAP/SMTP connection
+is configured") is a production DB read; the mint is strictly more robust and covers both
+worlds, so the code path was closed rather than conditionally waived.
+
+**Files:** `gmailService.ts` (single mint hoisted above the branch; IMAP call passes it;
+IMAP success returns it), `imapSmtpService.ts` (optional `messageId` arg → nodemailer),
+`def332ImapFallbackMint.test.ts` (2 tests: the mint reaches the IMAP send and returns as
+`rfc822MessageId`; DEF-324's clean subject holds on this route too).
+
+**Three-docs verdict: progressing** (closing the reviewer's named residual on a two-day-old
+mechanism; no §3 tag names it). DEF-332's row carries the addendum.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3596 passed | 0 failed** (311 files passed | 1 skipped of 312; 7 expected
+fail | 21 skipped | 1 todo of 3625) · `git diff --check` clean · def332ImapFallbackMint 2/2,
+def332OutboundEchoById 6/6, def324 2/2.
+
+**Also this turn (second commit): stale deployment-status correction.** The analyst has
+twice carried "DEF-290/295/302 pending/`57a5ffa`, NOT deployed" from the change log;
+`git merge-base --is-ancestor 57a5ffa HEAD` says `57a5ffa` IS in the deployed history, so
+those rows' status cells are stale and have been misleading the analysis every pass. Their
+cells move to DEPLOYED (unverified, masked by WhatsApp dark) in a dedicated docs commit.
+
+**Directive items not taken, named:** #2 billing restore is human (day 9; the live
+round-trip check now has two keys on BOTH routes and belongs to the pulse on the first
+post-restore fallback email); #3 B04 waits for a measurable turn; #4 is the orchestrator's.
+Rotation says Thinking; campaign says Self-Pruning (nothing left to build, 4x on record) —
+divergence declared: this is the reviewer's ranked directive #1, remediation wins on scope.
+No deck symptom tag closed (deck is empty); this extends DEF-332's row.
+
+CAPABILITY: Accurate Communication
+PREDICTED: +0; the DEF-287 misattribution class now cannot resurface via EITHER send route
+MECHANISM: one minted, recorded, standard-carried Message-ID on every Brain email, matched
+by the one echo guard
+FALSIFIER: any post-deploy Brain fallback email (either route) re-ingested as inbound
+despite a recorded rfc822MessageId

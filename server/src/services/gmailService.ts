@@ -203,6 +203,12 @@ export async function sendUserEmail(
    *  gun for "Brain sent from the wrong account". */
   sentFromAddress?: string;
 }> {
+  // DEF-332 hardening — ONE mint, BOTH send routes. Minted before the
+  // provider branch so the IMAP/SMTP fallback (the route that is ACTIVE
+  // while the Gmail API is down, Codex it-78 §6.1) carries the same
+  // copy-invariant echo key the Gmail raw-MIME path does.
+  const mintedMessageId = `<nexeo-${crypto.randomUUID()}@tmcltd.ai>`;
+
   const { client, error } = await getAuthenticatedClient(userId);
   if (!client) {
     // Gmail unavailable. Per Basit 2026-06-11 "anyone email should be
@@ -220,9 +226,10 @@ export async function sendUserEmail(
         bodyText: body.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim(),
         bodyHtml: body,
         inReplyTo: opts?.inReplyTo,
+        messageId: mintedMessageId,
       });
       if (r.ok) {
-        return { success: true, messageId: r.messageId };
+        return { success: true, messageId: r.messageId, rfc822MessageId: mintedMessageId };
       }
       // No imap_smtp either — return the more informative Gmail error.
       if (/no connected imap_smtp/i.test(r.error || '')) {
@@ -241,8 +248,6 @@ export async function sendUserEmail(
     // mail clients that fall back to subject-matching for threading
     // group correctly. Gmail itself uses threadId, but other readers do not.
     const finalSubject = opts?.threadId && !/^re:/i.test(subject) ? `Re: ${subject}` : subject;
-    // DEF-332 hardening — see the Message-ID header comment below.
-    const mintedMessageId = `<nexeo-${crypto.randomUUID()}@tmcltd.ai>`;
 
     // Build RFC 2822 message. In-Reply-To and References give external
     // mail readers proper threading; threadId on the API call covers Gmail.
