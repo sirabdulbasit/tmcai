@@ -4424,3 +4424,51 @@ MECHANISM: one minted, recorded, standard-carried Message-ID on every Brain emai
 by the one echo guard
 FALSIFIER: any post-deploy Brain fallback email (either route) re-ingested as inbound
 despite a recorded rfc822MessageId
+
+## Iteration 78 (build 3, DEF-333 — the answer-binding rule; B04 at last) — 2026-10-09
+
+**Codex it-78(2) verdict SOUND with directive #2 explicit: "STOP iterating on the echo family —
+it is complete… the next measurable turn should go to B04 binding."** The gauge is dark (and
+WORSE today — the analyst's logs show all THREE provider legs failing: Gemini ×2 on billing,
+and the Anthropic fallback now out of credit), so "measurable" cannot be waited for; building
+now means B04's fix is live the instant billing returns. Taken.
+
+**Diagnosis:** the benchmark feeds B04's outstanding question via `history` (no queue row is
+seeded; `openQuestions` reaches only the judge), and `answerAsBrain` has no outstanding-question
+awareness — so the ground the case exercises is the conversation itself, and the composer's
+CORE rules never state the binding. **The change:** rule 1a in `CORE_CONVERSATIONAL_RULES`
+(`brainComposer.ts`) — your own unanswered question binds their reply: answer-first reading,
+carry the settled values, chase only the missing slots, never mint the answer into a new item.
+Always-on, every surface, every intent; the model judges whether a message answers — no
+detector, no enumeration (pinned by its own test). `def333AnswerBindsToOwnQuestion.test.ts`
+4/4 on the def222 source-pinning pattern.
+
+**Three-docs verdict: CIRCLING, resolved at a different mechanism** — `pending-prompt-eats-command`
+is §3 count 4; prior fixes were dispatch-side (DEF-093/DEF-249). Per rule 5 a repeat instance
+patch is forbidden; this is the first COMPOSER-side fix — the layer the benchmark actually
+measures and every surface shares. **Named remainder (not claimed):** the production-grounded
+half — injecting the live `awaiting_reply` row (≤1 by schema) as an authoritative block when
+history is trimmed — is DEF-333's next increment, deliberately not rushed at this context depth.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3600 passed | 0 failed** (312 files passed | 1 skipped of 313; 7 expected
+fail | 21 skipped | 1 todo of 3629) · `git diff --check` clean · def333 4/4, def222 + def223
+unchanged.
+
+**Also this turn (second commit): the DEF-329 row gains the analyst's outage-scope line** —
+the Anthropic fallback is ALSO dead (400 credit-too-low, 121 hits in 2k log lines, 10-09), so
+restoring GCP billing no longer leaves a safety net behind it; the row previously described
+Gemini only.
+
+**Directive items not taken, named:** #1 billing + the two-key round-trip check (human +
+pulse); #3 orchestrator items. Rotation says Learn; campaign says Self-Pruning (nothing left
+to build, 5x on record) — divergence declared: this is Codex's own #2, and B04 is the
+benchmark's standing blocker. Deck is empty; tag named: `pending-prompt-eats-command`.
+
+CAPABILITY: Accurate Communication
+PREDICTED: +0 while the gauge is dark; B04/C6 is the first number that should move on the
+first measurable post-deploy run
+MECHANISM: the binding instruction ships in CORE on every turn, so a bare answer is read
+against Brain's own outstanding question instead of becoming a new task
+FALSIFIER: a measurable post-deploy run with B04 still at C6<=75, or a live chat where his
+answer to Brain's question becomes a new item
