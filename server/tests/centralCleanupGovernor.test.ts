@@ -20,6 +20,9 @@ describe('central cleanup governor', () => {
       'reset_archive_ttl',
       'wiki_memory_consolidation',
       'feed_event_prune',
+      // ASPECT 1 of Self-Pruning, added 2026-10-09: the filesystem had no owner
+      // while all eleven tasks above were database concerns. Dry by default.
+      'filesystem_prune',
     ]);
     expect(new Set(manifest.map((task) => task.id)).size).toBe(manifest.length);
     for (const task of manifest) {

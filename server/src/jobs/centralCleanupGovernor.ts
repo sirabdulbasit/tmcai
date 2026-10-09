@@ -135,6 +135,41 @@ const TASKS: CleanupTaskDefinition[] = [
         pruneUserFeedEvents(clientNumber, userId, { apply: true }));
     },
   },
+  {
+    // ASPECT 1 OF SELF-PRUNING — the filesystem, which had no owner until
+    // 2026-10-09. Every one of the eleven tasks above is a DATABASE concern, so
+    // nothing pruned a cache, a superseded binary or a leaked temp directory, and
+    // nothing watched free space: the box reached 93% full and the owner's eye was
+    // the first thing that noticed.
+    //
+    // It belongs HERE rather than in a scheduler of its own because this governor
+    // already owns cadence, ordering, isolation and the durable lease — a second
+    // scheduler would be the eleventh protection-with-two-implementations.
+    //
+    // DRY BY DEFAULT: it measures every day and removes nothing until
+    // `selfpruning.filesystem_prune_enabled` is 1, because deleting takes consent.
+    // The measurement still earns the tick — it is what raises the disk-pressure
+    // finding, which is rung 1 of Self-Healing applied to this box's own disk.
+    id: 'filesystem_prune', cadenceMs: DAY, initialDelayMs: 30 * 60 * 1000,
+    description: 'Measure reclaimable filesystem residue; prune it once the owner opts in',
+    run: async () => {
+      const [{ runFilesystemPrune }, { getBehaviorValue }] = await Promise.all([
+        import('../services/selfpruning/filesystemPruneService'),
+        import('../services/behaviorConfig'),
+      ]);
+      const { forEachActiveUser } = await import('../services/maintenance/queueArchiveMaintenanceService');
+      // One tenant's number is enough to file the finding against; the disk is
+      // shared, so this is a BOX-level fact wearing a tenant's label rather than a
+      // per-tenant sweep. First active tenant wins, deterministically.
+      let clientNumber: string | undefined;
+      await forEachActiveUser(async (cn) => { clientNumber = clientNumber ?? cn; });
+      const apply = clientNumber
+        ? await getBehaviorValue('selfpruning.filesystem_prune_enabled', { clientNumber })
+            .catch(() => 0) === 1
+        : false;
+      return runFilesystemPrune({ now: Date.now(), apply, clientNumber });
+    },
+  },
 ];
 
 export function getCentralCleanupManifest(): Array<Omit<CleanupTaskDefinition, 'run'>> {
