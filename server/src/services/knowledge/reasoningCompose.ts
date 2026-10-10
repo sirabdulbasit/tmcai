@@ -148,6 +148,10 @@ export interface ReasoningInput {
     // never in front of the model. Counting is not re-implemented here — the
     // block comes from C-3 increment 1's summariser.
     pushHistory?: string;
+    // DEF-333 increment 2 — the live `awaiting_reply` question (≤1 per user
+    // by the queue's partial unique index), so rule 1a's binding survives
+    // the question scrolling out of the trimmed history window.
+    awaitingAnswer?: string;
   };
 }
 
@@ -332,6 +336,10 @@ export function renderUserMessage(input: ReasoningInput, tzAnchor: { tz: string;
   const todayLocal = formatLocalDate(tzAnchor.tz, new Date());
   parts.push(`Today (UTC): ${nowIso}\nToday (${tzAnchor.tz} local date): ${todayLocal}\nUser timezone: ${tzAnchor.tz} (${tzAnchor.offset}).\nWhen emitting date/datetime fields, ALWAYS resolve relative phrases ("monday", "tomorrow", "next friday", "today 6pm") to absolute ISO 8601 using this anchor.`);
   parts.push(`User's current message: ${input.question}`);
+  // DEF-333 increment 2 — the awaiting-answer block renders ABOVE the
+  // history so the binding holds even when the question itself has been
+  // trimmed out of the recent-conversation window.
+  if (input.dataBlocks.awaitingAnswer) parts.push(input.dataBlocks.awaitingAnswer);
   if (input.history.length > 0) {
     const recent = input.history.slice(-8).map((h) => {
       if (h.role === 'artifact') {

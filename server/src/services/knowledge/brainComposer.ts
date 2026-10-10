@@ -1381,6 +1381,44 @@ function looksLikeImperative(text: string): boolean {
  *  are the FEW universals; everything else is intent-specific below.
  *  Drawn from the six conversation improvements that distinguish good
  *  LLM chat (GPT/Claude/Gemini) from a rule-bundled assistant. */
+/**
+ * DEF-333 increment 2 (Codex it-78(3) §6.3, the named remainder) — rule 1a
+ * binds the user's reply to Brain's own unanswered question, but it reads
+ * that question from the history block, so the binding dies the moment the
+ * question scrolls out of the trimmed window. This block carries the live
+ * `awaiting_reply` row — AT MOST ONE exists per user, enforced by the
+ * queue's partial unique index, so the grounding is unambiguous by
+ * construction (target grounding: the question text is Brain's own recorded
+ * words, never a guess). Fails OPEN: no row or a failed read renders
+ * nothing, and composition proceeds exactly as before. The final sentence
+ * is the escape hatch for the over-binding direction Codex it-78(3) §3
+ * flagged: a clear new request stays a request.
+ * Exported because the rule is the fix (the DEF-287 pattern).
+ */
+export async function buildAwaitingAnswerBlock(clientNumber: string, userId: number): Promise<string | null> {
+  try {
+    const row = await prisma.brainPromptQueue.findFirst({
+      where: { clientNumber, userId, state: 'awaiting_reply' },
+      select: { question: true, sentAt: true },
+    });
+    if (!row?.question) return null;
+    const ageMin = row.sentAt
+      ? Math.max(0, Math.round((Date.now() - new Date(row.sentAt).getTime()) / 60_000))
+      : null;
+    return [
+      "# YOU ARE AWAITING THE USER'S ANSWER (authoritative — survives history trimming)",
+      `You asked${ageMin != null ? ` ${ageMin} min ago` : ''}: "${row.question.slice(0, 400)}"`,
+      'The user has not answered it yet. Core rule 1a applies to THIS question even when it is',
+      'no longer visible in the recent-conversation block: read their current message FIRST as',
+      'a candidate answer to it, carry what it settles, and chase only what is still missing.',
+      'If their message is clearly an unrelated new request, handle that request — the question',
+      'above simply stays open; never force-fit their words onto it.',
+    ].join('\n');
+  } catch {
+    return null;
+  }
+}
+
 const CORE_CONVERSATIONAL_RULES = `# Core conversational rules (always apply)
 1. **Anchor to recent.** If the user is replying to your most recent message — its content, items, or names — that is your primary context. Don't search elsewhere first. The history block below shows what you just said.
 1a. **Your own unanswered question binds their reply.** When your most recent message asked the user a question and their current message plausibly answers any part of it, read it FIRST as that answer: acknowledge what it settles, carry the settled values into whatever you were asking about, and ask only for what is still missing. Never convert such an answer into a new standalone item or command — a bare value ("high", "tomorrow", "the second one") arriving right after you asked for exactly that value is an answer, not a task title.
@@ -2862,6 +2900,7 @@ export async function compose(
       const pushHistoryBlock = await buildPushHistoryBlock(
         userId, clientNumber, conversationTextForPushHistory(question, history), question,
       );
+      const awaitingAnswerBlock = await buildAwaitingAnswerBlock(clientNumber, userId);
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
@@ -2879,6 +2918,7 @@ export async function compose(
           artifacts: artifactsBlockForReasoning || undefined,
           dispatchLedger: dispatchLedgerBlock || undefined,
           pushHistory: pushHistoryBlock || undefined,
+          awaitingAnswer: awaitingAnswerBlock || undefined,
         },
       });
       if (result) {

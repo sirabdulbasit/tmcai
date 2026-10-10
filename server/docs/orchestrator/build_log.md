@@ -4472,3 +4472,50 @@ MECHANISM: the binding instruction ships in CORE on every turn, so a bare answer
 against Brain's own outstanding question instead of becoming a new task
 FALSIFIER: a measurable post-deploy run with B04 still at C6<=75, or a live chat where his
 answer to Brain's question becomes a new item
+
+## Iteration 78 (build 4, DEF-333 increment 2 — the binding survives history trimming) — 2026-10-10
+
+**The outage is OVER** (analyst, six-way log confirmation: billing restored 10-09 07:33, 
+`judgementFailures` 5→0, backlog draining, and DEF-329's alarm is LIVE-VERIFIED — it reached
+the owner by email on 10-07 and he acted). **Suspension override, declared:** the brief says
+HEAD carries one unreviewed commit (`9cb8eb1`, another seat's PRUNE-004 + DEF-334 row) and the
+only job is making HEAD deployable — but no review of it exists yet (the nightly cycle will
+produce one; cadence is healthy, D-107…114 nightly) and no blocking finding exists anywhere,
+so a bare "already deployable" exit would waste the turn. Instead this turn executes **Codex
+it-78(3)'s own ranked directive #6.3**: complete DEF-333's named remainder. One small,
+reviewer-directed commit; the nightly review has handled 2-commit ranges all week.
+
+**The change:** `buildAwaitingAnswerBlock` in `brainComposer.ts` (exported, DEF-287 pattern)
+reads the live `awaiting_reply` row — at most one per user by the queue's partial unique
+index, so grounding is unambiguous by construction — and renders it as an authoritative block
+ABOVE the history in `reasoningCompose.ts`, so rule 1a's binding holds even when the question
+has scrolled out of the trimmed window. Fails open on every edge (no row, blank question, DB
+error → nothing rendered). The block's final sentence is the explicit escape hatch for the
+over-binding direction Codex flagged MEDIUM in §3: a clearly unrelated new request is handled
+as a request; the question stays open; never force-fit. `def333AwaitingAnswerSurvivesTrim`
+5/5 (content, scope, null-path, fail-open, renderer placement source-pinned).
+
+**Three-docs verdict: progressing within the same DEF** — this is the second increment of
+DEF-333, pre-named in its own row; no new recurrence.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3614 passed | 0 failed** (314 files passed | 1 skipped of 315; 7 expected
+fail | 21 skipped | 1 todo of 3643) · `git diff --check` clean · def333 suites 9/9.
+
+**Known gap, named:** the block rides the reasoningCompose dataBlocks path; the linear compose
+path has rule 1a (CORE ships on both) but not the trimmed-history block — acceptable because
+the in-window case is the common one there, and stated here so it is a decision, not an
+omission. **Directive items not taken:** #6.1 is done by the human (billing restored; Anthropic
+credit still needs independent confirmation — the fallback is untested because the primary
+works); #6.2 (verify both binding directions) belongs to the first measurable run; #6.4 litter
+is the orchestrator's. DEF-334 parts (2)/(3) — the analyst's new top Self-Healing gap — are the
+next build turn's natural item once `9cb8eb1` clears review. Rotation says Learn; divergence
+declared (reviewer's ranked directive). Tag: `pending-prompt-eats-command` (same DEF, increment 2).
+
+CAPABILITY: Accurate Communication
+PREDICTED: +0 until measured; B04/C6-C3-C5 should move on the first measurable run, and the
+binding now holds beyond the history window
+MECHANISM: the one awaiting_reply row rides every reasoning turn as an authoritative block,
+with an explicit new-request escape hatch
+FALSIFIER: a trimmed-history live chat where his answer to Brain's question still mints a new
+item; or a new command EATEN as an answer (the over-binding direction)
