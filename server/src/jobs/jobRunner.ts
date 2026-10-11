@@ -60,7 +60,20 @@ const STALE_RUNNING_AFTER_MS = 30 * 60_000;
 /** Stable per-process owner identity for leases. */
 const OWNER = `${os.hostname()}:${process.pid}:${Date.now().toString(36)}`;
 
-interface LocalJobState { jobClass: JobClass; running: boolean }
+interface LocalJobState {
+  jobClass: JobClass;
+  running: boolean;
+  /** DEF-335 — when the current tick took the slot. The wedge breaker
+   *  compares against this, so a tick that hangs in UNBOUNDED wrapper
+   *  bookkeeping (lease/ledger DB calls — the body has a timeout, the
+   *  bookkeeping does not) cannot halt the job forever. */
+  startedAt?: number;
+  /** DEF-335 — takeover generation. When the breaker trips and a new
+   *  tick takes the slot, the orphaned tick's `finally` must not clear
+   *  the NEW tick's running flag; only the generation that set the flag
+   *  may clear it. */
+  gen: number;
+}
 const jobs = new Map<string, LocalJobState>();
 
 /** Flips false on the first undefined_table error — health then reports
@@ -167,6 +180,13 @@ export interface ProtectedTickOpts {
    *  over; if the orphaned body later finishes, the post-run lease
    *  check records 'lease_lost' instead of success. */
   timeoutMs?: number;
+  /** DEF-335 — how long a previous tick may hold the in-process slot
+   *  before the overlap guard treats it as WEDGED and trips the
+   *  breaker. Default max(2× leaseTtl, 30 min) — far past any
+   *  legitimate duration (attempts × timeout + bookkeeping). Exposed
+   *  for tests and unusual jobs; never set below a job's real
+   *  worst-case runtime. */
+  wedgedAfterMs?: number;
 }
 
 export type TickOutcome =
@@ -179,20 +199,51 @@ export async function protectedTick(
   fn: () => Promise<unknown>,
   opts: ProtectedTickOpts = {},
 ): Promise<TickOutcome> {
-  const state = jobs.get(name) ?? { jobClass, running: false };
+  const state = jobs.get(name) ?? { jobClass, running: false, gen: 0 };
   jobs.set(name, state);
   state.jobClass = jobClass;
 
-  // In-process re-entrancy guard: a tick outliving its interval is
-  // skipped VISIBLY (debug log + distinct outcome), never overlapped.
-  if (state.running) {
-    log.warn('tick overlap — previous tick still running, skipping', { name });
-    return 'skipped_already_running';
-  }
-  state.running = true;
-
   const ttl = opts.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
   const timeoutMs = opts.timeoutMs ?? Math.max(60_000, ttl - 60_000);
+
+  // In-process re-entrancy guard: a tick outliving its interval is
+  // skipped VISIBLY (debug log + distinct outcome), never overlapped.
+  //
+  // DEF-335 `comm-ingestion-stalled` — the guard needs a FLOOR, and the
+  // 10-08 incident is why: the body has a timeout, but the wrapper's
+  // lease/ledger DB calls are UNBOUNDED, so one wedged connection left
+  // `running=true` forever and every later tick skipped — the generic
+  // feed poller halted from 10-08 11:21 and the derivation sweep from
+  // 10-09 13:36, silently, while the scheduler stayed healthy. Past
+  // the wedge threshold (far beyond any legitimate tick duration) the
+  // breaker trips: say it loudly, leave a durable system-log receipt,
+  // and take the slot. Cross-replica safety is unchanged — the lease
+  // (long expired by then) still fences persistence, so the orphan can
+  // only ever record 'lease_lost', never success. Deterministic ops
+  // mechanics: this EXECUTES recovery, it decides nothing.
+  if (state.running) {
+    const runningForMs = state.startedAt ? Date.now() - state.startedAt : 0;
+    const wedgedAfterMs = opts.wedgedAfterMs ?? Math.max(2 * ttl, 30 * 60_000);
+    if (runningForMs > wedgedAfterMs) {
+      log.error('tick WEDGED — previous tick held the slot far past any legitimate duration; breaker tripped so this job is not halted forever', {
+        name, runningForMs, wedgedAfterMs,
+      });
+      try {
+        const { log: sysLog } = await import('../services/systemLogService');
+        await sysLog({
+          level: 'error', category: 'job_wedged', source: `jobRunner:${name}`,
+          message: `background job "${name}" wedged: previous tick held the slot ${Math.round(runningForMs / 60_000)} min (breaker at ${Math.round(wedgedAfterMs / 60_000)} min); ticks resume now. The orphaned tick is fenced by its expired lease and cannot record success.`,
+        } as any);
+      } catch { /* the error log line above stands */ }
+      // fall through: take the slot.
+    } else {
+      log.warn('tick overlap — previous tick still running, skipping', { name });
+      return 'skipped_already_running';
+    }
+  }
+  state.running = true;
+  state.startedAt = Date.now();
+  const myGen = ++state.gen;
 
   try {
     let lease: { fence: bigint } | null;
@@ -278,7 +329,13 @@ export async function protectedTick(
     log.error('protected tick wrapper error', { name, error: e?.message });
     return 'failed';
   } finally {
-    state.running = false;
+    // DEF-335 — only the generation that set the flag may clear it: an
+    // orphaned tick resuming after a breaker takeover must not release
+    // the NEW tick's slot.
+    if (state.gen === myGen) {
+      state.running = false;
+      state.startedAt = undefined;
+    }
   }
 }
 

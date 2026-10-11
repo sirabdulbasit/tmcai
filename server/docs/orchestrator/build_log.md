@@ -4519,3 +4519,57 @@ MECHANISM: the one awaiting_reply row rides every reasoning turn as an authorita
 with an explicit new-request escape hatch
 FALSIFIER: a trimmed-history live chat where his answer to Brain's question still mints a new
 item; or a new command EATEN as an answer (the over-binding direction)
+
+## Iteration 79 (build, DEF-335 — the wedge breaker; a stuck tick can no longer halt a job forever) — 2026-10-11
+
+**The analyst's top live defect, taken with the campaign-cap exception declared:** the
+campaign says Self-Pruning (nothing left to build, 6x on record); the exception clause names
+"a live regression that would reach the owner" — and this is one: his emails have silently
+stopped becoming items since 10-08 because the generic feed poller (and since 10-09 the
+derivation sweep) wedged behind `protectedTick`'s overlap guard, which has no floor. The
+model recovered on 10-09; the pipeline feeding it did not. (The analyst also retracted its
+own prior "recovered and draining" call — the recovery lasted ~6h.)
+
+**Root cause, from the runner's own code:** the BODY is timeout-protected but the wrapper's
+lease/ledger DB calls are unbounded; one wedged connection leaves `running=true` forever and
+every later tick logs `tick overlap` and skips. **The change (`jobRunner.ts`):** past
+`wedgedAfterMs` (default max(2× leaseTtl, 30 min)) the guard trips a breaker — loud error,
+durable `job_wedged` system-log receipt, slot taken — with a generation guard so the orphan's
+`finally` cannot clear the new tick's slot, and the lease fence (long expired) still
+guaranteeing the orphan can never record success. Class property: a wedged tick can DELAY a
+job by at most the threshold, never halt it — this un-wedges the poller AND the sweep on
+deploy without a restart, and removes the class for every current and future job on the
+runner. Three tests added to the runner's own harness (floor preserved; breaker + receipt;
+clean state after takeover), 19/19.
+
+**Three-docs verdict: progressing** — new root cause at the ops layer (`guard-below-early-return`
+kin, but the runner wrapper is first-occurrence; no §3 tag names it). Tag named:
+`comm-ingestion-stalled` — PARTIAL close, stated plainly: the stall class is fixed by
+construction; the **Gmail connector token expiry stays HUMAN** ("Reconnect in My Connectors")
+and **DEF-334 parts (2)/(3)** (heartbeat finding + log throttle) stay OPEN — the breaker's
+receipt is a system-log row, not yet an owner-visible finding.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3617 passed | 0 failed** (314 files passed | 1 skipped of 315; 7 expected
+fail | 21 skipped | 1 todo of 3646) · `git diff --check` clean · jobRunner suite 19/19.
+
+**What I did NOT do, named:** no connector reconnect (human); no DEF-334 (2)/(3) — next build
+turn's item, and the breaker shrinks its blast radius meanwhile; no entity-merge FK fix
+(`entity-merge-fk-violation`, 185×/window — real, next in queue after DEF-334); no flag flips;
+no benchmark or `scripts/orchestrator/**` touch. Unsure about: whether the 10-08 wedge sits in
+`acquireLease` or `releaseLease` specifically — the breaker makes the distinction moot for
+liveness, but the underlying pg-connection hang is worth the orchestrator's eye if it recurs
+(the `job_wedged` receipts will now show it).
+
+**Owner/admin actions, updated order:** (1) **Reconnect the Gmail connector** ("My
+Connectors" — token expired, 16× on 10-10; ingestion stays dead even after this deploys until
+that's done); (2) re-pair WhatsApp by QR; (3) confirm tmcai-491811 billing + Anthropic credit
+independently; (4) flip the `selfpruning.*` flags once ingestion is live.
+
+CAPABILITY: Self-Healing
+PREDICTED: +0 until deployed; on deploy the wedged poller and sweep self-recover within one
+wedge window, and no runner job can ever be halted forever by a stuck tick again
+MECHANISM: the overlap guard gained a floor — breaker, receipt, generation-guarded takeover,
+lease-fenced orphan
+FALSIFIER: any job still showing `tick overlap` skips beyond its wedge threshold with this
+live; or a double-run that records two protected successes for one window (the fence failing)

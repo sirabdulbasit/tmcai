@@ -256,3 +256,58 @@ describe('health + stale-running + catch-up scan', () => {
     expect(missed[0].name).toBe('daily');
   });
 });
+
+// ── DEF-335 `comm-ingestion-stalled` — the wedge breaker ─────────────────────
+//
+// The 10-08 incident: the body has a timeout, but the wrapper's lease/ledger
+// DB calls are unbounded, so one wedged connection left `running=true`
+// forever — the generic feed poller halted from 10-08 11:21 and the
+// derivation sweep from 10-09 13:36, every later tick skipping silently
+// while the scheduler stayed healthy. Past the wedge threshold the overlap
+// guard now trips a breaker: loud log + durable system-log receipt + the
+// slot is taken. The orphan is fenced by its expired lease (cannot record
+// success) and a generation guard stops its `finally` from clearing the
+// NEW tick's slot.
+describe('DEF-335 — a wedged tick cannot halt a job forever', () => {
+  it('a NORMAL overlap still skips — the breaker has a floor', async () => {
+    void protectedTick('wedge-normal', 'maintenance', () => new Promise(() => { /* hangs */ }), {
+      leaseTtlMs: 60_000, timeoutMs: 120_000, wedgedAfterMs: 60_000,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const out = await protectedTick('wedge-normal', 'maintenance', async () => 'fast', {
+      leaseTtlMs: 60_000, wedgedAfterMs: 60_000,
+    });
+    expect(out).toBe('skipped_already_running');
+  });
+
+  it('past the threshold the breaker trips: the next tick RUNS and a job_wedged receipt is written', async () => {
+    const { log: sysLog } = await import('../src/services/systemLogService');
+    const calls = (sysLog as any).mock.calls.length;
+    void protectedTick('wedge-tripped', 'maintenance', () => new Promise(() => { /* hangs */ }), {
+      leaseTtlMs: 1_000, timeoutMs: 600_000, wedgedAfterMs: 50,
+    });
+    await new Promise((r) => setTimeout(r, 80)); // past wedgedAfterMs
+    const out = await protectedTick('wedge-tripped', 'maintenance', async () => 'recovered', {
+      leaseTtlMs: 1_000, wedgedAfterMs: 50,
+    });
+    expect(out).toBe('ok');
+    const newCalls = (sysLog as any).mock.calls.slice(calls);
+    const wedged = newCalls.find((c: any[]) => c[0]?.category === 'job_wedged');
+    expect(wedged).toBeTruthy();
+    expect(String(wedged[0].message)).toContain('wedge-tripped');
+  });
+
+  it('after a breaker takeover the slot state is CLEAN — a third tick runs normally (generation guard)', async () => {
+    void protectedTick('wedge-gen', 'maintenance', () => new Promise(() => { /* hangs */ }), {
+      leaseTtlMs: 1_000, timeoutMs: 600_000, wedgedAfterMs: 50,
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    await protectedTick('wedge-gen', 'maintenance', async () => 'recovered', {
+      leaseTtlMs: 1_000, wedgedAfterMs: 50,
+    });
+    const third = await protectedTick('wedge-gen', 'maintenance', async () => 'steady', {
+      leaseTtlMs: 1_000, wedgedAfterMs: 50,
+    });
+    expect(third).toBe('ok');
+  });
+});
