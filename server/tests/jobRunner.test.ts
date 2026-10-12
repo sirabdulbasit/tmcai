@@ -311,3 +311,18 @@ describe('DEF-335 — a wedged tick cannot halt a job forever', () => {
     expect(third).toBe('ok');
   });
 });
+
+  it("the breaker's receipt can never hold the takeover hostage — a HANGING sysLog is raced out and the slot is still taken (Codex it-79 §3)", async () => {
+    const { log: sysLog } = await import('../src/services/systemLogService');
+    (sysLog as any).mockImplementationOnce(() => new Promise(() => { /* pool-exhaustion hang */ }));
+    void protectedTick('wedge-hung-receipt', 'maintenance', () => new Promise(() => { /* hangs */ }), {
+      leaseTtlMs: 1_000, timeoutMs: 600_000, wedgedAfterMs: 50,
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    const t0 = Date.now();
+    const out = await protectedTick('wedge-hung-receipt', 'maintenance', async () => 'recovered', {
+      leaseTtlMs: 1_000, wedgedAfterMs: 50,
+    });
+    expect(out).toBe('ok');
+    expect(Date.now() - t0).toBeLessThan(8_000); // bounded by the 5s race, not the hang
+  }, 15_000);

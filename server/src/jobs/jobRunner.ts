@@ -228,12 +228,21 @@ export async function protectedTick(
       log.error('tick WEDGED — previous tick held the slot far past any legitimate duration; breaker tripped so this job is not halted forever', {
         name, runningForMs, wedgedAfterMs,
       });
+      // Codex it-79 §3 MEDIUM — the receipt itself is a DB call, and if the
+      // wedge is pool exhaustion it would hang on the SAME pool: the exact
+      // unbounded-call class this breaker exists to break, reintroduced on
+      // the recovery path. So the receipt is RACED against a short timeout
+      // and can never hold the takeover hostage; the stdout error above is
+      // the unconditional signal, the DB row the best-effort receipt.
       try {
         const { log: sysLog } = await import('../services/systemLogService');
-        await sysLog({
-          level: 'error', category: 'job_wedged', source: `jobRunner:${name}`,
-          message: `background job "${name}" wedged: previous tick held the slot ${Math.round(runningForMs / 60_000)} min (breaker at ${Math.round(wedgedAfterMs / 60_000)} min); ticks resume now. The orphaned tick is fenced by its expired lease and cannot record success.`,
-        } as any);
+        await Promise.race([
+          sysLog({
+            level: 'error', category: 'job_wedged', source: `jobRunner:${name}`,
+            message: `background job "${name}" wedged: previous tick held the slot ${Math.round(runningForMs / 60_000)} min (breaker at ${Math.round(wedgedAfterMs / 60_000)} min); ticks resume now. The orphaned tick is fenced by its expired lease and cannot record success.`,
+          } as any),
+          new Promise((r) => setTimeout(r, 5_000).unref?.()),
+        ]);
       } catch { /* the error log line above stands */ }
       // fall through: take the slot.
     } else {

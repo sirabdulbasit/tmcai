@@ -4616,3 +4616,31 @@ iterations — finally measuring four turns of B04 work
 MECHANISM: the judge's Gemini legs reach the configured Vertex provider instead of dying at a
 stale key gate
 FALSIFIER: the next scorer run still 0/12 with this deployed — then a second cause exists
+
+## Iteration 79 (build 3 — the breaker's receipt bounded; DEF-335 row corrected on the record) — 2026-10-12
+
+Codex it-79 §3 MEDIUM closed: the wedge breaker's own `job_wedged` receipt was an unbounded DB
+await on the takeover path — if the wedge were pool exhaustion the receipt would hang on the
+same pool, re-hanging the breaker on its own recovery. The sysLog is now raced against 5s
+(`jobRunner.ts`); the stdout error stays unconditional, the DB row best-effort. Pinned by a
+hung-sysLog test: the takeover still completes bounded (runner suite 20/20). In the same
+commit, DEF-335's row takes Codex's §2 corrections verbatim: the sweep claim retracted (raw
+setInterval, not behind protectedTick — its recovery is the human token reconnect + wrapping
+in protectedJob, named as the next increment), the "every job" claim narrowed (nested governor
+flags + raw-setInterval jobs uncovered, named), and the live status recorded (breaker DEPLOYED
+D-116 but UNEXERCISED — the 14:54 restart cleared the wedge first; job_wedged receipts = 0).
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3622 passed | 0 failed** (315 files passed | 1 skipped of 316; 7 expected
+fail | 21 skipped | 1 todo of 3651) · `git diff --check` clean · jobRunner 20/20.
+
+**Queued next, named:** directive #2 (wrap `runEmailItemDerivation` in `protectedJob`) and #4
+(governor wedge floors) — both small, next turn; the gauge fix (DEF-336, build 2) outranked
+them this turn. Human actions unchanged: Gmail reconnect, WhatsApp QR, billing/credit
+confirmation, flags.
+
+CAPABILITY: Self-Healing
+PREDICTED: +0; the breaker's recovery path can no longer be held hostage by its own receipt
+MECHANISM: the one unbounded DB call on the takeover path is now raced against a 5s bound
+FALSIFIER: a wedge takeover observed taking longer than ~5s on the receipt, or completing
+without the stdout error line
