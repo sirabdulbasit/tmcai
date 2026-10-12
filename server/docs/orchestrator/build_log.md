@@ -4573,3 +4573,46 @@ MECHANISM: the overlap guard gained a floor — breaker, receipt, generation-gua
 lease-fenced orphan
 FALSIFIER: any job still showing `tick overlap` skips beyond its wedge threshold with this
 live; or a double-run that records two protected successes for one window (the fence failing)
+
+## Iteration 79 (build 2, DEF-336 — the gauge was dying at a stale key gate, not at billing) — 2026-10-12
+
+**Codex it-79 verdict on DEF-335: SOUND, with two of my overclaims corrected on the record**
+(the derivation sweep is raw `setInterval`, never covered by the breaker — my "un-wedges the
+sweep" claim was wrong; and "every job on the runner" does not reach the nested governor
+flags). Its directive #1 is taken this turn: **the benchmark gauge died for a cause billing
+restoration could not fix.**
+
+**Diagnosis, from code:** `callGemini`/`streamGemini` threw `GEMINI_API_KEY not configured`
+BEFORE consulting `getConfiguredGenAI()`. Production runs the VERTEX provider (keyless by
+design; its pm2 env happens to carry the key, so the gate passes there) — but the scorer's
+`env -u GEMINI_API_KEY` process hit the gate on every judge call: both Gemini legs dead
+instantly with Vertex healthy, the dry Claude leg finishing the kill, "judge returned
+nothing" on every run — including the early-September windows that predate billing. **The
+change:** both pre-gates deleted; the credential decision moves into `genaiClient.getGenAI`'s
+key-client branch, which now throws a clear error naming both remedies only when actually
+taken keyless. The gauge's exact environment (keyless + Vertex configured) now yields a
+working client, pinned by `def336GaugeCredentialGate.test.ts` 4/4 including a source-pin that
+the stale gates are gone. Legitimacy: this is the permitted benchmark-change category — the
+gauge crashes; no case, rubric, or gate arithmetic is touched.
+
+**Three-docs verdict: progressing** — new root cause (a pre-Vertex-era gate), first
+occurrence; kin to the 42% "code blocking a good answer" class the governance ruling
+quantifies. No deck tag (deck empty); this closes the loop's measurement, named plainly.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3621 passed | 0 failed** (315 files passed | 1 skipped of 316; 7 expected
+fail | 21 skipped | 1 todo of 3650) · `git diff --check` clean · def336 4/4.
+
+**Next commit this turn:** directive #3 (the breaker's own receipt is an unbounded DB await
+on the takeover path). Directives #2 (sweep: wrap in protectedJob — queued next turn with the
+row correction), #4 (governor floors), and the human actions (Gmail reconnect — he was on the
+connectors page at harvest time; WhatsApp QR; flags) are named, not dropped. Rotation says
+Thinking; campaign says Self-Pruning (nothing to build, 7x on record) — divergence declared:
+reviewer's directive #1.
+
+CAPABILITY: RELIABILITY-ONLY
+PREDICTED: the first post-deploy scorer run returns a real overall for the first time in ~11
+iterations — finally measuring four turns of B04 work
+MECHANISM: the judge's Gemini legs reach the configured Vertex provider instead of dying at a
+stale key gate
+FALSIFIER: the next scorer run still 0/12 with this deployed — then a second cause exists

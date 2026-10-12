@@ -34,10 +34,13 @@ export async function streamGemini(
   disableThinking: boolean = false,
   conversationHistory?: ChatTurn[]
 ): Promise<void> {
-  if (!env.geminiApiKey) {
-    throw new Error('GEMINI_API_KEY not configured');
-  }
-
+  // DEF-336 — no API-key pre-gate here. The configured provider decides what
+  // credentials it needs (`getConfiguredGenAI`: Vertex needs NO GEMINI_API_KEY;
+  // the key-client throws its own clear error when keyless). The old
+  // `if (!env.geminiApiKey) throw` predated the Vertex era and killed every
+  // call in any keyless process even with Vertex fully configured — it is
+  // what held the capability benchmark's judge at 0/12 across every dark
+  // window, including the ones BEFORE the billing outage.
   const modelId = useFlash ? (await activeModels()).flash : (await activeModels()).pro;
   const ai = await getConfiguredGenAI();
 
@@ -122,7 +125,7 @@ export async function callGemini(
     thinkingBudget?: number;
   },
 ): Promise<string> {
-  if (!env.geminiApiKey) throw new Error('GEMINI_API_KEY not configured');
+  // DEF-336 — no API-key pre-gate; see streamGemini's note above.
   const modelId = opts?.flash ? (await activeModels()).flash : (await activeModels()).pro;
   const ai = await getConfiguredGenAI();
 

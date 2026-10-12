@@ -26,7 +26,19 @@ export function getGenAI(): GoogleGenAI {
         location: process.env.GCP_LOCATION || 'us-central1',
       });
     } else {
-      client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const apiKey = process.env.GEMINI_API_KEY || '';
+      // DEF-336 — the credential gate lives HERE, where the mode is decided,
+      // not as a pre-gate in every caller. A keyless process whose configured
+      // provider is Vertex never reaches this branch; a process that lands
+      // here with no key gets a clear, actionable error instead of a client
+      // that fails every call with a cryptic API message.
+      if (!apiKey) {
+        throw new Error(
+          'no Gemini credentials: GEMINI_API_KEY is unset and the configured provider is not vertex '
+          + '(configure the Vertex provider / set USE_VERTEX_AI=true, or set GEMINI_API_KEY)',
+        );
+      }
+      client = new GoogleGenAI({ apiKey });
     }
   }
   return client;
