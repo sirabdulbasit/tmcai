@@ -41,10 +41,16 @@ describe('DEF-333 — the binding rule ships on every turn', () => {
     expect(core).toContain('Your own unanswered question binds their reply');
   });
 
-  it('commands answer-first reading and carrying the settled values', () => {
-    expect(core).toContain('read it FIRST as that answer');
-    expect(core).toContain('carry the settled values');
+  it('commands answer-first consumption and applying the settled values', () => {
+    expect(core).toContain('that IS the answer');
+    expect(core).toContain('apply the settled values immediately');
     expect(core).toContain('ask only for what is still missing');
+  });
+
+  it('STRENGTHENED (it-79 measured failure, B04 C6=30): forbids the deflection the gauge caught verbatim', () => {
+    expect(core).toContain('do NOT deflect into a status check');
+    expect(core).toContain('is a failure, not caution');
+    expect(core).toContain('emitting the corresponding update action this turn');
   });
 
   it('forbids minting the answer into a new item — the DEF-093 failure, named generically', () => {

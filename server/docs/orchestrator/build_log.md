@@ -4644,3 +4644,44 @@ PREDICTED: +0; the breaker's recovery path can no longer be held hostage by its 
 MECHANISM: the one unbounded DB call on the takeover path is now raced against a 5s bound
 FALSIFIER: a wedge takeover observed taking longer than ~5s on the receipt, or completing
 without the stdout error line
+
+## Iteration 79 (build 3, DEF-333 increment 3 — consume, never deflect; the gauge's first verdict acted on) — 2026-10-13
+
+**The revived gauge's first measurement settles four turns of open questions: B04 is STILL
+broken** (C6=30, C3=40, C5=50 — worst case in the fixQueue, both top entries). The measured
+reply to "Priority high." was a DEFLECTION ("I'll need to check the current status… say 'go
+ahead'") — Brain neither consumed the answer nor chased the deadline. Codex it-79(2) §6.1
+offered two routes; this turn takes (a): **rule 1a strengthened against the measured failure
+verbatim** (`brainComposer.ts`, CORE — both compose paths confirmed at :1727/:1908):
+consume-don't-deflect, apply settled values immediately, emit the corresponding update action
+this turn when needed, and the exact caught shape named as a failure ("a reply like 'I'll
+need to check the current status first' to an answer you requested is a failure, not
+caution"). Route (b) — seeding the `awaiting_reply` row in the B04 case, the reviewer's
+sanctioned benchmark-FIDELITY change so increment 2 is actually exercised — is the NAMED NEXT
+STEP if this still scores C6<=75 on the next run; not taken together so the next measurement
+attributes cleanly to one change.
+
+**Three-docs verdict: CIRCLING acknowledged and attacked at the measured point** —
+`pending-prompt-eats-command` (§3 count 4); increments 1-2 were the first composer-side
+mechanism, now measured insufficient on the history-only path; increment 3 targets the
+observed failure mode, not a guess. Tag: `pending-prompt-eats-command`.
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3623 passed | 0 failed** (315 files passed | 1 skipped of 316; 7 expected
+fail | 21 skipped | 1 todo of 3652) · `git diff --check` clean · def333 suites 10/10, def222
+unchanged.
+
+**Directive items not taken, named:** §6.2 (the rest of the fixQueue: B12/B01/B02/B07 around
+C4@86.5) — next measurable turn, after B04's attribution is clean; §6.3 (sweep/governor wedge
+decision) — queued; §6.4 orchestrator. Rotation says Learn; campaign says Self-Pruning
+(nothing to build, 8x on record) — divergence declared: reviewer's directive #1 on the gate's
+worst case. Human actions unchanged: Gmail reconnect (he was polling the page at harvest),
+WhatsApp QR, flags.
+
+CAPABILITY: Accurate Communication
+PREDICTED: B04's C6 rises from 30 on the next scorer run — the first measurable prediction
+this DEF has been able to make; overall may not move (one case of twelve)
+MECHANISM: the binding rule now forbids the exact deflection the judge quoted, and ties the
+settled value to the update action in the same turn
+FALSIFIER: the next scorer run still shows B04 C6<=75 — then route (b) (seed the queue row,
+exercising increment 2) is next, per the reviewer's own framing
