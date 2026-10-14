@@ -4685,3 +4685,44 @@ MECHANISM: the binding rule now forbids the exact deflection the judge quoted, a
 settled value to the update action in the same turn
 FALSIFIER: the next scorer run still shows B04 C6<=75 — then route (b) (seed the queue row,
 exercising increment 2) is next, per the reviewer's own framing
+
+## Iteration 79 (build 4, DEF-337 — two queries that never once ran; the Memory enrichment was always empty) — 2026-10-14
+
+**No review of D-118 exists yet, so the standing ranked residuals govern; this takes the
+analyst's #3 (its mechanical half) — and it is also the source of the owner's returned flood
+symptom.** `entitySweepService.ts` carried two raw queries that have NEVER succeeded —
+invalid SQL (42P10) on first-ever execution, swallowed by `.catch(() => [])`: "recent topics
+from this sender" and "open items from this sender" returned empty on every call since the
+day they shipped, while flooding the error log ~18,760 lines on 10-13 alone (the exact
+"application fault running continuously" the owner reported in DEF-334, back from a new
+source). Fixes: GROUP BY replaces SELECT DISTINCT at `getRecentTopics` (distinctness + a
+licensed aggregate ordering); the decorative DISTINCT is dropped at `getActiveOpenItems`
+(oi.id is the PK, single-valued FK join — zero result-set change, legal ordering). Tenant
+scope untouched at both sites; fail-open kept (enrichment degrades, never throws). 5 tests
+pin the shapes, params, normalisation, blank-email guard, and fail-open.
+
+**Three-docs verdict: progressing** — new root cause, first occurrence (`entity-sweep-query-
+never-ran`, the analyst's name; adjacent to `guard-destroys-the-answer` §3 count 8 but a
+broken query, not a guard — kept distinct, as the analyst ruled).
+
+**Verification (re-run after the last edit):** `npx tsc --noEmit` exit 0 (from `server/`) ·
+`npx vitest run` **3628 passed | 0 failed** (316 files passed | 1 skipped of 317; 7 expected
+fail | 21 skipped | 1 todo of 3657) · `git diff --check` clean · def337 5/5.
+
+**What I did NOT do, named:** the sibling `entity-merge-fk-violation` in the SAME file
+(23505/23503, three deploys) — next turn's first item, needs the merge code and the
+entity_links unique constraint read, and deserves its own DEF + commit; DEF-334 parts (2)/(3)
+(the log throttle + health finding that would have capped and announced this flood) — still
+the top Self-Healing gap, named every pass; the sweep protectedJob wrap; the class detector
+(execute raw queries in CI) — infra, flagged for the orchestrator. Rotation says Self-Healing;
+this is Memory — divergence declared: the analyst's #3 is the mechanical, certain fix for the
+flood the owner personally reported, and killing it at the source IS the fastest path to his
+reported symptom ending. Human actions unchanged: Gmail reconnect (still 401 at 02:35),
+WhatsApp QR, flags.
+
+CAPABILITY: Memory
+PREDICTED: per-contact enrichment returns real data for the first time ever; the 42P10 flood
+stops at the source (watch 10-15's error-log size against 10-13's 14 MB)
+MECHANISM: two queries that threw on every execution now execute
+FALSIFIER: any 42P10 line from entitySweepService post-deploy, or empty enrichment for a
+sender with real history

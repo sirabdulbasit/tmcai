@@ -830,14 +830,23 @@ async function computeStats(clientNumber: string, email: string, phone: string):
   };
 }
 
-async function getRecentTopics(clientNumber: string, email: string, phone: string): Promise<string[]> {
+/** DEF-337 `entity-sweep-query-never-ran` — this query had NEVER succeeded:
+ *  `SELECT DISTINCT … ORDER BY MAX(created_at)` is invalid SQL (42P10 —
+ *  an aggregate in ORDER BY with no GROUP BY), so every call since the day
+ *  it shipped threw, was swallowed by the `.catch(() => [])`, and "recent
+ *  topics from this sender" silently returned empty — while the raw-query
+ *  layer logged the failure ~9,380×/day (the 10-13 flood, 18,760 lines).
+ *  GROUP BY provides the distinctness AND licenses the aggregate ordering.
+ *  Exported for tests (the DEF-287 pattern). */
+export async function getRecentTopics(clientNumber: string, email: string, phone: string): Promise<string[]> {
   const filter = email ? { col: 'sender_email', val: email } : { col: 'sender_phone', val: phone };
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT DISTINCT raw_payload->>'subject' AS subject
+    `SELECT raw_payload->>'subject' AS subject
        FROM feed_events
       WHERE client_number = $1 AND ${filter.col} = $2
         AND raw_payload->>'subject' IS NOT NULL
         AND created_at >= NOW() - INTERVAL '14 days'
+      GROUP BY raw_payload->>'subject'
       ORDER BY MAX(created_at) DESC
       LIMIT 5`,
     clientNumber, filter.val,
@@ -851,11 +860,18 @@ function normaliseSubject(s: string): string {
   return s.replace(/^(re:|fwd?:|fw:|\[.*?\])\s*/gi, '').trim().slice(0, 120);
 }
 
-interface ActiveOpenItem { id: string; itemNumber: number; title: string; status: string; priority: string; }
-async function getActiveOpenItems(clientNumber: string, email: string): Promise<ActiveOpenItem[]> {
+export interface ActiveOpenItem { id: string; itemNumber: number; title: string; status: string; priority: string; }
+/** DEF-337 `entity-sweep-query-never-ran` — the sibling never-ran query:
+ *  `SELECT DISTINCT oi.id, … ORDER BY oi.created_at` is invalid under
+ *  DISTINCT (the order column is not in the select list, 42P10). The
+ *  DISTINCT was pure decoration — `oi.id` is the primary key and the join
+ *  is on the single-valued `source_feed_event_id` FK, so each item appears
+ *  at most once; dropping it makes the ordering legal and changes no result
+ *  set. Exported for tests. */
+export async function getActiveOpenItems(clientNumber: string, email: string): Promise<ActiveOpenItem[]> {
   if (!email) return [];
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT DISTINCT oi.id, oi.item_number AS "itemNumber", oi.title, oi.status, oi.priority
+    `SELECT oi.id, oi.item_number AS "itemNumber", oi.title, oi.status, oi.priority
        FROM open_items oi
        JOIN feed_events fe ON fe.id = oi.source_feed_event_id
       WHERE oi.client_number = $1
