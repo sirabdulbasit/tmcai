@@ -4726,3 +4726,121 @@ stops at the source (watch 10-15's error-log size against 10-13's 14 MB)
 MECHANISM: two queries that threw on every execution now execute
 FALSIFIER: any 42P10 line from entitySweepService post-deploy, or empty enrichment for a
 sender with real history
+
+## Iteration 79 (build 5, DEF-338 — the merge whose success path violated its own constraints) — 2026-10-15
+
+**Objective taken.** No fixQueue exists this run (gauge null — the 10-14 provider timeout
+blip; benchmark reused). The objective is Codex it-79(4) directive #4 and the analyst's
+top un-addressed entity defect: **`entity-merge-fk-violation`** — the hourly entity merge
+that has failed on the same survivor (`cmpcpvy1k015brtds8slfoctt`) across FOUR deploys,
+~24 `entity merge failed` + ~1,028 sqlState 23505 + ~916 sqlState 23503 lines/day, now the
+single largest surviving log source after DEF-337 (−91%). It was also the previous
+commit's named next item. **Directive ranking honoured:** #1 (provider funding) is human
+and, per the analyst, held — billing fixed since 10-09, the 10-14 nulls were transient
+timeouts; #2 (live-verify DEF-337) was completed BY THE ANALYST this pass (42P10
+18,760 → 0 → 0 across the restart, merge-cadence 24=24 as the control — recorded in the
+DEF-337 row as VERIFIED (LIVE)); #3 (DEF-334 (2)/(3)) is NOT taken this turn — named,
+reason below; #4 is this build.
+
+**The mis-location mattered and is corrected on the record.** DEF-337's row (and the
+previous commit message) said the sibling lived "in the SAME file"
+(`entitySweepService.ts`). The analyst proved it is `identityResolutionService.ts`
+(log `service:"identity-resolution"`). Following the old note would have meant searching
+the wrong file. DEF-337's row now carries the correction.
+
+**What changed, and why that is the mechanism** (`server/src/services/memory/identityResolutionService.ts`):
+- `mergeEntities` (~:424): **`entity_links` is REBUILT, never repointed.** The old
+  in-place `UPDATE entity_links SET entity_id/linked_entity_id = survivor` violated the
+  unique triple (entity_id, linked_entity_id, link_type) on the first REALISTIC merge —
+  a true duplicate usually carries the SAME relationships the survivor already has, so
+  23505 was the success path's normal outcome, not an edge. New shape: snapshot every
+  link touching a doomed id (that snapshot IS the rollback record) → DELETE them →
+  re-INSERT remapped to the survivor with `ON CONFLICT DO NOTHING`; self-links
+  (dup↔survivor, dup↔dup — artefacts of the split identity, not relationships) are
+  dropped; a relationship the survivor already holds folds in. After the block, zero rows
+  reference a doomed id, so the final `DELETE FROM entities` cannot hit
+  `entity_links_linked_entity_id_fkey` (23503). **Neither constraint can fire, by
+  construction — the governance shape: the two sides cannot disagree, no error branch
+  anyone must remember.**
+- **In-transaction `.catch(() => 0)`/`.catch(() => [])` REMOVED** (the moving-rows
+  SELECT, the repoint UPDATE, the absorb UPDATE): inside a Postgres transaction a
+  swallowed statement error cannot contain a failure — the first error aborts the
+  transaction and every later statement fails anyway — so the catches only masked the
+  root sqlState and multiplied log lines (~80 error lines per failed merge). Now the
+  FIRST error throws once, with its real code, and the outer catch logs it
+  (`code: err?.code ?? err?.meta?.code`). This is also the mechanical flood reduction:
+  one line per failure instead of a cascade.
+- **Tenant guardrail tightened by construction:** every statement after the snapshot
+  operates on `doomedIds` — the ids PROVEN to exist under `client_number` — never the
+  caller's raw `duplicateIds`; `mergedIds` reports what was actually merged. (Guardrail
+  named per the governance ruling: tenant/user scope.)
+- `ENTITY_REFERENCES` → `PLAIN_ENTITY_REFERENCES` (entity_links removed, comment
+  explains why it is special; the other five no-FK columns keep the plain repoint, which
+  cannot collide — no unique constraints on those columns).
+
+**Tests** — `server/tests/def338EntityMergeRebuild.test.ts`, 6 named assertions: no
+`UPDATE entity_links` is ever issued + ON CONFLICT/remap shape pinned; self-links
+dropped; every entity_links statement precedes `DELETE FROM entities`; foreign/stale ids
+excluded from every statement and `mergedIds` honest; a mid-transaction failure stops at
+the failing statement (nothing after it executes, null out); the rollback record carries
+the deleted link rows. Like DEF-337, these mock the DB and pin shapes — they do NOT
+execute the SQL; the only execution-level proof is live (the falsifier below). Stated,
+not hidden.
+
+**Verification (re-run after the last edit, from `server/`):**
+- `npx tsc --noEmit` — exit 0, clean (run twice, after src and after test edits)
+- `npx vitest run` — **3634 passed | 0 failed** (317 files passed | 1 skipped of 318;
+  7 expected fail | 21 skipped | 1 todo of 3663)
+- `git diff --check` — clean
+- `npm run build` NOT run — not in the matrix; `server/dist` is `chattr +i` (CLAUDE.md)
+
+**What I did NOT do, and what I am unsure about:**
+- **DEF-334 parts (2)/(3)** (log bound + first-degradation owner finding) — directive #3,
+  still the top Self-Healing gap, re-proven by 13 unreceipted LLM fallbacks on 10-14.
+  Not taken: one structural fix per turn done properly ("if the first item is structural,
+  finish it alone"); DEF-338 removes the largest surviving flood source mechanically,
+  which is part (2)'s biggest term. DEF-334 (2)/(3) is the next Self-Healing turn's item.
+- The **42703 odoo never-ran query** (`odooWikiMirror.ts:176`, ~65/day) — third instance
+  of the DEF-337 class; the CI raw-query-execution detector stays owed (infra/orchestrator).
+- `protectedJob` wrap for the derivation sweep; the `stuck_queued_prompt` repair loop
+  (`self-heal-repair-never-verifies`); the 956/day `fetchThreadContext` throttle — all
+  named, none taken.
+- **Unsure:** the exact per-statement log multiplicity (why ~43 23505/day against 24
+  merge-failure lines — retries at the raw layer, or multiple proposals per run) — the
+  fix does not depend on it; and whether other merge groups beyond `cmpcpvy1k…` are
+  queued behind the failure (the falsifier covers both).
+- I did not re-measure production logs this turn (the analyst's pass is hours old and
+  complete; re-measuring is pulse work).
+
+**Divergences, declared:**
+- **Rotation target Self Follow-Up / campaign cap Self-Pruning → this build declares
+  Memory.** Campaign C-3's increments 1–3 are ALL code-complete and deployed (stated now
+  9x on record); the exits are non-code (DB flags + live observation, masked by dead
+  ingestion) — there is no undelivered increment to take. The rotation's Self Follow-Up
+  has no analyst-ranked defect this pass. This build is Codex directive #4 and the
+  analyst's ranked item, on the capability (Memory) Codex ruled SUPPORTED for the sibling
+  fix last review. Adjacent benefit, not claimed: `mergeEntities` IS the engine MEM-003's
+  self-pruning scheduler runs hourly, so Self-Pruning's "junk withdraws itself" gains its
+  identity-dedupe leg the moment this works live.
+- **The re-scope banner ("93 consecutive iterations deployed nothing") is a harness
+  miscount** — deployed-sha moved four times in four nights (D-116..D-119) and DEF-337 is
+  VERIFIED (LIVE) in this same brief. Said for the orchestrator; no builder action.
+
+**Prediction (honest, falsifiable).** Deployable at end of turn: yes — this is a
+self-contained service change, suite green. After deploy: the hourly merge of
+`cmpcpvy1k…` completes, duplicate identities consolidate for the first time, and the
+~1,944/day 23505+23503 lines stop. FALSIFIER: any 23505/23503 from the merge path
+post-deploy; `entity merge failed` recurring for the same survivor; or duplicate groups
+still split after a sweep cycle. If the 23503 count does NOT fall to ~0, a second 23503
+source exists (likely a link-insert path pointing at deleted entities) and this fix is
+incomplete — that would be a new row, not a silent widening of this one.
+
+CAPABILITY: Memory
+PREDICTED: duplicate contacts/identities consolidate for the first time (per-person
+history unifies); ~1,944 error lines/day stop at the source (largest surviving DEF-334
+contributor)
+MECHANISM: entity_links rebuild (delete → remap → ON CONFLICT DO NOTHING) removes both
+constraint violations from the merge's success path; first-error-throws replaces the
+swallowed in-transaction cascade
+FALSIFIER: any 23505/23503 from the merge path after deploy, or `entity merge failed`
+for the same survivor, or duplicate groups still split after a sweep cycle

@@ -41,14 +41,22 @@ const log = createLogger('identity-resolution');
 /**
  * Every column across the schema that points at `entities`.
  *
- * Only `entity_links` has an actual foreign key. The other five carry an
- * entity id with NO database-level protection, so a merge that forgot one would
- * silently orphan rows and nothing would complain. This list is the safety
- * property of the whole file: a merge repoints all of it or none of it.
+ * `entity_links` is deliberately NOT in this list. It is the one reference
+ * with a real foreign key AND a uniqueness constraint
+ * (entity_id, linked_entity_id, link_type), so a merge cannot blindly repoint
+ * it: a true duplicate usually carries the SAME relationships the survivor
+ * already has — exactly what the triple is unique over — so the in-place
+ * UPDATE is a unique violation (23505) on the first real merge, and any row
+ * it leaves behind turns the final entity DELETE into a foreign-key violation
+ * (23503). `mergeEntities` REBUILDS links instead (delete, remap, re-insert
+ * with ON CONFLICT DO NOTHING), which neither constraint can object to.
+ *
+ * The five columns below carry an entity id with NO database-level
+ * protection, so a merge that forgot one would silently orphan rows and
+ * nothing would complain. The rebuild plus this list is the safety property
+ * of the whole file: a merge repoints all of it or none of it.
  */
-const ENTITY_REFERENCES: Array<{ table: string; column: string }> = [
-  { table: 'entity_links', column: 'entity_id' },
-  { table: 'entity_links', column: 'linked_entity_id' },
+const PLAIN_ENTITY_REFERENCES: Array<{ table: string; column: string }> = [
   { table: 'open_items', column: 'entity_id' },
   { table: 'delegation_threads', column: 'counterpart_entity_id' },
   { table: 'delegation_logs', column: 'entity_id' },
@@ -442,22 +450,69 @@ export async function mergeEntities(
       ))[0];
       if (!survivor || doomed.length === 0) return null;
 
+      // Everything below operates on the ids PROVEN to exist under this
+      // tenant, never on the caller's raw list — an id from another tenant
+      // (or a stale one) must not be able to repoint rows it was never
+      // checked against. Tenant/user scope, held by construction.
+      const doomedIds: string[] = doomed.map((d) => d.id);
+
       const repointed: Record<string, number> = {};
       const movedRows: Array<{ table: string; column: string; ids: any[] }> = [];
 
-      for (const ref of ENTITY_REFERENCES) {
+      // entity_links: REBUILD, never repoint (see PLAIN_ENTITY_REFERENCES).
+      // Delete every link touching a doomed id, then re-insert with the ids
+      // mapped to the survivor: a self-link (a duplicate linked to the
+      // survivor, or to another duplicate) is an artefact of the split
+      // identity, not a relationship, and is dropped; a relationship the
+      // survivor already holds folds into it via ON CONFLICT DO NOTHING.
+      // After this block zero rows reference a doomed id, so the entity
+      // DELETE below cannot hit the foreign key.
+      const links = await tx.$queryRawUnsafe<any[]>(
+        `SELECT id, entity_id, linked_entity_id, link_type, client_number, created_at
+           FROM entity_links
+          WHERE entity_id = ANY($1::text[]) OR linked_entity_id = ANY($1::text[])`,
+        doomedIds,
+      );
+      if (links.length > 0) {
+        movedRows.push({ table: 'entity_links', column: 'entity_id|linked_entity_id', ids: links });
+        await tx.$executeRawUnsafe(
+          `DELETE FROM entity_links WHERE id = ANY($1::text[])`,
+          links.map((l) => l.id),
+        );
+        const toSurvivor = (id: string) => (doomedIds.includes(id) ? survivorId : id);
+        let kept = 0;
+        for (const l of links) {
+          const from = toSurvivor(l.entity_id);
+          const to = toSurvivor(l.linked_entity_id);
+          if (from === to) continue;
+          kept += Number(await tx.$executeRawUnsafe(
+            `INSERT INTO entity_links (id, entity_id, linked_entity_id, link_type, client_number, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT DO NOTHING`,
+            l.id, from, to, l.link_type, l.client_number, l.created_at,
+          ));
+        }
+        repointed['entity_links'] = kept;
+      }
+
+      // No `.catch` inside the transaction. A swallowed statement error does
+      // not contain a failure here — it guarantees one: Postgres aborts the
+      // transaction at the first error, every later statement fails anyway,
+      // and the outer catch ends up reporting the cascade instead of the
+      // cause. The FIRST error must throw, carrying its real sqlState.
+      for (const ref of PLAIN_ENTITY_REFERENCES) {
         // Capture WHICH rows move, so the rollback can put back exactly those
         // and not every row that happens to point at the survivor today.
         const moving = await tx.$queryRawUnsafe<any[]>(
           `SELECT id, ${ref.column} AS old_value FROM ${ref.table} WHERE ${ref.column} = ANY($1::text[])`,
-          duplicateIds,
-        ).catch(() => []);
+          doomedIds,
+        );
         if (moving.length === 0) continue;
         movedRows.push({ table: ref.table, column: ref.column, ids: moving });
         const n = await tx.$executeRawUnsafe(
           `UPDATE ${ref.table} SET ${ref.column} = $1 WHERE ${ref.column} = ANY($2::text[])`,
-          survivorId, duplicateIds,
-        ).catch(() => 0);
+          survivorId, doomedIds,
+        );
         repointed[`${ref.table}.${ref.column}`] = Number(n);
       }
 
@@ -480,22 +535,24 @@ export async function mergeEntities(
         Math.max(survivor.relationship_strength ?? 0, ...doomed.map((d) => d.relationship_strength ?? 0)),
         [survivor.last_interaction, ...doomed.map((d) => d.last_interaction)]
           .filter(Boolean).sort().pop() ?? survivor.last_interaction,
-      ).catch(() => 0);
+      );
 
       await tx.$executeRawUnsafe(
         `DELETE FROM entities WHERE client_number = $1 AND id = ANY($2::text[])`,
-        clientNumber, duplicateIds,
+        clientNumber, doomedIds,
       );
 
       return {
         survivorId,
-        mergedIds: duplicateIds,
+        mergedIds: doomedIds,
         repointed,
         rollback: { reason, deletedEntities: doomed, movedRows, survivorBefore: survivor },
       };
     }, { timeout: 30_000 });
   } catch (err: any) {
-    log.warn('entity merge failed — nothing changed', { survivorId, error: err?.message });
+    log.warn('entity merge failed — nothing changed', {
+      survivorId, code: err?.code ?? err?.meta?.code, error: err?.message,
+    });
     return null;
   }
 }
