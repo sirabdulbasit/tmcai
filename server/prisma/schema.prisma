@@ -1424,6 +1424,25 @@ model EntityLink {
   @@map("entity_links")
 }
 
+// DEF-339 — the identity merge's durable receipt, written INSIDE the merge
+// transaction (a deletion that cannot write its receipt cannot commit).
+// `rollback` holds the deleted entity rows in full, every repointed
+// reference, and the survivor's pre-merge state: the recovery path for a
+// wrong auto-merge. Runtime code only ever INSERTs here.
+model EntityMergeAudit {
+  id           String   @id
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  survivorId   String   @map("survivor_id")
+  mergedIds    String[] @map("merged_ids")
+  reason       String
+  rollback     Json
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([clientNumber, createdAt(sort: Desc)])
+  @@index([clientNumber, survivorId])
+  @@map("entity_merge_audit")
+}
+
 // ─── Brain Configuration (per-user) ──────────────────────────────
 
 model BrainConfig {

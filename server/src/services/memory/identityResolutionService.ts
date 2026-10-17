@@ -33,6 +33,7 @@
  * LLM-with-context or a human's, never a pattern.
  */
 
+import { randomUUID } from 'crypto';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 
@@ -408,6 +409,8 @@ export interface MergeOutcome {
   survivorId: string;
   mergedIds: string[];
   repointed: Record<string, number>;
+  /** The durable receipt's row id in `entity_merge_audit` — the recovery key. */
+  auditId: string;
   rollback: unknown;
 }
 
@@ -542,11 +545,28 @@ export async function mergeEntities(
         clientNumber, doomedIds,
       );
 
+      // The rollback record becomes DURABLE here, inside this same
+      // transaction: a merge that cannot write its receipt cannot commit
+      // (no-claim-without-a-receipt, applied to Brain's own unattended
+      // mutation). The row holds everything recovery needs — the deleted
+      // entity rows IN FULL, every repointed reference, and the survivor's
+      // pre-merge state. The caller used to discard this object, which made
+      // the entity DELETE effectively irreversible the moment DEF-338 made
+      // it reachable.
+      const auditId = randomUUID();
+      const rollback = { reason, deletedEntities: doomed, movedRows, survivorBefore: survivor };
+      await tx.$executeRawUnsafe(
+        `INSERT INTO entity_merge_audit (id, client_number, survivor_id, merged_ids, reason, rollback)
+         VALUES ($1, $2, $3, $4::text[], $5, $6::jsonb)`,
+        auditId, clientNumber, survivorId, doomedIds, reason, JSON.stringify(rollback),
+      );
+
       return {
         survivorId,
         mergedIds: doomedIds,
         repointed,
-        rollback: { reason, deletedEntities: doomed, movedRows, survivorBefore: survivor },
+        auditId,
+        rollback,
       };
     }, { timeout: 30_000 });
   } catch (err: any) {
@@ -601,7 +621,7 @@ export async function runIdentityPruningPass(maxMergesPerRun = 25): Promise<{
       // indistinguishable from data loss.
       log.info('identity merged automatically', {
         clientNumber: t.client_number, survivorId: out.survivorId,
-        mergedIds: out.mergedIds, reason: p.reason,
+        mergedIds: out.mergedIds, reason: p.reason, auditId: out.auditId,
       });
     }
 

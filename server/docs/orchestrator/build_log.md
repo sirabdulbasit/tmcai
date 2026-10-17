@@ -4844,3 +4844,108 @@ constraint violations from the merge's success path; first-error-throws replaces
 swallowed in-transaction cascade
 FALSIFIER: any 23505/23503 from the merge path after deploy, or `entity merge failed`
 for the same survivor, or duplicate groups still split after a sweep cycle
+
+## Iteration 79 (build 6, DEF-339 — the merge's receipt becomes durable; a deletion that cannot write it cannot commit) — 2026-10-17
+
+**Objective taken: Codex it-79(5) directive #1, verbatim** — *"Make the now-live merge safe to
+have already run: verify the first auto-merges AND persist the rollback record … This is live
+owner DATA; it outranks everything else."* Both halves delivered: (a) the spot-check, (b) the
+durable receipt.
+
+**What was wrong about the last attempt (the continuation question, answered honestly).** The
+harness header says the previous turn "was insufficient or did not reach a live surface" and
+attributes it to Authorized Action. Both halves of that are wrong on the record: last turn was
+DEF-338 (Memory), it reached production in D-120, and the analyst VERIFIED it live this pass
+(23505/23503 1,024/890 per day → 0/0 from the 03:11 restart; the stuck survivor merged at
+03:26). What WAS genuinely insufficient — Codex's lead finding — is that DEF-338 made entity
+deletion REACHABLE without making it RECOVERABLE: `mergeEntities` computes a full rollback
+record and its docstring promises "REVERSIBLE", but the scheduler caller discarded that object
+and logged only ids. The reversibility was documentation, not a property. That is this build.
+
+**What changed, and why that is the mechanism:**
+- `server/prisma/migrations/20261017_entity_merge_audit/migration.sql` (NEW, idempotent —
+  CREATE TABLE/INDEX IF NOT EXISTS): `entity_merge_audit` — id, client_number, survivor_id,
+  merged_ids text[], reason, rollback JSONB, created_at; indexed (tenant, created_at) and
+  (tenant, survivor).
+- `server/prisma/schema.prisma`: the matching `EntityMergeAudit` model (`@@map
+  entity_merge_audit`).
+- `server/src/services/memory/identityResolutionService.ts`:
+  - `mergeEntities` now INSERTs the full rollback record — the deleted entity rows IN FULL,
+    every repointed reference (including the rebuilt entity_links snapshot), the survivor's
+    pre-merge state, the proposal's reason — into `entity_merge_audit` INSIDE the merge
+    transaction, after the entity DELETE, as the last statement before commit. **A merge that
+    cannot write its receipt cannot commit, by construction** — the commit and the receipt
+    cannot disagree. This is the `no-claim-without-a-receipt` guardrail applied to Brain's own
+    unattended mutation; deterministic mechanics (EXECUTES, decides nothing).
+  - `MergeOutcome.auditId` (the recovery key) returned; the caller's `identity merged
+    automatically` log line now carries it, linking every success line to its durable row.
+- `server/tests/def339MergeAuditPersisted.test.ts` (NEW, 5 named assertions): one INSERT per
+  merge with tenant/survivor/tenant-verified-ids/reason and auditId returned; the rollback
+  payload carries recovery DATA (full rows), not references; receipt after the DELETE, last
+  before commit; a failing receipt aborts the merge (null, nothing after it); merged_ids
+  exclude unverified ids (DEF-338 guardrail continuity). Like DEF-337/338 these mock the DB —
+  the SQL executes for real only live; the falsifier below is the execution-level proof.
+
+**Directive 1(a) — the spot-check, done and reported:** exactly ONE auto-merge has run live
+since D-120: 2026-10-15 03:26:06, survivor `cmpcpvy1k015brtds8slfoctt` absorbed ONE duplicate
+(`cmupg6oiv01nwrtkb7k78nzqp`), reason *"2 machine reply-addresses for \"sap\" at sap.com — one
+sender, not 2 contacts"*. That is a machine-address fold — MEM-002's documented problem class
+#1 (the 49-row "anthropic" shape) — not two humans fused, and the cadence (1 merge in ~2 days
+against a 25-per-run cap) shows the confidence gate is conservative in practice. The precision
+worry is not CLOSED by one good instance (said plainly), but the first live datum is clean,
+and from this deploy on every merge is recoverable anyway — which is the structural answer to
+"unproven precision": we no longer rely on the decision being right to keep the data safe.
+
+**Verification (re-run after the last edit, from `server/`):**
+- `npx tsc --noEmit` — exit 0, clean
+- `npx vitest run` — **3639 passed | 0 failed** (318 files passed | 1 skipped of 319;
+  7 expected fail | 21 skipped | 1 todo of 3668)
+- `git diff --check` — clean
+- `npm run build` NOT run — not in the matrix; `server/dist` is `chattr +i` (CLAUDE.md).
+  Migration is hand-written idempotent SQL; the deploy phase applies it by shape detection.
+
+**Deployable at end of turn: yes** — self-contained service change + idempotent migration;
+suite green.
+
+**What I did NOT do, and what I am unsure about:**
+- Codex directive #2 (durable provider funding) — human/infra; the gauge nulled again 10-15.
+  Named, not builder-actionable.
+- Directive #3, DEF-334 (2)/(3) — named EVERY pass, still the top un-addressed Self-Healing
+  item (54 unreceipted fallbacks on 10-16 re-proved it); its row is updated with the second
+  flood win (14 MB → ~0.31 MB/day, −98%). Next Self-Healing turn's first item.
+- Directive #4, CI raw-query execution — infra/orchestrator; still owed; the odoo/wiki 42703
+  cluster is the living evidence.
+- A restore EXECUTOR over the audit rows — the durable record makes recovery possible today
+  (by hand, from full rows); an executor is the next increment if a wrong merge surfaces.
+  Also not taken: the rotation's Authorized Action item (`clean-by-source-bulk-removal` scope
+  value) — named as the next Authorized Action turn's first item; the fetchThreadContext
+  throttle; the `self-heal-repair-never-verifies` loop (both need their own DEF rows).
+- Unsure: whether JSONB rollback rows for a large merge (many links/items) approach any
+  practical row-size limit — bounded in practice by maxMergesPerRun and small link counts;
+  a pathological case would abort the merge loudly (receipt fails → merge aborts), which is
+  the safe direction.
+
+**Divergences, declared:** rotation target this brief = Authorized Action; campaign cap =
+Self-Pruning (increments 1–3 all code-complete/deployed — 10th statement on record; exits are
+non-code). This build declares **Memory**: Codex's ranked directive #1 outranks both, it is
+live-owner-data safety on the SAME machinery as last turn's Memory fix, and per the remediation
+rule (reviewer's finding wins on scope) it is the review finding this turn must close. The
+harness's "94 consecutive iterations deployed nothing" banner remains a miscount (D-116…D-120
+are in the chart; two of them are now VERIFIED LIVE).
+
+**Prediction (honest, falsifiable).** After deploy: every `identity merged automatically` line
+carries an auditId with a matching `entity_merge_audit` row whose rollback JSON holds the full
+deleted rows; merges keep succeeding (no 23505/23503 regression). FALSIFIER: a post-deploy
+merge-success log line with no matching audit row (or no auditId field); any 23505/23503 from
+the merge path; or a merge aborting on the receipt INSERT itself (would show as `entity merge
+failed` with the INSERT's sqlState — then the receipt is the new blocker and this fix caused a
+regression in merge liveness).
+
+CAPABILITY: Memory
+PREDICTED: +0 immediate — a safety property, not a recall change: the owner's contact
+identities become recoverable after any wrong auto-merge, closing the reviewer's
+DANGEROUS-WHILE-LIVE finding
+MECHANISM: receipt-in-transaction — the commit and the receipt cannot disagree, so an
+unattended deletion can no longer outrun its own audit trail
+FALSIFIER: a post-deploy `identity merged automatically` line whose auditId has no matching
+entity_merge_audit row with full rollback JSON, or a merge that commits with no receipt
