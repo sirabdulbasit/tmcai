@@ -67,7 +67,29 @@ export const FINDING_THRESHOLD = 3;
  *  (clientNumber, kind, subjectId), so this is the second of two guards. */
 export const FINDING_WINDOW_MS = 60 * 60 * 1000;
 
-interface Counter { count: number; windowStartedAt: number; reportedThisWindow: boolean }
+/**
+ * DEF-334 (2) — the LOG is bounded per signature per window; the COUNT is not.
+ *
+ * Measured: the two DEF-337 queries wrote 18,760 identical 42P10 lines in one
+ * day, and the 42703 odoo query still writes dozens — each line carrying the
+ * same four facts as the first. Everything after LOG_CAP_PER_WINDOW identical
+ * failures is volume, not information: it exhausted the connection pool's
+ * neighbours (the health-finding INSERT failed 152x on 10-13) and buried every
+ * other signal in the owner's reported "51MB every ~6 hours". Counting,
+ * findings, and the rethrow are UNCHANGED — only the per-line emission is
+ * capped, and each new window's first line says how many lines the cap
+ * swallowed, so the volume stays on the record as a number instead of as
+ * megabytes.
+ */
+export const LOG_CAP_PER_WINDOW = 5;
+
+interface Counter {
+  count: number;
+  windowStartedAt: number;
+  reportedThisWindow: boolean;
+  /** Failures NOT individually logged this window (count beyond the cap). */
+  suppressed: number;
+}
 const counters = new Map<string, Counter>();
 
 /**
@@ -182,9 +204,11 @@ export function noteRawQueryFailure(args: {
     const signature = signatureOf(sqlState, callSite, shape);
     const now = args.now ?? Date.now();
 
+    let suppressedLastWindow = 0;
     let c = counters.get(signature);
     if (!c || now - c.windowStartedAt > FINDING_WINDOW_MS) {
-      c = { count: 0, windowStartedAt: now, reportedThisWindow: false };
+      suppressedLastWindow = c?.suppressed ?? 0;
+      c = { count: 0, windowStartedAt: now, reportedThisWindow: false, suppressed: 0 };
       counters.set(signature, c);
     }
     c.count += 1;
@@ -193,15 +217,26 @@ export function noteRawQueryFailure(args: {
     if (crossedThreshold) c.reportedThisWindow = true;
 
     // ONE structured line carrying the four facts the bare `prisma:error` did
-    // not: which SQLSTATE, which call site, which query shape, how often.
-    log.warn('raw query failed', {
-      operation: args.operation,
-      sqlState,
-      callSite,
-      sqlShape: shape,
-      occurrences: c.count,
-      signature,
-    });
+    // not: which SQLSTATE, which call site, which query shape, how often —
+    // emitted for at most LOG_CAP_PER_WINDOW occurrences per signature per
+    // window (DEF-334 (2)). The count above keeps running regardless, so the
+    // finding's rate and this function's return stay exact.
+    if (c.count <= LOG_CAP_PER_WINDOW) {
+      log.warn('raw query failed', {
+        operation: args.operation,
+        sqlState,
+        callSite,
+        sqlShape: shape,
+        occurrences: c.count,
+        signature,
+        ...(suppressedLastWindow > 0 ? { suppressedLastWindow } : {}),
+        ...(c.count === LOG_CAP_PER_WINDOW
+          ? { note: 'log capped for this signature until the window rolls — counting continues' }
+          : {}),
+      });
+    } else {
+      c.suppressed += 1;
+    }
 
     return { signature, sqlState, callSite, shape, count: c.count, crossedThreshold };
   } catch {

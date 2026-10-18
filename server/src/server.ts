@@ -117,6 +117,14 @@ const server = app.listen(env.port, async () => {
   } catch (err) {
     console.warn('[rawQuery] finding reporter not installed', (err as Error)?.message);
   }
+  // DEF-334 (3): the LLM-outage alarm, injected the same way and for the same
+  // reason — the router stays pure, the server grants the write at boot.
+  try {
+    const { installLlmOutageReporter } = await import('./services/selfheal/llmOutageReporter');
+    installLlmOutageReporter();
+  } catch (err) {
+    console.warn('[llmRouter] outage reporter not installed', (err as Error)?.message);
+  }
   startAutoRefresh(env.indexRefreshIntervalMs);
   // Tier 1 #7 — install/update canonical system gate rules. Idempotent,
   // safe on every boot. Runs before the scheduler so any cron that hits

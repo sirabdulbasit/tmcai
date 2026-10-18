@@ -33,10 +33,14 @@ import crypto from 'crypto';
 import { toastSafeSnippet } from '../../db/toastSafeText';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+import { windowedLogGate } from '../../utils/boundedLog';
 import { callLLM } from '../llmRouter';
 import { INACTIVE_STATUS_SQL } from '../itemLifecycle/transitionMatrix';
 
 const log = createLogger('criticality');
+// DEF-334 (2): at most 5 fallback lines per hour — the count survives in
+// `occurrences`/`suppressedLastWindow`, the megabytes do not.
+const fallbackLogGate = windowedLogGate(5, 60 * 60 * 1000);
 
 export type CriticalityBand = 'critical' | 'high' | 'medium' | 'low';
 
@@ -649,7 +653,18 @@ async function fuseAndScore(
 
     return result;
   } catch (err: any) {
-    log.warn('fuseAndScore LLM failed — falling back', { error: err.message });
+    // DEF-334 (2): this line ran ~2,500x/hour for days during the billing
+    // outage — bounded to the gate's cap per window; the suppressed count
+    // rides the next window's first line, and the router separately logs the
+    // full provider bodies once per window and announces the outage.
+    const gate = fallbackLogGate('fuseAndScore');
+    if (gate.log) {
+      log.warn('fuseAndScore LLM failed — falling back', {
+        error: err.message,
+        occurrences: gate.occurrences,
+        ...(gate.suppressedLastWindow > 0 ? { suppressedLastWindow: gate.suppressedLastWindow } : {}),
+      });
+    }
     // Fallback path: LLM unavailable. Don't push to WhatsApp on a
     // deterministic fallback — without Brain's reasoning we can't
     // tell if this is substantive. Default substantive=false; the

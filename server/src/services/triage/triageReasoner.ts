@@ -23,8 +23,12 @@
  * to the deterministic classifier if LLM is unavailable.
  */
 import createLogger from '../../utils/logger';
+import { windowedLogGate } from '../../utils/boundedLog';
 
 const log = createLogger('triage-reasoner');
+// DEF-334 (2): at most 5 fallback lines per hour — the count survives in
+// `occurrences`/`suppressedLastWindow`, the megabytes do not.
+const fallbackLogGate = windowedLogGate(5, 60 * 60 * 1000);
 
 export interface ReasonerContext {
   userId: number;
@@ -221,7 +225,16 @@ export async function reasonAboutEvent(
     void writeCache(cacheKey, dedupHash, ctx, decision);
     return decision;
   } catch (err: any) {
-    log.warn('LLM reasoning failed, using fallback', { dedupHash, cacheKey, error: err.message });
+    // DEF-334 (2): the second of the two measured flood sites (~6,900 lines in
+    // one sample window) — same bound as fuseAndScore's, same recordkeeping.
+    const gate = fallbackLogGate('llmReason');
+    if (gate.log) {
+      log.warn('LLM reasoning failed, using fallback', {
+        dedupHash, cacheKey, error: err.message,
+        occurrences: gate.occurrences,
+        ...(gate.suppressedLastWindow > 0 ? { suppressedLastWindow: gate.suppressedLastWindow } : {}),
+      });
+    }
     // Deliberately NOT cached. The fallback is what we say when the model is
     // unreachable; persisting it for a fortnight would turn a transient outage
     // into two weeks of "LLM unavailable — using deterministic fallback."

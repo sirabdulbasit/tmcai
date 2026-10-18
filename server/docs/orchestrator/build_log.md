@@ -4949,3 +4949,123 @@ MECHANISM: receipt-in-transaction — the commit and the receipt cannot disagree
 unattended deletion can no longer outrun its own audit trail
 FALSIFIER: a post-deploy `identity merged automatically` line whose auditId has no matching
 entity_merge_audit row with full rollback JSON, or a merge that commits with no receipt
+
+## Iteration 79 (build 7, DEF-334 (2)/(3) — the flood is bounded at its chokepoints and an outage announces itself) — 2026-10-18
+
+**Objective taken: Codex it-79(6) directive #1, verbatim** — *"Build DEF-334 parts (2)/(3) —
+stop deferring it (6th pass) … It should be THE next build, not deferred a sixth time."* Also
+the analyst's top non-human residual action for six consecutive passes, re-proven this window
+by a real billing outage (10-16 ~07:00: gemini DNS + claude credit-balance 400s ×20 → 50
+silent fallbacks, zero receipts).
+
+**The continuation header's question, answered honestly (attempt 3 on Self-Pruning — "state
+the REAL obstacle and attack that").** The real obstacle is NOT missing Self-Pruning code.
+All three campaign increments are code-complete and DEPLOYED (stated now 11x on record); the
+score dropped 48→33 WHILE that code shipped, so more inert code demonstrably does not move it.
+The exit conditions are non-code: ingestion is dead upstream (Gmail token — human), every
+notification channel is dead downstream (WhatsApp QR + email token — human), the four
+`selfpruning.*` consent flags are off (owner's consent by design — flipping them unilaterally
+would betray the consent gate), and the scorer's provider is unfunded (human). And the reason
+each of those deaths persisted for DAYS unnoticed is the same single gap: **nothing announces
+a capability death** — the loop learns everything from the analyst's manual log forensics.
+That announcement gap is the one obstacle code can attack, and it is exactly DEF-334 (2)/(3).
+A finding, stated plainly per the brief: **the Self-Pruning work is in production and cannot
+reach the owner until the human actions land; no Self-Pruning commit can change that.**
+
+**What changed, by file, and why that is the mechanism:**
+- `server/src/services/llmRouter.ts` — part (2): per-provider error bodies are truncated to a
+  160-char head in the THROWN message (`ERROR_HEAD_CHARS`); every caller logs that message
+  once per call (~2,500/hr during a real outage), so the 403/credit-balance JSON bodies that
+  turned 2,500 lines into 51 MB can no longer flood through ANY caller, present or future —
+  bounded by construction, no call-site enumeration. The router itself logs the FULL bodies
+  once per hour-window. Part (3): an outage latch — `OUTAGE_THRESHOLD=3` consecutive
+  all-provider failures trips an INJECTED `LlmOutageReporter` (never imported: the router is
+  in the import closure of the write-free operator-script tier, so it stays pure — the exact
+  DEF-085 separation), realert ≤1/24h (`OUTAGE_REALERT_MS`), `lastAlertAt` set synchronously
+  so concurrent failures cannot double-fire, fire-and-forget so the announcement can never
+  change the caller's error; one success resets the latch and logs "llm providers recovered"
+  with the dark-window duration — the outage has a visible END as well as a start.
+- `server/src/services/selfheal/llmOutageReporter.ts` (NEW) — the writer half, installed at
+  boot: per active tenant, (leg 1) a **tenant-scoped critical `llm_provider_down` finding**
+  (owner-visible — the analyst's point that SYSTEM-scope findings reach no one), repeats
+  collapsing on (clientNumber, kind, subjectId) while open; (leg 2) the direct SA/AD ops
+  email via `adminOpsAlert` — the DEF-329 leg that is LIVE-VERIFIED to have reached the owner
+  (10-07) and is independent of the opt-in gate that silenced DEF-329's first alarm. Facts
+  only, fixed wording — the governance ruling permits a fixed string ONLY when the model is
+  unreachable, and this alarm's trigger IS every model being unreachable (there is
+  deliberately no model-phrased leg; a model-phrased retrospective on recovery is named, not
+  built). Each leg fails open and independently.
+- `server/src/server.ts` — `installLlmOutageReporter()` at boot, beside the DEF-085 reporter.
+- `server/src/db/rawQueryObservability.ts` — part (2): the per-occurrence log line is capped
+  at `LOG_CAP_PER_WINDOW=5` per signature per window at the ONE interception point all four
+  raw operations pass through; counting, findings and the rethrow are UNCHANGED (the def085
+  contract holds — `occurrencesInWindow` stays exact), and the next window's first line
+  carries `suppressedLastWindow`, so the volume survives as a number instead of megabytes.
+  This bounds the live 42703 odoo flood TODAY and every future never-ran query without
+  touching any of them.
+- `server/src/utils/boundedLog.ts` (NEW) + `criticalityEngineService.ts` /
+  `triageReasoner.ts` — part (2)'s literal spec ("rate-limit the fallback log to once per
+  window per service"): the two MEASURED flood sites (~7,500 and ~6,900 lines in one sample)
+  log through a shared `windowedLogGate` (≤5/hr each, suppressed count on rollover).
+- `server/tests/def334BoundedFloodAndOutageReceipt.test.ts` (NEW) — **10 passed 0 failed**,
+  named per behaviour (truncated thrown message; full-bodies-once-per-window; raw-query cap +
+  exact count + rollover summary; gate unit incl. key independence; threshold-once alert
+  carrying full errors; recovery resets; failing reporter never alters the caller error;
+  per-tenant two-leg writer with fail-open legs; boot wiring pinned + router pinned
+  write-free).
+
+**Verification (re-run after the last edit, from `server/`):**
+- `npx tsc --noEmit` — exit 0, clean
+- `npx vitest run` — **3649 passed | 0 failed** (319 files passed | 1 skipped of 320;
+  7 expected fail | 21 skipped | 1 todo of 3678)
+- `git diff --check` — clean (run at commit)
+- `npm run build` NOT run — not in the matrix; `server/dist` is `chattr +i` (CLAUDE.md)
+
+**Deployable at end of turn: yes** — additive service/observability changes, no migration,
+suite green.
+
+**What I did NOT do, and what I am unsure about:**
+- The `fetchThreadContext` ~900/day warn (DEF-317 symptom) is NOT bounded here — it is not a
+  raw query and not an LLM fallback; `windowedLogGate` makes gating it a two-line change for
+  the turn that touches the WhatsApp session path (named, not taken — different tag).
+- The CI raw-query-execution detector (Codex #4) stays owed to infra; the 42703 odoo query
+  itself is still broken (its LOG is now bounded; the fix to the QUERY is a separate DEF).
+- `self-heal-repair-never-verifies` and the odoo/wiki cluster still need their own DEF rows
+  (analyst hygiene flag #3) — next pulse.
+- Directive #2 (durable provider funding) — human; this build at least makes each lapse
+  announce itself the moment it starts.
+- Unsure: whether `brain_health_findings`' severity pipeline escalates 'critical' findings to
+  any additional surface beyond the health view — the direct ops-email leg exists precisely
+  so delivery does not depend on that; and the DEF-329 precedent says the email leg is the
+  one that demonstrably arrives.
+- The analyst's billing correction is recorded in the DEF-334 row (10-16 WAS a compound
+  billing outage — claude credit-balance ×20 — not "timeouts only" as the row previously
+  said, my error carried from the 10-17 pass).
+
+**Divergences, declared:** rotation target + campaign cap = Self-Pruning; this build declares
+**Self-Healing**. Reasons, in rank: Codex directive #1 names this work explicitly ("give it
+the turn"); the campaign has no undelivered increment to take (11th statement); and this is
+the only code-attackable link in the chain that currently blocks Self-Pruning's own exit
+conditions from ever being observed (a dead ingestion/channel that announces itself is the
+precondition for anyone noticing pruning working). The harness's "95 consecutive iterations
+deployed nothing" banner remains a miscount (D-116…D-121 deployed nightly; DEF-337/338
+VERIFIED LIVE in this same brief).
+
+**Prediction (honest, falsifiable).** After deploy: the NEXT provider outage produces, within
+seconds of the third consecutive failure, one critical `llm_provider_down` finding per tenant
+and one ops email, then at most one repeat per 24h — and the error log's worst single-source
+day stays in kilobytes, not megabytes. FALSIFIER: any future all-provider outage with zero
+findings/ops email; any single log signature sustaining more than its cap-rate; or the
+announcement path itself altering a caller's error (would show as a new error shape at the
+fallback sites).
+
+CAPABILITY: Self-Healing
+PREDICTED: rung 1 (detect + announce) finally fires on the loudest signal — the next silent
+capability death becomes a same-minute owner-visible finding + email instead of a
+log-archaeology discovery days later; +0 on any benchmark number until a real outage
+exercises it
+MECHANISM: chokepoint bounds (router error-heads + once-per-window full log; raw-query
+per-signature cap; gated fallback sites) and a router outage latch feeding an injected
+per-tenant two-leg alert writer
+FALSIFIER: a future all-provider outage with zero `llm_provider_down` findings/ops emails, or
+any single log signature exceeding its cap-rate for a sustained window
