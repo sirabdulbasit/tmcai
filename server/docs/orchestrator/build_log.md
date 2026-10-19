@@ -5069,3 +5069,114 @@ per-signature cap; gated fallback sites) and a router outage latch feeding an in
 per-tenant two-leg alert writer
 FALSIFIER: a future all-provider outage with zero `llm_provider_down` findings/ops emails, or
 any single log signature exceeding its cap-rate for a sustained window
+
+## Iteration 80 (DEF-340 + DEF-341 + DEF-342 — the self-heal layer stops lying by omission: deaths announce their END, floods stay bounded everywhere, and a repair loop that never works becomes a finding) — 2026-10-19
+
+**TARGET vs AIM — divergence DECLARED (same declaration as it-79, which Codex accepted).**
+The assigned target is `Self-Pruning` (campaign C-3, "lowest-numbered undelivered
+increment"). I verified in-code this turn that **C-3 has no undelivered code increment**:
+increment 1 (read-only noise counter, DEF-217, `selfpruning.noise_report_enabled` def 1),
+increment 2 (digest DEF-173/DEF-277 + same-sender burst DEF-330, consent-gated def 0), and
+increment 3 (zombie quarantine → soft-close → withdrawal notice, DEF-191/202/208/209/242,
+`withdrawal_notice_enabled` def 1) are all built and deployed. The campaign's exit is
+blocked on live observation, owner consent flags, and the dead ingestion feed — none of
+which code can close this turn. So this turn worked **Self-Healing**: Codex it-79(6)
+directive #2 plus the analyst's ranked residuals #3 and #8, one commit per DEF.
+
+**What I targeted.** The fixQueue is EMPTY and criteriaAvg `{}` — the scorer's provider is
+unfunded (`iter-79-post-build.json` carries no cases), so there was no benchmark entry to
+take. Inputs taken instead, in rank order:
+1. Codex it-79(6) directive #2, verbatim: *"Close the recovery side: resolve the
+   `llm_provider_down` finding on recovery (+ reset `lastAlertAt`) … so the announcement is
+   honest at the END of a death as well as the start."* → **DEF-340**.
+2. Analyst residual #3: *"cap `fetchThreadContext` + `repair-FAILED`, the surviving
+   uncapped sources"* (~960/day + ~23/day, the two largest post-D-122 emitters) → **DEF-341**.
+3. Analyst residual #8 / ranked item #5, tag `self-heal-repair-never-verifies`: the
+   stuck_queued_prompt repair has looped hourly for days, inside budget, invisible → **DEF-342**.
+
+**Codex directive #1 (verify the alarm fired live this cycle) — NOT taken, deliberately.**
+The analyst's hygiene flag #2 shows the directive rests on a misread: there has been NO
+all-provider runtime outage since D-122 (`fuseAndScore LLM failed`=0, credit-balance=0;
+the runtime is Vertex and healthy) — the provider that is down is the benchmark SCORER's
+keyless/credit path, which does not flow through the router latch. Absence of a
+`llm_provider_down` finding is absence of a trigger, not a part-3 failure; debugging
+`installLlmOutageReporter` on that evidence would be work against a phantom. Also per this
+turn's own rule #2, verifying deployed rows belongs to the pulse, not the build turn.
+
+**Three-docs verdict, out loud:** DEF-340 — *progressing* (first fix of the
+open-finding-never-closed shape on this path; adjacent to §3 `fabricated-status` but a new
+mechanism, and structural: open and close ride the SAME router latch, so they cannot
+disagree about which outage they describe). DEF-341 — *not circling*: it extends the ONE
+`windowedLogGate` to the two remaining measured instances; no second implementation, §3
+`protection-with-two-implementations` stays at ten. DEF-342 — *progressing* (new root
+cause, first occurrence, analyst-named tag `self-heal-repair-never-verifies`, not in §3).
+
+**What changed, by file and mechanism:**
+
+- **DEF-340 (commit `d3a0d98`)** — `llmRouter.ts:100-120` adds an injected
+  `LlmRecoveryReporter` (router stays write-free; the existing parity assertion at
+  `def334…test.ts` pins it); the recovery branch (`llmRouter.ts:~210`, first success after
+  ≥OUTAGE_THRESHOLD consecutive failures) fires it fire-and-forget and re-arms
+  `lastAlertAt=0` — required BECAUSE the finding now resolves: a post-recovery relapse
+  inside 24h would otherwise have no open finding AND no fresh alert.
+  `healthFindingService.ts` adds `resolveOpenFindings` (one tenant-scoped `updateMany` on
+  (client_number, kind, subject_id, status='open') → `healed`, `healAction` carries the
+  dark-window duration; returns count, null = write failed → finding stays honestly open).
+  `llmOutageReporter.ts` adds `reportLlmRecoveryAsResolution` (per active tenant) and
+  wires it at boot beside the alert half.
+- **DEF-341 (commit `d559838`)** — `UserWebjsProvider.ts:1590` (the no-client branch,
+  ~40×/hour from the dead session) and `repairService.ts:173` (verify-FAILED, hourly
+  forever) now log through the SAME shared `windowedLogGate`: ≤5/user/hour with cap-note,
+  and ≤5/rule+scope/24h respectively. Emission only — fetchThreadContext still returns
+  `[]`, every repair attempt still lands in `self_heal_log`, counts survive as
+  occurrences/suppressedLastWindow.
+- **DEF-342 (commit `715c415`)** — `repairService.ts`: after a verify-failed finalize,
+  `verifyFailStreak24h` reads the durable ledger at the rule's declared scope; at ≥6
+  verify-failures/24h with ZERO heals, `recordFinding` writes an owner-visible
+  `self_heal_repair_ineffective` (error, subjectId=rule id, tenant-scoped / GLOBAL),
+  deduped on the open row. First verified heal RESOLVES it (the DEF-340 lesson applied at
+  birth). Unreadable ledger → no escalation on a guess; neither helper can change the
+  repair outcome. Guardrail enforced: no-claim-without-a-receipt.
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **321 files passed | 1 skipped; 3664 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (baseline 3,649 → +15 = exactly the three new suites: 5
+DEF-340, 4 DEF-341, 6 DEF-342). `git diff --check` → clean. `npm run build` NOT run —
+`server/dist` is immutable and `--noEmit` is the build check (CLAUDE.md); builds happen
+only inside the deploy phase after explicit unlock.
+
+**What I did NOT do, said plainly:**
+- No Self-Pruning increment (none undelivered — see declaration above). The campaign's
+  remaining exits are: owner flips the consent flags, Gmail reconnect (human), live
+  observation of increments 1–2, and the Grok score.
+- The underlying stuck prompt that DEF-342 makes visible is NOT cleared — the finding is
+  the diagnosis instrument, the clearing is the follow-up it now demands.
+- The odoo 42703 query (`odooWikiMirror.ts:176`) is still broken (log-capped, never runs)
+  and the CI raw-query-execution detector (Codex directive #4) is still owed.
+- No recovery OPS EMAIL leg (the finding resolve is the durable receipt; a model-phrased
+  retrospective stays the named future increment).
+- `brain_evaluation_chart.md` NOT edited: it carries another session's uncommitted edit
+  (so does `review_log.md`, +1,696 lines) and committing it would commit their work. The
+  chart row's predicted side is staged verbatim in the three DEF rows (CAPABILITY /
+  PREDICTED / MECHANISM / FALSIFIER each) for the deploy phase to copy, as D-120–122 did.
+- Unsure about: the DEF-342 threshold (6/24h) is a judgment call — generous enough that
+  retry bursts never escalate, tight enough that the live loop trips it within its first
+  deployed day; the falsifier will say if it is wrong.
+
+CAPABILITY: Self-Healing
+PREDICTED: +0 conversational; on deploy, three observable changes within hours — (1) the
+no-client flood drops ~40/hr → ≤5/hr with cap-note (live-verifiable ~2h post-deploy), (2)
+ONE open `self_heal_repair_ineffective` finding appears for the affected tenant within
+~6h (occurrences climbing, not row-spam), (3) at the next real outage→recovery cycle the
+`llm_provider_down` finding closes itself with the dark duration on the record.
+MECHANISM: the self-heal layer's receipts become two-sided (open AND close ride the same
+latch/ledger) and its remaining unbounded emitters are gated through the one shared gate.
+FALSIFIER: >5 no-client lines in any post-deploy hour for one user; a ≥6-failure/0-heal
+repair loop with no open finding; any recovered outage leaving `llm_provider_down` open;
+a distinct post-recovery outage not re-alerting at its own threshold.
+
+**Deploy prediction:** yes — this can ship this turn. Three small single-DEF commits,
+mechanism-level test evidence, suite 3664/0, no benchmark/orchestrator/forbidden paths
+touched. If Codex rules SOUND, DEF-341 and DEF-342 are the rare increments that
+live-verify themselves within hours because their trigger conditions are firing on
+production RIGHT NOW.
