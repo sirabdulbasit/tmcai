@@ -26,8 +26,16 @@
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+import { windowedLogGate } from '../../utils/boundedLog';
 
 const log = createLogger('self-heal');
+
+// DEF-341 (extends DEF-334 (2)): a repair that fails verification every hour
+// forever (measured ~23/day on stuck_queued_prompt, unchanged for days) says
+// the same thing after the first few lines. At most 5 per rule+scope per
+// 24h window — EMISSION only: every attempt still lands in self_heal_log, so
+// no count is lost, and the outcome/budget logic is untouched.
+const verifyFailedLogGate = windowedLogGate(5, 24 * 60 * 60 * 1000);
 
 export type RepairScope = 'global' | 'tenant';
 
@@ -170,7 +178,14 @@ export async function runRepairRule(rule: RepairRule, ctx: RepairContext): Promi
   if (verified) {
     log.info('self-heal succeeded', { rule: rule.id, clientNumber: ctx.clientNumber, summary: pre.summary });
   } else {
-    log.warn('repair applied but verification FAILED — not claiming healed', { rule: rule.id, clientNumber: ctx.clientNumber });
+    const gate = verifyFailedLogGate(`${rule.id}:${ctx.clientNumber ?? 'global'}`);
+    if (gate.log) {
+      log.warn('repair applied but verification FAILED — not claiming healed', {
+        rule: rule.id, clientNumber: ctx.clientNumber,
+        occurrences: gate.occurrences,
+        ...(gate.suppressedLastWindow > 0 ? { suppressedLastWindow: gate.suppressedLastWindow } : {}),
+      });
+    }
   }
   return verified ? 'healed' : 'verify_failed';
 }

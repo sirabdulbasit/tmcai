@@ -22,8 +22,19 @@ import path from 'path';
 import { resolveWebjsHeadlessMode, resolveWebjsDisplayEnv, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
 // DEF-195 — the one transport policy, applied at the provider boundary.
 import { fitToTransport } from '../knowledge/transportBudget';
+import { windowedLogGate } from '../../utils/boundedLog';
 
 const log = createLogger('whatsapp:user-webjs');
+
+// DEF-341 (extends DEF-334 (2) to the largest surviving uncapped source): a
+// logged-out session makes the no-client branch fire ~40x/hour around the
+// clock (~960/day measured 10-16→10-19), every line past the first few saying
+// the same thing — the session is dead (DEF-317). At most NO_CLIENT_LOG_CAP
+// lines per user per hour; the count survives in occurrences/
+// suppressedLastWindow, the megabytes do not. Bounds EMISSION only — the
+// empty-return behaviour is untouched.
+const NO_CLIENT_LOG_CAP = 5;
+const noClientLogGate = windowedLogGate(NO_CLIENT_LOG_CAP, 60 * 60 * 1000);
 
 // Per-user state
 const clients = new Map<number, any>();
@@ -1587,7 +1598,17 @@ export async function fetchThreadContext(userId: number, chatId: string, limit =
     // restart, or ingestion is happening via the tenant WebjsProvider
     // (clientNumber-keyed) instead of the user one. Either way, the
     // user-replied filter can't see the thread.
-    log.warn('[fetchThreadContext] no client in user map', { userId, chatId });
+    const gate = noClientLogGate(String(userId));
+    if (gate.log) {
+      log.warn('[fetchThreadContext] no client in user map', {
+        userId, chatId,
+        occurrences: gate.occurrences,
+        ...(gate.suppressedLastWindow > 0 ? { suppressedLastWindow: gate.suppressedLastWindow } : {}),
+        ...(gate.occurrences === NO_CLIENT_LOG_CAP
+          ? { note: 'log capped for this user until the window rolls — counting continues' }
+          : {}),
+      });
+    }
     return [];
   }
   try {
