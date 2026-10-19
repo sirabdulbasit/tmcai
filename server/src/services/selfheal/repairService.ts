@@ -27,8 +27,20 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { windowedLogGate } from '../../utils/boundedLog';
+import { recordFinding, resolveOpenFindings, SYSTEM_SCOPE } from './healthFindingService';
 
 const log = createLogger('self-heal');
+
+// DEF-342 `self-heal-repair-never-verifies`: the exhaustion escalation above
+// only fires when a rule runs OUT of budget — a rule whose budget allows its
+// cadence (stuck_queued_prompt: 24/day budget, ~23/day measured) can fail
+// verification every hour forever without ever telling anyone. After this
+// many verify-failures in 24h with ZERO verified heals in the same window,
+// the loop is escalated to an owner-visible finding (deduped on the open row
+// by recordFinding, so the hourly repeats become occurrences, not spam).
+// Intermittent rules (any heal in the window) are NOT a loop and never escalate.
+export const REPAIR_INEFFECTIVE_AFTER_VERIFY_FAILS = 6;
+export const REPAIR_INEFFECTIVE_KIND = 'self_heal_repair_ineffective';
 
 // DEF-341 (extends DEF-334 (2)): a repair that fails verification every hour
 // forever (measured ~23/day on stuck_queued_prompt, unchanged for days) says
@@ -110,6 +122,33 @@ async function insertAttempt(rule: RepairRule, ctx: RepairContext, outcome: Repa
   }
 }
 
+/** DEF-342 — the ledger already holds the truth; this reads it at the rule's
+ *  declared scope. null = ledger unreadable (never escalate on a guess). */
+async function verifyFailStreak24h(rule: RepairRule, ctx: RepairContext): Promise<{ verifyFailed: number; healed: number } | null> {
+  try {
+    const w = scopeWhere(rule, ctx);
+    const rows = await prisma.$queryRawUnsafe<Array<{ vf: number; healed: number }>>(
+      `SELECT
+         COUNT(*) FILTER (WHERE outcome = 'verify_failed')::int AS vf,
+         COUNT(*) FILTER (WHERE outcome = 'healed')::int AS healed
+       FROM self_heal_log
+       WHERE rule_id = $1 AND ${w.sql}
+         AND created_at >= NOW() - INTERVAL '24 hours'`,
+      rule.id, ...w.params,
+    );
+    return rows[0] ? { verifyFailed: rows[0].vf, healed: rows[0].healed } : null;
+  } catch {
+    return null;
+  }
+}
+
+function findingScope(rule: RepairRule, ctx: RepairContext): string {
+  // Tenant rules escalate to the tenant's owner (runRepairRule refuses to run
+  // them without a clientNumber); global rules are nobody's tenant — GLOBAL is
+  // their honest scope.
+  return rule.scope === 'tenant' ? (ctx.clientNumber as string) : SYSTEM_SCOPE;
+}
+
 async function finalizeAttempt(id: bigint, outcome: RepairOutcome, after?: Record<string, unknown>): Promise<void> {
   await prisma.$executeRawUnsafe(
     `UPDATE self_heal_log SET outcome = $2, after_state = $3::jsonb WHERE id = $1`,
@@ -177,6 +216,17 @@ export async function runRepairRule(rule: RepairRule, ctx: RepairContext): Promi
   await finalizeAttempt(attemptId, verified ? 'healed' : 'verify_failed', after);
   if (verified) {
     log.info('self-heal succeeded', { rule: rule.id, clientNumber: ctx.clientNumber, summary: pre.summary });
+    // DEF-342, the DEF-340 lesson applied at birth: if this rule's
+    // ineffectiveness was escalated, the first verified heal resolves the
+    // finding — an open "repair is not working" must not outlive the repair
+    // starting to work. resolveOpenFindings swallows its own failures (the
+    // finding stays honestly open); 0 resolved = nothing was escalated.
+    await resolveOpenFindings({
+      clientNumber: findingScope(rule, ctx),
+      kind: REPAIR_INEFFECTIVE_KIND,
+      subjectId: rule.id,
+      action: `rule verified healed`,
+    });
   } else {
     const gate = verifyFailedLogGate(`${rule.id}:${ctx.clientNumber ?? 'global'}`);
     if (gate.log) {
@@ -184,6 +234,29 @@ export async function runRepairRule(rule: RepairRule, ctx: RepairContext): Promi
         rule: rule.id, clientNumber: ctx.clientNumber,
         occurrences: gate.occurrences,
         ...(gate.suppressedLastWindow > 0 ? { suppressedLastWindow: gate.suppressedLastWindow } : {}),
+      });
+    }
+    // DEF-342 `self-heal-repair-never-verifies`: a repair that keeps applying
+    // and never once verifies is a loop, not healing — and inside its budget
+    // the exhaustion escalation never fires. The ledger decides (durable,
+    // scope-correct, survives restarts); the finding is the owner-visible
+    // receipt, deduped on the open row. Escalation can never change the
+    // repair outcome: both helpers swallow their own failures.
+    const streak = await verifyFailStreak24h(rule, ctx);
+    if (streak && streak.healed === 0 && streak.verifyFailed >= REPAIR_INEFFECTIVE_AFTER_VERIFY_FAILS) {
+      await recordFinding({
+        clientNumber: findingScope(rule, ctx),
+        kind: REPAIR_INEFFECTIVE_KIND,
+        severity: 'error',
+        source: 'self-heal',
+        subjectType: 'repair_rule',
+        subjectId: rule.id,
+        summary: `repair rule "${rule.id}" applied ${streak.verifyFailed} times in 24h without one verified heal — the repair is not working: ${pre.summary}`,
+        evidence: {
+          ruleId: rule.id, scope: rule.scope,
+          verifyFailed24h: streak.verifyFailed, healed24h: streak.healed,
+          latestSummary: pre.summary,
+        },
       });
     }
   }
