@@ -30,11 +30,21 @@
  * There is deliberately NO model-phrased leg: when this fires, no provider
  * can phrase anything. A retrospective, model-phrased "I was dark from X to
  * Y" on recovery is named as a future increment, not built here.
+ *
+ * DEF-340 (Codex it-79(6) directive #2): the recovery half. The alert opens a
+ * CRITICAL finding; without a resolve path the owner is left staring at a
+ * stale "all providers down" after they recover — a `fabricated-status`-shaped
+ * claim at the END of the death the alarm fixed at the START. The router's
+ * recovery latch now fires `reportLlmRecoveryAsResolution`, which resolves the
+ * open finding per tenant, carrying the dark-window duration.
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
-import { recordFinding } from './healthFindingService';
-import { setLlmOutageReporter, type LlmOutageReport } from '../llmRouter';
+import { recordFinding, resolveOpenFindings } from './healthFindingService';
+import {
+  setLlmOutageReporter, setLlmRecoveryReporter,
+  type LlmOutageReport, type LlmRecoveryReport,
+} from '../llmRouter';
 
 const log = createLogger('llm-outage');
 
@@ -86,8 +96,9 @@ export async function reportLlmOutageAsAlert(report: LlmOutageReport): Promise<v
           Failing since: <strong>${escapeOpsHtml(firstFailureAt)}</strong></p>
           <p>Provider errors, verbatim:</p>
           <pre style="background:#f6f6f6; padding:8px; white-space:pre-wrap;">${escapeOpsHtml(report.errors.join('\n'))}</pre>
-          <p>This alarm repeats at most once per 24h while the outage lasts. Recovery is
-          logged by the router ("llm providers recovered").</p>
+          <p>This alarm repeats at most once per 24h while the outage lasts. Recovery
+          resolves this finding automatically and is logged by the router
+          ("llm providers recovered").</p>
         </div>`;
       const { total, results } = await sendAdminOpsEmail({ clientNumber: t.client_number, subject, html });
       log.info('llm-outage ops email dispatched', {
@@ -102,7 +113,40 @@ export async function reportLlmOutageAsAlert(report: LlmOutageReport): Promise<v
   }
 }
 
+/**
+ * DEF-340 — the recovery half: resolve what the alert opened. Per active
+ * tenant, every OPEN `llm_provider_down` finding is marked healed with the
+ * dark-window duration on the record. 0 resolved is fine (an outage shorter
+ * than the announce threshold opened nothing); a failed write stays logged
+ * and the finding stays honest-by-omission (open) rather than silently lost.
+ */
+export async function reportLlmRecoveryAsResolution(report: LlmRecoveryReport): Promise<void> {
+  const tenants = await prisma.$queryRawUnsafe<Array<{ client_number: string }>>(
+    `SELECT client_number FROM tenants WHERE is_active = true`,
+  ).catch((e: any) => {
+    log.warn('llm-recovery could not list tenants', { error: String(e?.message ?? e).slice(0, 200) });
+    return [] as Array<{ client_number: string }>;
+  });
+
+  const darkForSec = Math.round(report.darkForMs / 1000);
+  for (const t of tenants) {
+    const resolved = await resolveOpenFindings({
+      clientNumber: t.client_number,
+      kind: LLM_PROVIDER_DOWN_KIND,
+      subjectId: LLM_PROVIDER_DOWN_KIND,
+      action: `recovered after ${darkForSec}s dark`,
+    });
+    log.info('llm-outage finding resolved on recovery', {
+      clientNumber: t.client_number,
+      resolved, // null = the resolve WRITE failed and was logged, finding left open
+      darkForMs: report.darkForMs,
+      afterConsecutiveFailures: report.afterConsecutiveFailures,
+    });
+  }
+}
+
 /** Wire the router's latch to the alert legs. Called once, from server boot. */
 export function installLlmOutageReporter(): void {
   setLlmOutageReporter(reportLlmOutageAsAlert);
+  setLlmRecoveryReporter(reportLlmRecoveryAsResolution);
 }

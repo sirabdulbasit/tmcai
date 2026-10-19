@@ -39,6 +39,7 @@ const state = vi.hoisted(() => ({
   findings: [] as any[],
   findingThrows: false,
   opsEmails: [] as any[],
+  resolved: [] as any[],
 }));
 
 vi.mock('../src/utils/logger', () => ({
@@ -64,6 +65,10 @@ vi.mock('../src/services/selfheal/healthFindingService', () => ({
     if (state.findingThrows) throw new Error('findings table down');
     return 'finding-id';
   },
+  resolveOpenFindings: async (input: any) => {
+    state.resolved.push(input);
+    return 1;
+  },
 }));
 vi.mock('../src/services/notifications/adminOpsAlert', () => ({
   sendAdminOpsEmail: async (params: any) => {
@@ -74,13 +79,13 @@ vi.mock('../src/services/notifications/adminOpsAlert', () => ({
 }));
 
 import {
-  callLLM, setLlmOutageReporter, __resetLlmOutageLatch,
+  callLLM, setLlmOutageReporter, setLlmRecoveryReporter, __resetLlmOutageLatch,
   OUTAGE_THRESHOLD, ERROR_HEAD_CHARS,
 } from '../src/services/llmRouter';
 import {
   noteRawQueryFailure, __resetRawQueryObservability, LOG_CAP_PER_WINDOW, FINDING_WINDOW_MS,
 } from '../src/db/rawQueryObservability';
-import { reportLlmOutageAsAlert } from '../src/services/selfheal/llmOutageReporter';
+import { reportLlmOutageAsAlert, reportLlmRecoveryAsResolution } from '../src/services/selfheal/llmOutageReporter';
 import { windowedLogGate } from '../src/utils/boundedLog';
 
 const BODY = `credit balance is too low ${'x'.repeat(400)}TAIL_MARKER`;
@@ -91,10 +96,12 @@ beforeEach(() => {
   state.logs = [];
   state.findings = [];
   state.opsEmails = [];
+  state.resolved = [];
   state.findingThrows = false;
   __resetLlmOutageLatch();
   __resetRawQueryObservability();
   setLlmOutageReporter(null);
+  setLlmRecoveryReporter(null);
   failAll();
 });
 
@@ -225,5 +232,67 @@ describe('DEF-334 (3) — a full outage announces itself once, and recovery clos
     expect(src).toContain('installLlmOutageReporter()');
     const router = fs.readFileSync(path.join(__dirname, '../src/services/llmRouter.ts'), 'utf8');
     expect(router).not.toMatch(/from '\.\.\/db\/prisma'|healthFindingService|adminOpsAlert/);
+  });
+});
+
+describe('DEF-340 — recovery RESOLVES the finding the outage opened', () => {
+  it('the recovery reporter fires only after an ANNOUNCED outage, carrying the dark window; a sub-threshold blip resolves nothing', async () => {
+    const recoveries: any[] = [];
+    setLlmRecoveryReporter(async (r) => { recoveries.push(r); });
+    // blip below threshold → recovery must NOT fire (nothing was announced)
+    await callOnce();
+    state.geminiImpl = () => 'ok';
+    await callLLM('sys', 'msg', { providers: ['gemini'] });
+    expect(recoveries).toHaveLength(0);
+    // announced outage → the first success fires the recovery exactly once
+    failAll();
+    for (let i = 0; i < OUTAGE_THRESHOLD; i++) await callOnce();
+    state.geminiImpl = () => 'ok';
+    await callLLM('sys', 'msg', { providers: ['gemini'] });
+    await callLLM('sys', 'msg', { providers: ['gemini'] });
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0].afterConsecutiveFailures).toBe(OUTAGE_THRESHOLD);
+    expect(recoveries[0].darkForMs).toBeGreaterThanOrEqual(0);
+    expect(recoveries[0].firstFailureAt).toBeGreaterThan(0);
+  });
+
+  it('recovery re-arms the alert: a NEW outage after recovery announces at its own threshold, not 24h later', async () => {
+    const reports: any[] = [];
+    setLlmOutageReporter(async (r) => { reports.push(r); });
+    for (let i = 0; i < OUTAGE_THRESHOLD; i++) await callOnce();
+    expect(reports).toHaveLength(1);
+    state.geminiImpl = () => 'ok';
+    await callLLM('sys', 'msg', { providers: ['gemini'] });
+    failAll();
+    for (let i = 0; i < OUTAGE_THRESHOLD; i++) await callOnce();
+    // Without the lastAlertAt reset this second, distinct outage would be
+    // swallowed by the 24h realert window — and its finding was just resolved,
+    // so NOTHING would be open. The re-arm is what keeps the pair honest.
+    expect(reports).toHaveLength(2);
+  });
+
+  it('the writer resolves the open llm_provider_down finding for EVERY active tenant, dark window on the record', async () => {
+    await reportLlmRecoveryAsResolution({
+      afterConsecutiveFailures: 7, firstFailureAt: 1_760_000_000_000, darkForMs: 5_400_000,
+    });
+    expect(state.resolved.map((r) => r.clientNumber)).toEqual(['TMC-0001', 'TMC-0002']);
+    expect(state.resolved[0]).toMatchObject({ kind: 'llm_provider_down', subjectId: 'llm_provider_down' });
+    expect(state.resolved[0].action).toContain('5400s');
+  });
+
+  it('a failing recovery writer never changes the successful reply', async () => {
+    setLlmRecoveryReporter(async () => { throw new Error('db down'); });
+    for (let i = 0; i < OUTAGE_THRESHOLD; i++) await callOnce();
+    state.geminiImpl = () => 'a healthy reply';
+    const r = await callLLM('sys', 'msg', { providers: ['gemini'] });
+    expect(r.text).toBe('a healthy reply');
+    await flush();
+    expect(state.logs.some((l) => l.msg === 'llm recovery resolution failed')).toBe(true);
+  });
+
+  it('boot wiring installs BOTH halves — open and resolve ride the same latch', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../src/services/selfheal/llmOutageReporter.ts'), 'utf8');
+    expect(src).toMatch(/setLlmOutageReporter\(reportLlmOutageAsAlert\)/);
+    expect(src).toMatch(/setLlmRecoveryReporter\(reportLlmRecoveryAsResolution\)/);
   });
 });

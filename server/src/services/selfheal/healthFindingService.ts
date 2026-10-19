@@ -151,6 +151,41 @@ export async function markHealed(id: string, action: string): Promise<void> {
   }
 }
 
+/**
+ * DEF-340 — resolve every OPEN finding of one (tenant, kind, subject) in a
+ * single write. The counterpart of `recordFinding`'s open-row dedup: when the
+ * condition that opened a finding has observably ENDED, the row must say so —
+ * an open finding that outlives its outage is `fabricated-status` in ops
+ * clothes. Returns the resolved count (0 = nothing was open, which is fine),
+ * or null when the write itself failed — never claimed as resolved.
+ */
+export async function resolveOpenFindings(input: {
+  clientNumber: string;
+  kind: string;
+  subjectId?: string | null;
+  action: string;
+}): Promise<number | null> {
+  try {
+    const r = await prisma.brainHealthFinding.updateMany({
+      where: {
+        clientNumber: input.clientNumber,
+        kind: input.kind,
+        ...(input.subjectId !== undefined ? { subjectId: input.subjectId } : {}),
+        status: 'open',
+      },
+      data: { status: 'healed', healedAt: new Date(), healAction: input.action.slice(0, 64) },
+    });
+    return r.count;
+  } catch (err) {
+    log.warn('could not resolve open findings', {
+      err: err instanceof Error ? err.message : String(err),
+      kind: input.kind,
+      clientNumber: input.clientNumber,
+    });
+    return null;
+  }
+}
+
 /** Count a heal attempt so a rule that cannot fix something stops retrying. */
 export async function noteHealAttempt(id: string): Promise<number> {
   try {

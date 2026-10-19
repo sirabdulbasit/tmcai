@@ -103,6 +103,22 @@ export function setLlmOutageReporter(fn: LlmOutageReporter | null): void {
   outageReporter = fn;
 }
 
+/** DEF-340 — the recovery half of the outage receipt. Fired once, on the
+ *  first success after an ANNOUNCED outage (never on a sub-threshold blip),
+ *  so the open `llm_provider_down` finding can be resolved instead of
+ *  outliving the outage it describes. Injected for the same write-free
+ *  reason as the outage reporter above. */
+export interface LlmRecoveryReport {
+  afterConsecutiveFailures: number;
+  firstFailureAt: number;
+  darkForMs: number;
+}
+export type LlmRecoveryReporter = (report: LlmRecoveryReport) => Promise<void>;
+let recoveryReporter: LlmRecoveryReporter | null = null;
+export function setLlmRecoveryReporter(fn: LlmRecoveryReporter | null): void {
+  recoveryReporter = fn;
+}
+
 const outage = { consecutive: 0, firstAt: 0, lastAlertAt: 0, lastFullLogAt: 0 };
 
 /** Test seam — the latch is process-global. */
@@ -196,10 +212,27 @@ export async function callLLM(
           // visible END as well as a start — "how long was Brain on fallbacks"
           // must be answerable from the log alone.
           if (outage.consecutive >= OUTAGE_THRESHOLD) {
-            log.info('llm providers recovered', {
+            const recovery: LlmRecoveryReport = {
               afterConsecutiveFailures: outage.consecutive,
+              firstFailureAt: outage.firstAt,
               darkForMs: Date.now() - outage.firstAt,
+            };
+            log.info('llm providers recovered', {
+              afterConsecutiveFailures: recovery.afterConsecutiveFailures,
+              darkForMs: recovery.darkForMs,
             });
+            // DEF-340: an announced death must announce its END too. Re-arm
+            // the realert window BEFORE the async resolve — a NEW outage
+            // after this recovery alerts at its own threshold instead of
+            // waiting out the 24h cap (safe only because the open finding is
+            // being resolved; while it stayed open, the un-reset window was
+            // covered by the finding itself).
+            outage.lastAlertAt = 0;
+            if (recoveryReporter) {
+              void recoveryReporter(recovery).catch((e: any) => {
+                log.warn('llm recovery resolution failed', { error: String(e?.message ?? e).slice(0, 200) });
+              });
+            }
           }
           outage.consecutive = 0;
           outage.firstAt = 0;
