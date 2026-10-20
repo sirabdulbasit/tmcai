@@ -629,9 +629,28 @@ async function assessJudgementLiveness(
 export function scheduleEmailItemDerivation(): void {
   const INTERVAL_MS = 15 * 60 * 1000; // every 15 min
   const FIRST_TICK_MS = 5 * 60 * 1000; // 5 min after boot
+  // DEF-344 `comm-ingestion-stalled` / `email-derivation-consumer-dark` — this
+  // sweep was the LAST raw-setInterval consumer on the ingestion path: no
+  // overlap guard (two sweeps could run concurrently), no timeout, errors
+  // swallowed by `.catch(() => undefined)`, and — the 10-08 incident's exact
+  // shape — no wedge breaker, so one hung tick could halt derivation FOREVER
+  // in silence. DEF-335 built the breaker but only for protectedTick jobs;
+  // this job was not one, which is why it never fired here across eight
+  // deploys. Each tick now runs the BODY through the one reliability runner
+  // (pg-advisory lease, persisted run state in job_runs — the durable
+  // run-completion receipt whose ABSENCE was previously invisible — bounded
+  // attempt timeout, visible overlap skip, the DEF-335 wedge breaker, and
+  // escalation to system_logs after 3 consecutive failures). Timer wiring is
+  // unchanged, matching the server.ts protectedJob pattern.
+  const tick = (): void => {
+    void import('./jobRunner')
+      .then(({ protectedTick }) =>
+        protectedTick('email_item_derivation', 'important', () => runEmailItemDerivation()))
+      .catch((e: any) => log.warn('email derivation tick could not run protected', { error: e?.message?.slice(0, 160) }));
+  };
   setTimeout(() => {
-    runEmailItemDerivation().catch(() => undefined);
-    setInterval(() => runEmailItemDerivation().catch(() => undefined), INTERVAL_MS);
+    tick();
+    setInterval(tick, INTERVAL_MS);
   }, FIRST_TICK_MS);
   log.info('email item derivation scheduled', { firstTickMs: FIRST_TICK_MS, intervalMs: INTERVAL_MS });
 }
