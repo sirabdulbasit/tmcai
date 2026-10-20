@@ -6,6 +6,29 @@
 //     run without Drive, just with that feature disabled.
 //   - AI provider keys: warn if none present (at-least-one rule).
 
+import dns from 'node:dns';
+import net from 'node:net';
+
+// DEF-343 — transport bootstrap, in the ONE module every entry point imports
+// (a second bootstrap would be protection-with-two-implementations).
+//
+// Measured on this box, 2026-10-20: IPv6 egress is black-holed (`curl -6
+// https://oauth2.googleapis.com/` fails instantly; `curl -4` answers in
+// <1s), and Node 20's happy-eyeballs (autoSelectFamily) turns that into
+// ETIMEDOUT on COLD connects — even with IPv4 first in DNS order
+// (ipv4first alone still failed; both knobs were required, measured).
+//
+// Consequence before this fix, reproduced 10/10: every ONE-SHOT process —
+// the capability benchmark, operator scripts, any fresh `node dist/...` —
+// died minting Vertex's OAuth token (`oauth2.googleapis.com/token` →
+// ETIMEDOUT via @google/genai's bundled fetch), so Brain-in-a-script could
+// not reason at all while Brain-in-the-server rode keep-alive sockets warmed
+// at boot. The server was NOT immune: its transient `all llm providers
+// failed` events (consecutiveFailures:1) are the same defect at its rare
+// cold reconnects. EXECUTES a transport preference; decides nothing.
+dns.setDefaultResultOrder('ipv4first');
+net.setDefaultAutoSelectFamily(false);
+
 // PLATFORM_API_TOKEN removed 2026-07-08 (E1): agent auth now uses
 // tenant-bound tokens in agent_api_tokens (see agentAuthMiddleware.ts);
 // the env token no longer grants anything, so boot must not require it.
