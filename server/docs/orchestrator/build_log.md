@@ -5180,3 +5180,124 @@ mechanism-level test evidence, suite 3664/0, no benchmark/orchestrator/forbidden
 touched. If Codex rules SOUND, DEF-341 and DEF-342 are the rare increments that
 live-verify themselves within hours because their trigger conditions are firing on
 production RIGHT NOW.
+
+## Iteration 81 (DEF-343 + DEF-344 — the gauge-vs-production contradiction is ROOT-CAUSED AND FIXED, and ingestion's last unprotected consumer joins the breaker) — 2026-10-20
+
+**TARGET vs AIM — divergence DECLARED (third consecutive, same grounds, Codex accepted it
+both prior times).** The assigned target is `Self-Pruning` (campaign C-3). The analyst
+re-confirmed this pass that C-3's state is byte-unchanged: all three increments deployed,
+the four `selfpruning.*` flags consent-gated at 0 (the owner's switch to flip, not code),
+and the whole suite masked by dead ingestion. There is no undelivered code increment to
+take. This turn worked **Codex it-80's ranked directive**, which it declared "outranks
+everything."
+
+**The fixQueue was empty again** (`criteriaAvg` `{}`, `fixQueue` `[]`) — the gauge itself
+was the broken instrument, and that breakage was directive #1.
+
+**Directive #1 — DONE, root-caused by probe matrix and FIXED (DEF-343, commit 1).**
+Codex asked: determine WHY the gauge's `callLLM` fails while production works. Answer,
+with every step measured this turn on this box:
+- Reproduced: `callLLM` from a fresh dist process (exactly how the scorer runs:
+  `node -r dotenv/config dist/scripts/nexeoCapabilityBenchmark.js`) fails 10/10 at
+  `request to https://oauth2.googleapis.com/token failed, reason:` (empty), cause
+  `ETIMEDOUT` — while the server completed 888 successful gemini calls in 48h, some in
+  the same minutes (`llm_spend` ledger).
+- NOT credentials: the stored Vertex service account (`nexeo-tmc`) mints a token fine
+  through the top-level gaxios-6 stack; ADC (`tmcai-key.json`) too. NOT funding (the
+  analyst's two-pass guess, corrected): the claude leg IS unfunded, but the gemini leg's
+  failure is transport.
+- The mechanism: the box's IPv6 egress is black-holed (`curl -6` fails instantly,
+  `curl -4` fine), and Node 20's happy-eyeballs (`autoSelectFamily`) aggregates that into
+  ETIMEDOUT on COLD connects through `@google/genai`'s bundled node-fetch-v3/gaxios-7
+  stack. `--dns-result-order=ipv4first` ALONE still failed (measured — the
+  happy-eyeballs implementation itself is the trigger); a forced IPv4 agent connected in
+  858ms. The server survives on keep-alive sockets warmed at boot; its three post-D-123
+  transient `all llm providers failed` events (`consecutiveFailures:1`) are the same
+  defect at its rare cold reconnects. One-shot processes always connect cold.
+- The fix (`config/env.ts` — verified in `llmRouter`'s require closure, hence the
+  benchmark's and every script's): `dns.setDefaultResultOrder('ipv4first')` +
+  `net.setDefaultAutoSelectFamily(false)`, both required, in the ONE bootstrap (a second
+  would be `protection-with-two-implementations`).
+- END-TO-END PROVEN pre-commit: the identical probe flipped `PROBE_FAIL` →
+  `PROBE_OK provider=gemini text="OK"` with only the two knobs changed, same minute.
+This closes the class behind DEF-336's recurring gauge-dark and unblocks directive #4
+(B04/DEF-333 and the C4 fixQueue become measurable once deployed).
+
+**Directive #2 — DONE.** DEF-342 VERIFIED LIVE with the one cheap read Codex asked for:
+exactly ONE open `self_heal_repair_ineffective` finding (TMC-0001, subject
+`stuck_queued_prompt`, severity error), first_seen 2026-10-19 04:37 UTC — 75 minutes
+after deploy, inside the predicted ~6h — occurrences 23 climbing hourly, zero row-spam.
+DEF-341 recorded LIVE-VERIFIED from the analyst's controlled comparison (41→5 lines/hr
+with cap-note + `suppressedLastWindow:36`; repair-FAILED 23/day→5-then-capped). DEF-340's
+cell moved to DEPLOYED-UNEXERCISED. All three stale lead cells (analyst hygiene flag #1)
+corrected, plus the DEF-334 "zero fallbacks" refinement (flag #2).
+
+**Directive #3 — DECLINED, with the reason said plainly.** "Fix the stuck_queued_prompt
+repair itself": the repair fails because BOTH delivery channels are human-blocked
+(WhatsApp logged out — DEF-317 needs an owner-only QR re-pair; email fallback token
+expired). The only unilateral code "fix" is expiring stale owner-bound questions — a
+product decision about silently dropping asks, squarely the `machinery-outbids-the-human`
+shape (§3 count 3). It needs the owner's ruling (expire after N days? resend on
+channel-return?), not a late-turn guess. DEF-342's finding now keeps it visible until
+then.
+
+**DEF-344 (commit 2) — ingestion's last unprotected consumer joins the breaker.** The
+analyst's standing first code action on the dead core, and DEF-335's own named next
+increment, delivered: `emailItemDerivationJob.ts scheduleEmailItemDerivation` now routes
+every tick through `protectedTick('email_item_derivation', 'important', …)` — lease,
+bounded timeout, visible overlap skip, the DEF-335 wedge breaker, 3-failure escalation,
+and a durable `job_runs` run-completion receipt every ~15 min (the heartbeat whose
+ABSENCE was previously invisible). Errors are recorded instead of swallowed
+(`.catch(() => undefined)` is gone). Timer wiring unchanged (body-only wrap, the
+server.ts pattern). HONEST SCOPE: ingestion stays frozen until the owner reconnects
+Gmail — this makes the next stall loud, bounded, and self-recovering instead of silent
+and forever.
+
+**Three-docs verdict, out loud:** DEF-343 — *progressing* (new root cause, first fix;
+corrects the recorded mechanism-guess in two analyst passes; no §3 tag). DEF-344 — *not
+circling*: it registers the last uncovered consumer with the ONE existing runner
+(DEF-335's class, named-partial close; no new mechanism, no second implementation).
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **323 files passed | 1 skipped; 3668 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (baseline 3,664 → +4 = exactly the two new suites: 2
+DEF-343, 2 DEF-344). `git diff --check` → clean. `npm run build` NOT run — `server/dist`
+is immutable and `--noEmit` is the build check (CLAUDE.md); builds happen only inside
+the deploy phase.
+
+**What I did NOT do:**
+- No Self-Pruning increment (none exists to deliver — see declaration).
+- No OS-level IPv6 repair (gai.conf / sysctl / route): the box's dead IPv6 is the
+  environmental root and should be fixed or disabled by the operator; the code fix makes
+  every Node process immune regardless. Named for the operator.
+- Anthropic credit top-up (owner/human, DEF-329) and Gmail reconnect (owner/human)
+  remain the standing human actions; nothing in code can do them.
+- Did not touch the benchmark, `scripts/orchestrator/**`, or deploy anything.
+- `brain_evaluation_chart.md` not edited (it still carries another session's uncommitted
+  change, as last turn): the per-DEF CAPABILITY/PREDICTED/MECHANISM/FALSIFIER blocks are
+  in the two new rows for the deploy phase to copy, as D-120→123 did.
+- Unsure about: (1) whether the judge leg of the benchmark has any failure mode BEYOND
+  the token mint — the probe proved the composer's `callLLM` path end-to-end, and the
+  judge rides the same client stack, but if the first post-deploy score is still null
+  that is the falsifier and the next place to look; (2) whether disabling
+  autoSelectFamily process-wide affects any other outbound stack (webjs/puppeteer,
+  SMTP) — with IPv6 dead box-wide, IPv4-only is strictly an improvement, but it is a
+  process-global knob and I say so rather than assume silence means safety.
+
+CAPABILITY: RELIABILITY-ONLY (DEF-343) · Self-Healing (DEF-344) — declared divergence
+from the Self-Pruning rotation, grounds above.
+PREDICTED: the first post-deploy benchmark run produces a REAL score (the first since
+10-12) — the loop's binding constraint removed; the runtime's `consecutiveFailures:1`
+cold-reconnect events stop; `job_runs` shows `email_item_derivation` receipts every
+~15 min. No conversational behaviour change is claimed.
+MECHANISM: one-shot processes mint Vertex tokens over IPv4 instead of losing the
+happy-eyeballs race to a dead IPv6 route; the derivation sweep runs under the same
+breaker/lease/receipt machinery as every other job.
+FALSIFIER: a null benchmark on the first post-deploy run; any post-deploy
+`oauth2.googleapis.com/token failed` line or sub-threshold all-provider cold-reconnect
+event; no `email_item_derivation` rows in `job_runs` post-deploy.
+
+**Deploy prediction:** yes — two small commits, each mechanism-proven (one by a live
+end-to-end probe, one by functional tests on the real scheduler), suite 3668/0. If this
+ships tonight, tomorrow's scorer run is the arc's payoff: the gauge measures again, or
+its falsifier fires and says exactly where to look next.
