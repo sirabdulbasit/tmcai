@@ -172,8 +172,15 @@ export async function mirrorOdooForTenant(clientNumber: string): Promise<MirrorR
  */
 export async function mirrorOdooForAllTenants(): Promise<{ tenants: number; result: MirrorResult }> {
   const agg: MirrorResult = { opportunitiesScanned: 0, opportunitiesWritten: 0, partnersScanned: 0, partnersWritten: 0, errors: 0 };
+  // DEF-345 `entity-sweep-query-never-ran` — this query had invented columns
+  // (`config_key`/`config_value`) that system_config has never had; the real
+  // schema is (client_number, key, value, …) — exactly what configService's
+  // getConfig and OdooConnector.loadConfig read. 42703 on every execution
+  // since it shipped, so the nightly mirror has never once discovered a
+  // tenant: the DEF-337 class verbatim, invalid SQL behind a per-tenant catch
+  // that no build step ever executed.
   const tenants = await prisma.$queryRawUnsafe<Array<{ client_number: string }>>(
-    `SELECT DISTINCT client_number FROM system_config WHERE config_key = 'odoo_url' AND config_value IS NOT NULL AND config_value <> ''`,
+    `SELECT DISTINCT client_number FROM system_config WHERE key = 'odoo_url' AND value IS NOT NULL AND value <> ''`,
   );
   for (const t of tenants) {
     try {
