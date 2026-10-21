@@ -5301,3 +5301,121 @@ event; no `email_item_derivation` rows in `job_runs` post-deploy.
 end-to-end probe, one by functional tests on the real scheduler), suite 3668/0. If this
 ships tonight, tomorrow's scorer run is the arc's payoff: the gauge measures again, or
 its falsifier fires and says exactly where to look next.
+
+## Iteration 82 (DEF-345 — the odoo mirror's never-ran query fixed; Codex directive #1 resolved with evidence, not code) — 2026-10-21
+
+**TARGET vs AIM — divergence DECLARED (fourth consecutive, same verified grounds).** The
+assigned target is `Self-Pruning` (campaign C-3). The analyst re-confirmed this pass that
+C-3's state is byte-unchanged: all three increments deployed, the four `selfpruning.*`
+flags consent-gated at 0 (the owner's switch), the suite masked by dead ingestion. No
+undelivered code increment exists. This turn worked Codex it-81's ranked directive.
+
+**The fixQueue was empty again** (`iter-81-post-build.json`: casesScored 0, casesFailed
+12, fixQueue []) — the gauge itself was directive #1.
+
+**Directive #1 — RESOLVED, and deliberately WITHOUT code. Two decisive facts:**
+1. **Timing kills the "still null → leaning negative" read.** The iter-81 benchmark ran
+   **03:17:35–03:20:51** (the report's own timestamps); the DEF-343 dist was built
+   **03:23:48** and deployed 03:23:54. The scorer executed the PRE-fix dist — that null
+   bears not at all on DEF-343. (This corrects the analyst's "revival unconfirmed and
+   leaning negative" and the inherited "Codex scorer-entry risk is live" framing.)
+2. **The CURRENT dist is probe-confirmed end-to-end.** Requiring
+   `dist/services/llmRouter.js` alone loads the knobs — `node:dns`/`node:net` read back
+   `order=ipv4first autoSelect=false` — and the exact scorer-style cold invocation
+   (`node -r dotenv/config`, no manual knobs, fresh process) returned
+   **PROBE_OK provider=gemini**. The knobs ARE in the scorer's require closure before any
+   token mint.
+   Codex's hard-preload fallback (`-r dist/config/env` or knobs at the benchmark's top)
+   was therefore NOT built — it would be code against a disproven hypothesis. It stands
+   ready, named, if iter-82's gauge is somehow still null; that would be next turn's
+   first job.
+
+**Directive #4 (half) — DEF-344 VERIFIED LIVE** with one `job_runs` SELECT:
+`email_item_derivation · job_class=important · last_status=ok ·
+last_started_at=2026-10-21T02:44:07Z` (minutes before the read). Precision recorded in
+the row: `job_runs` is an upsert-per-job summary (freshness of `last_started_at`/
+`last_status` IS the receipt), not per-run rows. The other half (untracked root litter,
+BLD-001) — NOT cleaned: `product_size_*.md`, the jpeg and `WHATSAPP_*` are other
+sessions' uncommitted files; never commit, revert or tidy another session's work. Named,
+again, for the owner of those files.
+
+**Directive #3 — DECLINED AGAIN, now with queue-level evidence.** The stuck_queued_prompt
+repair "needs a real repair": I read the queue. TMC-0001 has 16 `queued` rows (user 2,
+oldest 10-19 09:32), **no zombie `awaiting_reply` blocker** (states: 907 expired / 436
+skipped / 95 answered / 16 queued — the conversational-lock and expiry machinery
+demonstrably work), and `sendNextPrompt`'s selection logic is healthy. The dispatch leg
+fails because BOTH delivery channels are dead (WhatsApp logged out — DEF-317; email
+fallback token expired — the analyst's live log signatures). A repair that dispatches
+through the ordinary dispatcher CANNOT succeed until a channel exists; any code that
+"fixes" it either fakes delivery or suppresses the honest failure signal
+(`machinery-outbids-the-human`, §3 count 3). When the owner re-pairs a channel, the
+repair heals on its next run and DEF-342's `resolveOpenFindings` closes the finding
+automatically — by construction, no code owed. What closes it: the owner QR re-pair /
+token reconnect.
+
+**Directive #2 (B04/C4) — correctly blocked:** the gauge's first real run is iter-82's
+benchmark, which runs after this build; attacking B04 blind would contradict directive
+#1's own hold ("do NOT build new capability work until the gauge is confirmed live").
+
+**What shipped — DEF-345 (commit 1), the `entity-sweep-query-never-ran` instance DEF-337
+named and left open.** `odooWikiMirror.ts:175-186` (`mirrorOdooForAllTenants`): the
+nightly odoo→wiki tenant discovery filtered on `config_key`/`config_value` — columns
+`system_config` has never had (schema: `client_number, key, value`, exactly what
+`configService.getConfig` reads) — so it threw 42703 on EVERY execution since it
+shipped, the per-tenant catch swallowed it, the wiki pages feeding the criticality
+engine's deal-value-at-risk signal stayed permanently empty, and ~29 SYSTEM-scope
+`raw_query_failed` findings (~972 occurrences) accreted hourly with "no owner to
+notify". Fix: the real columns (`key = 'odoo_url' AND value IS NOT NULL AND value <> ''`),
+semantics unchanged. Tests (`def345OdooMirrorTenantQuery.test.ts`, 2/2): the discovery
+query's referenced columns are validated against the PARSED `schema.prisma` SystemConfig
+column set — the per-query slice of the CI raw-query-execution detector (a schema change
+breaks the test instead of silently re-opening 42703) — and the invented columns are
+asserted gone from the CODE with comments stripped first (the BLD-009 lesson).
+
+**Measured honesty:** zero tenants currently carry `key='odoo_url'` (one SELECT), so the
+fixed sweep correctly mirrors nothing today. PREDICTED is +0 owner-visible NOW; the live
+signature is the hourly capped 42703 lines and the finding-occurrence climb STOPPING
+post-deploy — and the mirror actually working the day a tenant configures odoo. The ~29
+already-open SYSTEM-scope findings stay open (no SYSTEM-scope resolver exists — the
+owner-visibility gap for those findings is the analyst's named item, not built here).
+
+**Three-docs verdict, out loud:** *progressing* — DEF-345 closes a named, first-fix
+instance of the change-log class `entity-sweep-query-never-ran` (not a §3 tag; no prior
+fix attempt on this instance exists to circle on). The CLASS fix — CI raw-query
+execution — remains owed and is named, not claimed; the schema-validated-columns test is
+its per-query slice, honestly scoped.
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **324 files passed | 1 skipped; 3670 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (baseline 3,668 → +2 = exactly the DEF-345 suite).
+`git diff --check` → clean. `npm run build` NOT run — `server/dist` is immutable and
+`--noEmit` is the build check (CLAUDE.md).
+
+**What I did NOT do, and open questions:**
+- No Self-Pruning increment (none exists to deliver — fourth consecutive declaration).
+- No ingestion-degradation detector (the analyst's next increment: watch the DEF-344
+  `job_runs` heartbeat and raise a finding when it stales) — held per Codex's explicit
+  "do NOT build new capability work until the gauge is confirmed live"; it is the natural
+  first capability increment once iter-82's gauge measures.
+- No SYSTEM-scope finding ownership/resolution path (named by the analyst; same hold).
+- Human actions untouched and untouchable by code: Gmail reconnect (DEF-329, 401 ×1602/
+  day), Anthropic credit top-up, WhatsApp QR re-pair (DEF-317).
+- Unsure: whether iter-82's benchmark produces a real score. The probe says yes — the
+  knobs are active in a cold scorer-style process and the composer path reasons. If it is
+  STILL null, the failure is past the composer (e.g., the judge's own path), and Codex's
+  hard-preload-plus-judge-probe is next turn's first job.
+
+CAPABILITY: Memory (DEF-345) — declared divergence from the Self-Pruning rotation,
+grounds above.
+PREDICTED: +0 owner-visible today (zero odoo tenants, measured); the 42703 flood and the
+`raw_query_failed` occurrence climb stop post-deploy; the mirror works the first day a
+tenant configures odoo.
+MECHANISM: the tenant-discovery query executes instead of throwing — the sweep's columns
+now exist.
+FALSIFIER: any post-deploy 42703 from `odooWikiMirror`, or this signature's finding
+occurrences still climbing after deploy.
+
+**Deploy prediction:** yes — one small schema-confirmed fix, probe-backed directive
+resolutions, suite 3670/0. The real event this iteration is the gauge's own run: if
+iter-82 returns a number, thirteen blind iterations end and B04/DEF-333 plus the C4
+fixQueue finally become attackable.
