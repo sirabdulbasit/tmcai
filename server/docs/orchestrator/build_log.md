@@ -5419,3 +5419,105 @@ occurrences still climbing after deploy.
 resolutions, suite 3670/0. The real event this iteration is the gauge's own run: if
 iter-82 returns a number, thirteen blind iterations end and B04/DEF-333 plus the C4
 fixQueue finally become attackable.
+
+## Iteration 82 (build 2, DEF-346 + DEF-347 — the never-ran-query CLASS gets its detector, and the detector's first run finds eleven more latent members) — 2026-10-22
+
+**TARGET vs AIM — divergence DECLARED (fifth consecutive, same verified grounds).** The
+rotation header names `Learn`; the campaign cap still binds this turn to `Self-Pruning`,
+which has no undelivered code increment (the analyst re-confirmed its state byte-identical
+again). This turn worked **Codex it-82 directive #2** — the structural item.
+
+**Codex directive #1 (attack C4 @ 86.7) — DECLINED, on the record, and the grounds are the
+standing structure itself.** The brief's own score header rules "**C4 @ 86.7 — do not
+chase this to 95**," and the campaign cap forbids, verbatim, "another change aimed at the
+benchmark's conversational cases: Accurate Communication is 15 of the 359 remaining
+capability points — 4.2% of the journey — and has had every iteration so far." Codex's #1
+targets exactly that gate. A reviewer directive cannot quietly override the owner-derived
+cap in the same brief; if the orchestrator rules the conversational gate IS now the
+priority (the gauge finally measures it, so the case is arguable), next turn takes it
+with a measured instrument. The top fixQueue entries left on the table, quoted so nothing
+is lost: C5@70 B02-unknown-fact ("withholding and then immediately providing the same
+information makes the initial question less efficient"), C6@70/C3@75 B04 residual ("the
+deadline is still unaddressed"), C4@75 B02 ("repeats the information… feels like a
+template").
+
+**What shipped — DEF-346 (commit 1): the `entity-sweep-query-never-ran` CLASS detector,
+column slice — Codex directive #2 verbatim.** `tests/rawQueryColumnConformance.test.ts`
+(in the standing matrix — CI here IS the matrix): parses `schema.prisma` into
+table→columns (including `@map` and `Unsupported(...)` pgvector fields), extracts all 730
+`$queryRaw*`/`$executeRaw*` template literals across 160 files, and validates —
+zero-false-positive by design — identifiers in grammatically unambiguous column positions
+on single-statement, single-table, join-free queries against schema models.
+Statement-type-aware subquery exclusion (measured misattribution on the wiki link-count
+subqueries, fixed during development). MUTATION-CHECKED: the verbatim pre-DEF-345 odoo
+query flags exactly `config_key`+`config_value`; the fixed query passes; a wrong ORDER BY
+column is caught. Coverage floor pinned (>80 validated queries) so a silently-degraded
+extractor cannot go green.
+
+**The detector's first corpus run found real things, and every finding was classified
+against the LIVE database's information_schema before being believed:**
+- **20 PRISMA-DRIFT pairs** — the DB has the column, the prisma model was never updated
+  (wa_sender_policy ×5, whatsapp_connections ×4, whatsapp_messages ×10,
+  whatsapp_sessions ×1). Queries work live; the stale schema is the defect; the backfill
+  is owed and named, not done here.
+- **11 LATENT 42703s — filed as DEF-347, OPEN:** the agent framework
+  (`agentExecutionEngine.ts:46`, `agentFrameworkService.ts:62`, `agentRoutes.ts:43`,
+  `agentConversation.ts:111`) queries a persona-rich `agents` table that has never
+  existed (display_name/personality/gender/notify_recipients/notify_whatsapp_numbers vs
+  the real name/notify_email/notify_whatsapp; users.gender/preferred_title absent), and
+  `brainChatRegressionBattery.ts:504`'s fixture INSERT uses status/body/created_at
+  against the real state/question/queued_at — so the battery's seeding dies on first
+  run. None of these paths executes today (zero matching 42703s in any log) — they are
+  exactly what "never-ran query" means, caught in-tree instead of in production this
+  time. NOT fixed this turn, said plainly: the fixes need the agent framework's intent
+  read (downstream code consumes the invented fields), not a blind column swap.
+- Both baselines are **exact two-way ratchets**: a NEW violation fails the matrix, and a
+  STALE entry (a fixed query or a backfilled model) also fails until removed — the lists
+  can only shrink.
+
+**Also this turn (riding the commit, per analyst hygiene flags #1/#2):** DEF-343 moved to
+**VERIFIED (LIVE), both halves** — the gauge's first post-D-124 run returned 94.3, 12/12
+scored, casesFailed 0, measuring B04 71→90 / C6 30→70 and moving Thinking 42→62; the
+hard-preload fallback was never needed. DEF-345 moved to **DEPLOYED (D-125),
+early-positive** (zero 42703 today; full-day-clean completes it).
+
+**Three-docs verdict, out loud:** DEF-346 — *progressing, structurally*: this is the
+class-level close the recurrence discipline demands instead of a third instance patch
+(two shipped instances, DEF-337 and DEF-345, and the §3 table is ten deep on
+instance-patching; the detector makes the third instance impossible within its validatable
+scope). DEF-347 — *progressing*: new root cause, first occurrence, found by the new
+instrument and DB-verified before being believed.
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **325 files passed | 1 skipped; 3673 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (baseline 3,670 → +3 = exactly the DEF-346 suite).
+`git diff --check` → clean. `npm run build` NOT run — dist immutable, `--noEmit` is the
+build check (CLAUDE.md).
+
+**What I did NOT do, and open questions:**
+- No conversational-gate work (declined with grounds above — the one directive-vs-cap
+  conflict this turn, surfaced rather than silently resolved either way).
+- No DEF-347 fixes and no prisma-drift backfill (both owed, both tracked by the ratchet).
+- No 42P10/semantic execution slice (EXPLAIN against a live schema) — named, infra.
+- No Self-Pruning increment (none exists to deliver — fifth consecutive declaration).
+- Untracked root litter: other sessions' files, not mine to tidy (standing).
+- Human items untouched and untouchable: Gmail reconnect, WhatsApp re-pair, Anthropic
+  credit confirmation.
+- Unsure: whether Codex accepts the directive-#1 decline. It is a genuine conflict
+  between its ranked directive and the owner-derived cap in the same brief; I chose the
+  standing structure and put the fixQueue evidence on the record so the orchestrator can
+  arbitrate with nothing lost.
+
+CAPABILITY: RELIABILITY-ONLY (DEF-346; DEF-347 is an open defect record) — declared
+divergence from the rotation, grounds above.
+PREDICTED: +0 behaviour change; structurally, the third member of the twice-shipped
+never-ran-query class cannot reach production through a green matrix, and eleven latent
+members are now named, located, and ratchet-tracked instead of waiting in the tree.
+MECHANISM: every raw query's column references are checked against the parsed schema at
+every test run; the baselines only tighten.
+FALSIFIER: a future wrong-column raw query shipping with a green matrix (it would have to
+be outside the validatable scope, which the row names), or either ratchet growing.
+
+**Deploy prediction:** yes — a test-only commit ships with the next deploy and is
+effective at every matrix run regardless of deploy. The open question for the
+orchestrator is priority arbitration: conversational gate (Codex #1) vs the campaign cap.
