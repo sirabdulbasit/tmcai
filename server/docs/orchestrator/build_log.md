@@ -5521,3 +5521,108 @@ be outside the validatable scope, which the row names), or either ratchet growin
 **Deploy prediction:** yes — a test-only commit ships with the next deploy and is
 effective at every matrix run regardless of deploy. The open question for the
 orchestrator is priority arbitration: conversational gate (Codex #1) vs the campaign cap.
+
+## Iteration 82 (continuation 1, DEF-348 — Learn's missing generation layer: captured experience becomes governed-memory proposals) — 2026-10-23
+
+**ON TARGET for the first time in six turns: `Learn` (45), per the TARGET header, the
+continuation pin, and the scorecard's `target-capability`.** (The campaign-cap text still
+says Self-Pruning — stale against the scorecard's rotation, stated rather than silently
+resolved. No divergence declaration needed: this turn worked the assigned capability.)
+
+**What the continuation asked me to answer — "what was wrong about the last attempt":**
+nothing was wrong with it, because it was not a Learn attempt. Last turn shipped DEF-346,
+declared RELIABILITY-ONLY, and Codex ruled that attribution "correct, affirmatively."
+The flat 56.0 is the scorer RETRACTING a noise-based Thinking gain (B04 90→~50 on
+byte-identical code), not a failed Learn change. The honest reading: **no turn had ever
+attempted Learn's actual defect.** The scorer's own basis — "thousands of captures,
+2 governed memories, manifests nothing — structural" — names a missing pipeline stage,
+and this turn built it.
+
+**The diagnosis, measured before building (three SELECTs):** 3,361
+`brain_interaction_learning_logs` rows (3,357 genuine WhatsApp-era exchanges; benchmark
+runs don't log — zero `benchmark`-surface rows) · 2 governed memories (both the
+LEARN-001 `chat_standing_preference` residue) · 0 proposals pending · **0 `brain_feedback`
+rows EVER.** Every existing generator needs a hand or a live chat: `correctionDistiller`
+fires only on a user's hand-rewrite (never once written), `standingPreferenceCapture`
+fires only inside a live conversation (channels dark since 10-08), the Settings propose
+route needs a click. The nightly sweep (LEARN-001) only ACTIVATES pending rows — it has
+drained an empty queue every night. `learn-distillation-inert`, precisely.
+
+**What shipped — DEF-348 (commit 1):**
+- `services/learning/interactionDistiller.ts` (new): per-tenant fail-closed watermark in
+  `system_config` (`learn.interaction_distill.cursor` — advances only when the tenant's
+  whole batch succeeds; an LLM failure holds it and the same rows retry next night);
+  ≤200 rows/tenant/run, grouped per user, ONE model call per group — the MODEL judges
+  (no regex, no keyword list), with the DEF-149 lesson verbatim in the prompt
+  (imperatives, one-offs, questions, single-value corrections are NOT preferences);
+  floor 0.6; ≤3 proposals/user/run; title-dedup against all existing memories;
+  `benchmark`-surface rows excluded at the query; `sourceReferenceId` receipts.
+- **sourceType `interaction_distillation` is deliberately NOT added to
+  `AUTO_ACTIVATE_SOURCES`** — that set's own doc excludes sources without heavy
+  pre-filtering ("the correction distiller included, are deliberately absent"), and
+  mined-from-history provenance is weaker than the owner's own durability-marked words.
+  Everything lands `pending_approval` — the human gate holds (guardrails named in the
+  file header: tenant/user scope, target grounding, irreversible-needs-confirmation,
+  no-claim-without-a-receipt).
+- `scripts/nexeoLearnSweep.ts`: the nightly learn phase now runs distillation FIRST,
+  prints one `learn-distill:` line, and a distillation failure can never kill the
+  activation sweep.
+- Tests: `def348InteractionDistiller.test.ts` 6/6 (floor/scope/sourceType on every
+  proposal; fail-closed cursor under LLM failure; cap + dedup; benchmark exclusion
+  pinned at the query; empty batch spends nothing; nightly wiring order pinned).
+
+**Activation note, stated plainly:** the loop's learn phase executes
+`src/scripts/nexeoLearnSweep.ts` via ts-node from the working tree — a standing harness
+property, not something this turn added — so the distiller runs at the next nightly
+learn phase independent of the deploy gate. The live check is therefore automatic:
+tomorrow's `learn-distill:` line (scanned/proposed) and the pending-proposals count
+rising from 0.
+
+**Codex it-82(b2) directives, disposed one by one:**
+1. *Stabilize the gauge (N runs, per-case median)* — **harness-owned, flagged not built.**
+   The run cadence lives in `nexeo-loop.sh` (forbidden to me), and the in-benchmark
+   variant would edit `nexeoCapabilityBenchmark.ts`, which the standing rule reserves
+   for arbitration. The orchestrator should implement whichever home it prefers. The
+   variance lesson IS applied here: DEF-348's PREDICTED claims state change (proposals
+   exist), not score points.
+2. *Clarify which scoreboard the gate reads* — the orchestrator's call; flagged.
+3. *Fix DEF-347 + backfill the 20 drift models* — RELIABILITY work in another
+   capability; the continuation pin on Learn forbids it this turn. Next pulse, named.
+4. *Human/carried* — Gmail reconnect, WhatsApp re-pair, tree litter (other sessions'
+   files): unchanged, not mine to do.
+Also named, not taken: the analyst's `wiki-page-duplicate-insert` (~2/day, Memory) and
+the pending-proposals DIGEST that would reach the owner (Learn's next increment — the
+approval surface is still a tab he doesn't open; building the digest rides on a working
+channel).
+
+**Three-docs verdict, out loud:** *progressing* — `learn-distillation-inert` is a new
+root cause (analyst-named, first occurrence, not in §3), and this is its first fix: a
+missing pipeline stage built, not a patch on a reported instance.
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **326 files passed | 1 skipped; 3679 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (baseline 3,673 → +6 = exactly the DEF-348 suite).
+`git diff --check` → clean. `npm run build` NOT run — dist immutable, `--noEmit` is the
+build check (CLAUDE.md).
+
+**Unsure about, honestly:** whether the deliberately conservative prompt yields any
+proposals from the May–October backlog — if three consecutive nights print
+`proposed 0 · TENANTS FAILED 0` while the cursor drains, the prompt is too strict and
+that falsifier fires (the row says so); and whether 200 rows/night drains 3,357 rows
+fast enough (17 nights to first full pass — acceptable for a nightly learner, said
+rather than hidden).
+
+CAPABILITY: Learn
+PREDICTED: within a few nightly runs, pending governed-memory proposals rise from 0 for
+the first time, each carrying its interaction receipt — the scorer's "manifests nothing
+(2 governed memories)" basis becomes false. NO score points claimed: one gauge reading
+is not evidence (this iteration's own retraction is the proof).
+MECHANISM: the model distills real exchange history into human-gated memory proposals on
+a fail-closed nightly cursor — the generation stage the pipeline lacked.
+FALSIFIER: three consecutive `learn-distill` lines with `proposed 0 · TENANTS FAILED 0`
+while the backlog drains, or a cursor that never advances, or proposals without
+receipts.
+
+**Deploy prediction:** yes — one new service + one script wiring + tests, 3679/0. The
+real event is tomorrow's learn phase: the first `learn-distill:` line with a non-zero
+`proposed` is the capability's first generated memory proposal ever.
