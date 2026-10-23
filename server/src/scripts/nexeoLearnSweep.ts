@@ -19,9 +19,28 @@
  */
 import prisma from '../db/prisma';
 import { sweepQualifyingMemories } from '../services/learning/learningService';
+import { distillInteractions } from '../services/learning/interactionDistiller';
 
 async function main(): Promise<number> {
   const dryRun = process.argv.includes('--dry-run');
+  // DEF-348 — the GENERATION half runs first: distill undistilled interaction
+  // history into governed-memory PROPOSALS (pending_approval, human-gated),
+  // then the sweep below drains whatever the self-activating class qualifies.
+  // A distillation failure never kills the night: the per-tenant cursor is
+  // fail-closed (unadvanced on error) and the sweep still runs.
+  if (!dryRun) {
+    try {
+      const d = await distillInteractions();
+      process.stdout.write(
+        `learn-distill: ${d.scanned} interactions over ${d.groups} user-group(s) in ${d.tenants} tenant(s)`
+        + ` · proposed ${d.proposed} · dup-skipped ${d.skippedDuplicate} · below-floor ${d.belowFloor}`
+        + (d.tenantsFailed ? ` · TENANTS FAILED ${d.tenantsFailed} (cursor held, retries next run)` : '')
+        + '\n',
+      );
+    } catch (err) {
+      process.stdout.write(`learn-distill: FAILED (${err instanceof Error ? err.message.slice(0, 160) : String(err)}) — sweep continues\n`);
+    }
+  }
   const r = await sweepQualifyingMemories({ dryRun });
   const verb = dryRun ? 'would activate' : 'activated';
   process.stdout.write(
