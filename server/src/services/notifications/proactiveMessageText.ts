@@ -273,3 +273,34 @@ export function renderInboundNoiseNotice(args: {
   };
   return systemMarker(`selfpruning_noise: ${JSON.stringify(payload)}`);
 }
+
+/**
+ * DEF-349 — the pending-proposals digest: the surfacing half of the Learn
+ * loop. DEF-348's nightly distiller generates governed-memory PROPOSALS
+ * (pending_approval, human-gated), but nothing told the owner they exist —
+ * they sat in a Settings tab he never opens, so Learn manifested nothing in
+ * practice. This marker carries the FACTS (how many are new, what they say,
+ * where to approve); `answerSanitizer.learnProposalDigestMeaning` validates
+ * the payload and the voice pass lets the model choose the words.
+ */
+export function renderLearnProposalDigest(args: {
+  /** All pending_approval memories for this user, after this batch. */
+  pendingTotal: number;
+  /** How many are NEW since the last digest (what triggered this one). */
+  newSinceLast: number;
+  /** Newest-first titles of the new proposals, at most 5. */
+  titles: string[];
+}): string {
+  const clean = (s: string) => stripMarkerEnvelope(s ?? '').replace(/\s+/g, ' ').trim();
+  const int = (n: number, lo: number, hi: number) =>
+    (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : lo);
+  const pendingTotal = int(args.pendingTotal, 1, 10_000);
+  const payload = {
+    pendingTotal,
+    // New can never exceed pending — a payload the constructor cannot produce
+    // is one the parser must reject, so the clamp lives here (noise-notice rule).
+    newSinceLast: Math.min(int(args.newSinceLast, 1, 10_000), pendingTotal),
+    titles: args.titles.slice(0, 5).map((t) => clean(String(t)).slice(0, 80)).filter(Boolean),
+  };
+  return systemMarker(`learn_proposal_digest: ${JSON.stringify(payload)}`);
+}

@@ -434,6 +434,38 @@ function noiseMarkerMeaning(answer: string): string | null {
 }
 
 /**
+ * DEF-349 — the pending-proposals digest's curated meaning.
+ *
+ * Same contract as the digest/withdrawal/noise markers: JSON body, and a
+ * payload the constructor could not have produced is rejected rather than
+ * repaired. It states FACTS — how many proposals await his approval, what the
+ * new ones say, where to act — and proposes nothing itself: the proposals are
+ * already human-gated rows; this only tells him they exist, which is the half
+ * of the Learn loop that was missing (DEF-348 generates, nothing surfaced).
+ */
+function learnProposalDigestMeaning(answer: string): string | null {
+  const m = /^\s*\[learn_proposal_digest:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    if (!Number.isInteger(p?.pendingTotal) || p.pendingTotal < 1 || p.pendingTotal > 10_000) return null;
+    if (!Number.isInteger(p?.newSinceLast) || p.newSinceLast < 1 || p.newSinceLast > p.pendingTotal) return null;
+    if (!Array.isArray(p?.titles) || p.titles.length < 1 || p.titles.length > 5) return null;
+    if (!p.titles.every((t: unknown) => typeof t === 'string' && (t as string).trim().length > 0 && (t as string).length <= 80)) return null;
+
+    const newNoun = p.newSinceLast === 1 ? 'memory proposal' : 'memory proposals';
+    const titles = (p.titles as string[]).map((t) => `“${t.trim()}”`).join(', ');
+    const total = p.pendingTotal > p.newSinceLast
+      ? ` That makes ${p.pendingTotal} waiting in total.`
+      : '';
+    return `From your recent conversations I drafted ${p.newSinceLast} new ${newNoun} — ${titles} — `
+      + `waiting for your approval under Settings → Brain Memories. Nothing is applied until you approve it.${total}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The curated meaning of a whole-answer marker, when we have one.
  *
  * These 25 replacements are not throwaway strings — several were reworded
@@ -459,6 +491,8 @@ export function curatedMarkerMeaning(answer: string): string | null {
   if (applied) return applied;
   const noise = noiseMarkerMeaning(answer);
   if (noise) return noise;
+  const learnDigest = learnProposalDigestMeaning(answer);
+  if (learnDigest) return learnDigest;
   // DEF-238 — the item-action outcome. Constructor and renderer share one
   // module (`actionReceipt.ts`), so a receipt an executor mints is renderable
   // here by construction — the drift that swallowed a SUCCESSFUL delete on

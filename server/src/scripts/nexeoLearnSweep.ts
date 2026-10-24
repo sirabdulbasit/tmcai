@@ -42,6 +42,25 @@ async function main(): Promise<number> {
     }
   }
   const r = await sweepQualifyingMemories({ dryRun });
+  // DEF-349 — the SURFACING half: after generation (above) and activation of
+  // the self-qualifying class (sweep), tell the owner what awaits HIS gate.
+  // One digest per user per day through the normal dispatcher; a failure here
+  // never kills the night either.
+  if (!dryRun) {
+    try {
+      const { runProposalDigest } = await import('../services/learning/proposalDigest');
+      const g = await runProposalDigest();
+      process.stdout.write(
+        `learn-digest: ${g.usersNotified} user(s) notified · ${g.duplicates} already-today`
+        + ` · ${g.skippedNoNew} tenant(s) nothing-new · ${g.skippedDisabled} disabled`
+        + (g.tenantScopeSkipped ? ` · ${g.tenantScopeSkipped} tenant-scope skipped` : '')
+        + (g.tenantsFailed ? ` · TENANTS FAILED ${g.tenantsFailed} (cursor held)` : '')
+        + '\n',
+      );
+    } catch (err) {
+      process.stdout.write(`learn-digest: FAILED (${err instanceof Error ? err.message.slice(0, 160) : String(err)}) — sweep already ran\n`);
+    }
+  }
   const verb = dryRun ? 'would activate' : 'activated';
   process.stdout.write(
     `learn-sweep: scanned ${r.scanned} pending · ${verb} ${r.activated} · held ${r.held}`
