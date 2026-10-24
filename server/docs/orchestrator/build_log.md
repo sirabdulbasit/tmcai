@@ -5626,3 +5626,95 @@ receipts.
 **Deploy prediction:** yes — one new service + one script wiring + tests, 3679/0. The
 real event is tomorrow's learn phase: the first `learn-distill:` line with a non-zero
 `proposed` is the capability's first generated memory proposal ever.
+
+## Iteration 82 (continuation 2, DEF-349 — the Learn loop's surfacing half: pending proposals now travel to the owner) — 2026-10-24
+
+**TARGET vs AIM — divergence DECLARED.** The rotation header names `Self-Healing`; this
+turn built **Learn**, because Codex's ranked directive #1 from the DEF-348 review is
+unambiguous — *"Close the Learn loop: build the pending-proposals digest"* — and the same
+increment is named by the scorer ("loop closure absent"), the analyst (residual #2), and
+my own DEF-348 row. DEF-348 manifested live on the 10-24 pack (pending 0→2, the first
+auto-generated proposals in the system's history, Learn 45→49) and the one gap every seat
+agrees on is that the owner receives nothing. The Self-Healing alternative (an
+ingestion-degradation detector, the analyst's residual #1 code item) is real and remains
+next in line — it was not in Codex's ranking this turn and loses to the unanimous item.
+The campaign-cap text (Self-Pruning) remains stale against the rotation; stated, not
+silently resolved. The fixQueue was not targeted: C4 @ 87.9 is the single-run noise the
+brief itself says not to chase.
+
+**What shipped — DEF-349 (commit 1), one coherent increment across five files:**
+- `services/learning/proposalDigest.ts` (new) — per-tenant fail-closed cursor
+  (`learn.proposal_digest.cursor`, same pattern as the distiller that feeds it); fires
+  only when proposals NEWER than the cursor exist; ONE `enqueueBrainPrompt` per affected
+  user with day-keyed dedup (`learn_proposal_digest:<user>:<day>` — the queue's own
+  dedup refuses a second today, never a timer here), `expectsReply: false` (DEF-063),
+  memoryIds receipt in metadata; userId-null proposals counted, never mis-addressed;
+  the cursor advances on queued OR same-day-dedup and holds on failure.
+- `services/notifications/proactiveMessageText.ts` — `renderLearnProposalDigest`: a
+  provenance-stamped marker carrying FACTS only (clamps mirror the noise notice;
+  newSinceLast can never exceed pendingTotal by construction).
+- `services/knowledge/answerSanitizer.ts` — `learnProposalDigestMeaning`, registered in
+  `curatedMarkerMeaning`. This mattered: marker kinds are recognized BY NAME (the
+  DEF-168 lesson — two unregistered markers once reached the owner verbatim), so an
+  unregistered digest would have been eaten or leaked as JSON. The payload is validated
+  (impossible payloads rejected, never repaired — DEF-175) and yields the curated FACT;
+  the voice pass owns the words.
+- `services/behaviorConfig.ts` — `learn.proposal_digest_enabled` def 1, on the
+  withdrawal-notice justification: announcing the human gate IS the loop's contract;
+  the switch suppresses and activates nothing. (Contrast the def-0 suppression flags.)
+- `scripts/nexeoLearnSweep.ts` — the nightly now runs generate → activate → surface, in
+  that order, each failure-isolated so no stage can kill the night.
+
+**Why the ONE chokepoint and not a new channel:** the digest travels
+`enqueueBrainPrompt` exactly like the inbound-noise report (DEF-217/230) and the
+withdrawal notice — quiet hours, channel discipline, model-phrased wording all
+inherited; a second delivery implementation would be the 11th
+`protection-with-two-implementations`. HONEST DELIVERY SCOPE: enqueued ≠ delivered
+(DEF-081) — with both owner channels dark the digest queues like every owner-bound
+message and flows when he re-pairs; the cursor re-triggers on new proposals, so nothing
+is announced once into a dead queue and forgotten.
+
+**DEF-149 hygiene (analyst flag #2), acknowledged on the record:** the D-127 deploy line
+named "DEF-149" but only the distiller's PROMPT carries its lesson — DEF-149's live
+classify path ("Chase her again" → filed as a preference) is OPEN since 08-12 and
+untouched by any turn. My DEF-348 row never claimed it closed. The deploy-line wording
+is the orchestrator's; recommend deploy lines distinguish "lesson applied" from
+"closed." The live-path fix is a real open item (Thinking) for a future turn.
+
+**Three-docs verdict, out loud:** *progressing* — DEF-349 is the named second half of
+`learn-distillation-inert` (first occurrence lineage, not in §3), a missing pipeline
+stage built on the established delivery pattern, not a patch on a reported instance.
+Partial close said plainly: full close = he APPROVES a proposal and Brain applies it,
+which still needs a working channel (DEF-317/329, human).
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **327 files passed | 1 skipped; 3685 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (baseline 3,679 → +6 = exactly the DEF-349 suite).
+`git diff --check` → clean. `npm run build` NOT run — dist immutable, `--noEmit` is the
+build check (CLAUDE.md).
+
+**What I did NOT do:** the ingestion-degradation detector (Self-Healing, analyst #1 —
+next in line); DEF-149's live classify path (Thinking, named above); DEF-347 fixes and
+the 20 prisma-drift backfills (reliability, deferred again — flagged so it is not
+lost); the variance-aware gauge and scoreboard governance (harness-owned, flagged two
+turns running); the wiki-mirror upsert (Memory, ~2/day, named); human items (Gmail
+reconnect, WhatsApp re-pair). Unsure about: whether the dispatcher's downstream
+channel-selection quietly expires queued digests before a channel returns (TTL) — if
+so, the cursor's re-trigger on NEW proposals is the safety net, and the falsifier
+watches for a digest that never reaches a queue row at all, which would be code, not
+channel.
+
+CAPABILITY: Learn
+PREDICTED: at the next nightly learn phase the digest is enqueued for user 2 (pending=2
+exists now, cursor at epoch) — `learn-digest: 1 user(s) notified` and a
+`brain_prompt_queue` row with the day-keyed dedupKey; it reaches him when a channel
+exists. NO score points claimed (the one-pack discipline both ways).
+MECHANISM: pending proposals travel the same dispatcher as every owner-bound notice,
+triggered by the same fail-closed cursor pattern as the distiller that feeds them.
+FALSIFIER: a nightly run with fresh pending proposals and no `learn-digest` enqueue
+(flag on); a digest reaching the owner as raw JSON instead of the curated meaning; the
+cursor advancing past proposals whose enqueue failed.
+
+**Deploy prediction:** yes — five small coordinated edits plus a new service, 3685/0,
+on the established announce pattern. The Learn loop is now generate → activate →
+surface; the remaining step (his approval reaching back) is the channel, which is his.
