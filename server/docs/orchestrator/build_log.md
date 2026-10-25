@@ -5718,3 +5718,100 @@ cursor advancing past proposals whose enqueue failed.
 **Deploy prediction:** yes — five small coordinated edits plus a new service, 3685/0,
 on the established announce pattern. The Learn loop is now generate → activate →
 surface; the remaining step (his approval reaching back) is the channel, which is his.
+
+## Iteration 82 (continuation 3, DEF-350 — learned proposals can no longer be lost in the dark: digest coverage derives from the live queue) — 2026-10-25
+
+**THE CONTINUATION PREMISE, corrected then honored.** The pin says "go deeper on Self
+Follow-Up: the previous turn's change was insufficient or did not reach a live surface."
+The previous turn was declared and reviewed as **Learn** (DEF-349, SOUND /
+SUPPORTED-increment) — but the pin's substance is exactly right, and this turn is its
+proof: DEF-349 **did not reach a live surface** (its digest is queued behind dark
+channels) **and was insufficient** (its cursor bookkeeping could lose the very proposals
+it announces). This turn goes deeper on that same work. The capability declaration stays
+**Learn** — switching labels mid-remediation of a Learn increment would be the real
+drift — with the Self Follow-Up comparison addressed head-on: the mechanism built here,
+re-announce-until-covered, IS follow-up machinery (Brain following up on its own
+undelivered announcements until they land), so the scorer may fairly credit either; the
+DEF lineage governs the label.
+
+**What the live check found (Codex directive #3, the falsifier quoted from production):**
+`brain_prompt_queue` → `learn_proposal_digest:2:2026-10-25 · state=queued ·
+queued_at 2026-10-25 02:31:59 · 5 memoryIds · expires_at 2026-10-27 02:31`. Three facts
+in one row: (1) **DEF-349 works** — the digest enqueued on its first nightly,
+`usersNotified ≥ 1`; (2) **DEF-348 is sustaining** — pending grew 2→5, the distiller's
+second pack; (3) **Codex's directive-#4 loss was not hypothetical but SCHEDULED** — the
+48h TTL expires 10-27 with both channels dark, and the original cursor (advanced to
+02:31:58, past all 5) would have orphaned Brain's first-ever learned proposals forever.
+
+**What shipped — DEF-350 (commit 1), closing Codex findings #1, #2 and directive #4 at
+the class level, by construction:**
+- `proposalDigest.ts` (rewrite): the per-tenant time cursor is REMOVED. A proposal is
+  covered iff a digest row whose `metadata.memoryIds` contains it exists in a non-lost
+  queue state (`expired/cancelled/skipped` lose; unknown states default to covering, so
+  a vocabulary change costs a delayed re-announce, never a spam loop). The cursor was a
+  second source of truth about "announced" that could drift from the queue carrying the
+  announcements — the `protection-with-two-implementations` shape (§3 count 10) applied
+  to STATE; the fix is the removal of the duplicate, which is the structural response
+  that tag demands, not another patch on it.
+- Consequences by construction: an EXPIRED digest re-announces under a fresh day key,
+  regenerated from current truth (directive #4); a same-day `'duplicate'` marks nothing
+  covered, so proposals arriving after today's digest survive to tomorrow (finding #1);
+  blank-title proposals are excluded and counted (`unshowable`), never enqueued-then-
+  eaten or claimed (finding #2); `memoryIds` is the COMPLETE per-digest list — it IS the
+  coverage record — bounded at 40 with overflow rolling forward (delay, never loss).
+- `nexeoLearnSweep.ts`: the nightly line now reports all-covered/unshowable instead of
+  the cursor vocabulary. No system_config writes remain; the residual cursor key is dead
+  and harmless (noted in the row).
+- Tests: `def349ProposalDigest.test.ts` rewritten, **9/9**, with the three Codex
+  scenarios as named tests — "CODEX #4: an EXPIRED digest … re-announced (the 10-27 TTL
+  scenario)", "CODEX #1: a proposal first-fresh AFTER today's digest is not lost",
+  "CODEX #2: blank-title … never enqueued-then-eaten" — plus live-coverage no-spam,
+  enqueue-failure retry, oversize bounding, and the marker round-trip.
+- Hygiene (analyst #3): the DEF-063 status-cell contradiction corrected (deploy column
+  was the truth).
+
+**Codex's ranked directives, disposed:** #1 CLOSED (by construction, not the suggested
+one-line patch — remediation scope, structural depth); #2 CLOSED; #3 DONE, result
+POSITIVE, quoted above; #4 RESOLVED (TTL confirmed 48h; the loss was scheduled; now
+impossible by construction — when a channel returns he receives the full backlog); #5
+(the Self-Healing ingestion-degradation detector) still owed — it is the named next
+turn, now twice deferred, said plainly.
+
+**Three-docs verdict, out loud:** the defect's shape is §3's most-recurrent tag
+(`protection-with-two-implementations`, count 10) manifesting in state rather than code —
+per rule 5 that forbids another instance patch, and this fix is the structural one: it
+deletes the duplicate source of truth instead of synchronizing it. *Progressing on the
+class* precisely because nothing was patched.
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **327 files passed | 1 skipped; 3688 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (3,685 → 3,688: the rewritten suite is 9 tests vs 6).
+`git diff --check` → clean. `npm run build` NOT run — dist immutable, `--noEmit` is the
+build check (CLAUDE.md).
+
+**What I did NOT do:** the ingestion/channel-degradation detector (Codex #5, analyst #1
+code item — next turn's first candidate); DEF-347 and the prisma-drift backfills
+(deferred again, flagged); DEF-149's live classify path (Thinking, named); the
+variance-aware gauge + scoreboard governance (harness-owned, standing, third turn
+flagged); the eval-chart D-128 "UNKNOWN" verdict cell (deploy-phase pattern, analyst
+flag #2 — the orchestrator writes that row); the channel re-pair itself, which remains
+the single highest-leverage action in the system and is the owner's (one human action
+makes three capabilities' shipped work visible at once — the analyst's bottom line,
+echoed here deliberately).
+
+CAPABILITY: Learn (declared on the DEF-349 lineage; divergence from the Self Follow-Up
+rotation label declared, with the honest note that the mechanism built is follow-up
+machinery and the scorer may credit it there).
+PREDICTED: no proposal generated by the distiller can be silently lost between
+generation and the owner's gate — announcement and coverage are the same rows, so they
+cannot disagree; when the 10-25 digest expires on 10-27 (channels still dark), the
+10-27 nightly re-announces the same 5 proposals under a fresh day key. NO score points
+claimed.
+MECHANISM: the queue's own receipts are the coverage record; the second bookkeeping is
+deleted, not synchronized.
+FALSIFIER: the 10-27 re-announce missing after the 10-25 digest expires; any pending
+proposal older than 48h carried by no live digest row while the flag is on; or a digest
+marker reaching the owner as raw JSON.
+
+**Deploy prediction:** yes — one service rewrite + one script line + tests, 3688/0, and
+the first live proof is already scheduled by production itself for 10-27 02:31.
