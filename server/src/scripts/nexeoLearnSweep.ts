@@ -52,9 +52,10 @@ async function main(): Promise<number> {
       const g = await runProposalDigest();
       process.stdout.write(
         `learn-digest: ${g.usersNotified} user(s) notified · ${g.duplicates} already-today`
-        + ` · ${g.skippedNoNew} tenant(s) nothing-new · ${g.skippedDisabled} disabled`
+        + ` · ${g.skippedAllCovered} tenant(s) all-covered · ${g.skippedDisabled} disabled`
         + (g.tenantScopeSkipped ? ` · ${g.tenantScopeSkipped} tenant-scope skipped` : '')
-        + (g.tenantsFailed ? ` · TENANTS FAILED ${g.tenantsFailed} (cursor held)` : '')
+        + (g.unshowable ? ` · ${g.unshowable} unshowable (blank title)` : '')
+        + (g.tenantsFailed ? ` · TENANTS FAILED ${g.tenantsFailed} (coverage unchanged, retries)` : '')
         + '\n',
       );
     } catch (err) {

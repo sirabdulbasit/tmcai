@@ -1,36 +1,44 @@
 // ═════════════════════════════════════════════════════════════════════════════
 // proposalDigest — DEF-349: the SURFACING half of the Learn loop.
+// DEF-350: coverage derived from the LIVE QUEUE, not a cursor.
 //
-// DEF-348's nightly distiller generates governed-memory proposals
-// (pending_approval, human-gated — live-confirmed 10-24: the first pending
-// rows in the system's history). But nothing told the owner they exist: they
-// accrue in a Settings tab he never opens, so the human gate is a click that
-// never comes and Learn still manifests nothing in practice. Builder, scorer,
-// Codex and the analyst all named the same next increment: a digest that
-// reaches him. This is it.
+// DEF-349 (D-128) built the digest and it works: the 10-25 nightly enqueued
+// `learn_proposal_digest:2:2026-10-25` carrying 5 memoryIds. But its original
+// bookkeeping was a per-tenant TIME CURSOR advanced when the tenant pass
+// completed — and Codex's review plus the live queue showed two ways the
+// cursor and the queue could DISAGREE, both losing proposals forever:
 //
-// It travels the ONE notification chokepoint — `enqueueBrainPrompt`, exactly
-// like the inbound-noise report (DEF-217/230) and the withdrawal notice: at
-// most ONE digest per user per DAY (the day is in the dedup key, so the
-// queue's own dedup refuses a second, never a timer here), quiet-hours and
-// channel discipline inherited from the dispatcher, wording owned by the
-// model (the question is a provenance-stamped marker; `answerSanitizer`
-// validates the payload and the voice pass phrases it). A second delivery
-// implementation would be the 11th `protection-with-two-implementations`.
+//   (1) day-dedup gap (Codex finding #1): a proposal first-fresh in a SECOND
+//       same-day run hits the day-keyed dedup ('duplicate'), was never in any
+//       digest, yet the cursor advanced past it;
+//   (2) expiry loss (Codex directive #4, live-scheduled): queued owner-bound
+//       prompts carry a 48h TTL. With both channels dark, the 10-25 digest
+//       expires 10-27 02:31 UNDELIVERED — and the cursor had already advanced
+//       past all 5 proposals, so nothing would ever announce them again. The
+//       stale-prompt-loss class (DEF-063/077 kin) on a new producer.
 //
-// HONEST DELIVERY SCOPE: enqueued ≠ delivered (DEF-081). With both owner
-// channels currently dark the digest sits queued like every owner-bound
-// message and flows when he re-pairs; the per-tenant cursor only advances
-// past proposals whose digest was ACCEPTED by the queue, and new proposals
-// re-trigger a fresh digest, so nothing is announced once into the void and
-// then forgotten forever.
+// The fix removes the second source of truth entirely: a proposal is COVERED
+// iff a digest row whose metadata.memoryIds contains it still exists in the
+// queue in a state that can (or did) reach the owner. No cursor, no
+// system_config write, nothing to drift. An expired/cancelled/skipped digest
+// drops its proposals back out of coverage and the next nightly re-announces
+// them under a fresh day key — Brain follows up on its own undelivered
+// announcement until it lands, regenerating from current truth rather than
+// resurrecting a stale message.
 //
-// Guardrails: tenant/user scope (per-tenant cursor, per-user digests, the
-// queue re-checks both), target grounding (counts/titles read from the
-// governed rows themselves; memoryIds in metadata are the receipt),
-// irreversible-needs-confirmation (this ANNOUNCES the gate, it never
-// activates anything), no-claim-without-a-receipt (exact counts returned and
-// printed by the nightly).
+// Delivery still travels the ONE chokepoint (`enqueueBrainPrompt`, the
+// inbound-noise-report pattern): day-keyed dedup, quiet hours, model-owned
+// wording (provenance-stamped marker; `answerSanitizer` validates and the
+// voice pass phrases). HONEST SCOPE unchanged: enqueued ≠ delivered (DEF-081);
+// with channels dark the digest queues and flows on re-pair — but now an
+// expiry costs at most one day's delay, never the proposals.
+//
+// Guardrails: tenant/user scope (tenant-scoped reads, per-user digests, the
+// queue re-checks both) · target grounding (coverage and titles read from the
+// governed rows and the queue's own receipts — the memoryIds metadata) ·
+// irreversible-needs-confirmation (announces the human gate, activates
+// nothing) · no-claim-without-a-receipt (a proposal is only ever "announced"
+// when a live queue row carries its id).
 // ═════════════════════════════════════════════════════════════════════════════
 
 import prisma from '../../db/prisma';
@@ -39,9 +47,20 @@ import { renderLearnProposalDigest } from '../notifications/proactiveMessageText
 
 const log = createLogger('proposal-digest');
 
-export const DIGEST_CURSOR_KEY = 'learn.proposal_digest.cursor';
+export const DIGEST_DEDUP_PREFIX = 'learn_proposal_digest:';
 export const DIGEST_FLAG_KEY = 'learn.proposal_digest_enabled';
 export const MAX_TITLES_PER_DIGEST = 5;
+/** Bound on memoryIds per digest row. The overflow stays UNCOVERED and rolls
+ *  into the next day's digest — bounded, never lost. */
+export const MAX_IDS_PER_DIGEST = 40;
+/**
+ * Queue states in which a digest can no longer reach the owner — its
+ * proposals fall back out of coverage and are re-announced. Everything else
+ * (queued, awaiting_reply, answered, sent, …) covers; an UNKNOWN state
+ * defaults to covering, so a future vocabulary change can cost at most a
+ * delayed re-announce, never a spam loop.
+ */
+export const DIGEST_LOST_STATES = new Set(['expired', 'cancelled', 'skipped']);
 
 interface PendingRow {
   id: string;
@@ -55,41 +74,34 @@ export interface ProposalDigestDeps {
   enqueue?: (input: any) => Promise<{ status: string }>;
   /** Injectable for tests; defaults to behaviorConfig.getBehaviorValue. */
   getBehavior?: (key: string, scope: { clientNumber: string }) => Promise<number | string>;
-  /** Injectable for tests; default to configService get/setConfig. */
-  getConfig?: (clientNumber: string, key: string) => Promise<string | null>;
-  setConfig?: (clientNumber: string, key: string, value: string) => Promise<void>;
 }
 
 export interface ProposalDigestResult {
   tenants: number;
   usersNotified: number;
-  duplicates: number;      // already digested today — the queue's day-dedup refused
-  skippedDisabled: number; // tenant has the flag off
-  skippedNoNew: number;    // pending exists but nothing new since the cursor
-  tenantScopeSkipped: number; // userId-null proposals have no single recipient; counted, not sent
-  tenantsFailed: number;   // cursor held, retried next run
+  duplicates: number;        // today's digest already queued — the day-dedup refused; stays uncovered, tomorrow carries it
+  skippedDisabled: number;   // tenant has the flag off
+  skippedAllCovered: number; // every pending proposal is carried by a live digest row
+  tenantScopeSkipped: number;// userId-null proposals have no single recipient; counted, not sent
+  unshowable: number;        // blank-title proposals: excluded, never claimed as announced (Codex finding #2)
+  tenantsFailed: number;
 }
 
 /**
- * One digest pass: for every tenant with pending proposals NEWER than its
- * cursor, enqueue one digest per affected user through the normal dispatcher.
- * Fail-closed per tenant, like the distiller: the cursor advances only when
- * the tenant's whole pass succeeds.
+ * One digest pass: for every tenant, announce every pending proposal that no
+ * LIVE digest row covers. Idempotent against the queue itself — re-running
+ * changes nothing unless a digest died or new proposals exist.
  */
 export async function runProposalDigest(deps: ProposalDigestDeps = {}): Promise<ProposalDigestResult> {
   const enqueue = deps.enqueue
     ?? (await import('../brainPrompts/brainPromptQueueService')).enqueueBrainPrompt;
   const getBehavior = deps.getBehavior
     ?? (await import('../behaviorConfig')).getBehaviorValue;
-  const cfg = deps.getConfig ?? (await import('../configService')).getConfig;
-  const setCfg = deps.setConfig ?? (async (c: string, k: string, v: string) => {
-    const { setConfig } = await import('../configService');
-    await setConfig(c, k, v, false, 'DEF-349 proposal-digest watermark');
-  });
 
   const out: ProposalDigestResult = {
     tenants: 0, usersNotified: 0, duplicates: 0,
-    skippedDisabled: 0, skippedNoNew: 0, tenantScopeSkipped: 0, tenantsFailed: 0,
+    skippedDisabled: 0, skippedAllCovered: 0,
+    tenantScopeSkipped: 0, unshowable: 0, tenantsFailed: 0,
   };
 
   const tenants = await prisma.governedBrainMemory.groupBy({
@@ -104,16 +116,41 @@ export async function runProposalDigest(deps: ProposalDigestDeps = {}): Promise<
       const enabled = Number(await getBehavior(DIGEST_FLAG_KEY, { clientNumber }).catch(() => 1));
       if (enabled !== 1) { out.skippedDisabled += 1; continue; }
 
-      const cursorRaw = await cfg(clientNumber, DIGEST_CURSOR_KEY);
-      const cursor = cursorRaw ? new Date(cursorRaw) : new Date(0);
-
       const pending: PendingRow[] = await prisma.governedBrainMemory.findMany({
         where: { clientNumber, status: 'pending_approval' },
         orderBy: { createdAt: 'asc' },
         select: { id: true, userId: true, title: true, createdAt: true },
       });
-      const fresh = pending.filter((p) => p.createdAt > cursor);
-      if (fresh.length === 0) { out.skippedNoNew += 1; continue; }
+      if (pending.length === 0) continue;
+
+      // DEF-350 — coverage from the queue's own receipts. A proposal is
+      // announced iff a digest row in a non-lost state carries its id.
+      const digests = await prisma.brainPromptQueue.findMany({
+        where: { clientNumber, dedupKey: { startsWith: DIGEST_DEDUP_PREFIX } },
+        select: { state: true, metadata: true },
+      });
+      const covered = new Set<string>();
+      for (const d of digests) {
+        if (DIGEST_LOST_STATES.has(d.state)) continue;
+        const ids = (d.metadata as Record<string, unknown> | null)?.memoryIds;
+        if (Array.isArray(ids)) {
+          for (const id of ids) if (typeof id === 'string') covered.add(id);
+        }
+      }
+
+      const uncovered = pending.filter((p) => !covered.has(p.id));
+      // Codex finding #2 — a blank-title proposal cannot render (the marker
+      // validator rejects an empty-titles payload), so it is excluded and
+      // COUNTED rather than enqueued-then-eaten or claimed as announced.
+      const fresh: PendingRow[] = [];
+      for (const p of uncovered) {
+        if (p.title && p.title.trim().length > 0) fresh.push(p);
+        else out.unshowable += 1;
+      }
+      if (fresh.length === 0) {
+        if (uncovered.length === 0) out.skippedAllCovered += 1;
+        continue;
+      }
 
       const freshByUser = new Map<number, PendingRow[]>();
       for (const p of fresh) {
@@ -124,7 +161,10 @@ export async function runProposalDigest(deps: ProposalDigestDeps = {}): Promise<
       }
 
       const day = new Date().toISOString().slice(0, 10);
-      for (const [userId, newOnes] of freshByUser) {
+      for (const [userId, newOnesAll] of freshByUser) {
+        // Bounded per digest; the remainder stays uncovered and tomorrow's
+        // digest carries it — bounded delay, never loss.
+        const newOnes = newOnesAll.slice(0, MAX_IDS_PER_DIGEST);
         const allForUser = pending.filter((p) => p.userId === userId);
         const titles = [...newOnes]
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
@@ -141,26 +181,26 @@ export async function runProposalDigest(deps: ProposalDigestDeps = {}): Promise<
           criticality: 'routine',
           expectsReply: false, // a digest is not a question (DEF-063)
           provenance: 'system_marker',
-          dedupKey: `learn_proposal_digest:${userId}:${day}`,
+          dedupKey: `${DIGEST_DEDUP_PREFIX}${userId}:${day}`,
           metadata: {
             source: 'learn_proposal_digest',
             pendingTotal: allForUser.length,
             newSinceLast: newOnes.length,
-            memoryIds: newOnes.slice(0, 20).map((p) => p.id), // the receipt
+            // The COMPLETE id list — this metadata IS the coverage record, so
+            // it is never truncated below what the digest claims to announce.
+            memoryIds: newOnes.map((p) => p.id),
           },
         });
+        // 'duplicate' = today's digest already exists and predates these
+        // proposals. Nothing marks them covered (there is no cursor), so
+        // tomorrow's fresh day key carries them — Codex finding #1 closed by
+        // construction: only an actual queue row can cover a proposal.
         if (res.status === 'duplicate') out.duplicates += 1;
         else out.usersNotified += 1;
       }
-
-      // The whole tenant pass succeeded (every digest accepted or day-deduped)
-      // — advance the watermark past what was announced. Any throw above lands
-      // in the catch and the same proposals re-trigger next run.
-      const maxCreatedAt = fresh[fresh.length - 1].createdAt;
-      await setCfg(clientNumber, DIGEST_CURSOR_KEY, maxCreatedAt.toISOString());
     } catch (e: any) {
       out.tenantsFailed += 1;
-      log.warn('tenant digest failed — cursor NOT advanced, will retry next run', {
+      log.warn('tenant digest failed — coverage unchanged, will retry next run', {
         clientNumber, error: String(e?.message ?? e).slice(0, 200),
       });
     }
