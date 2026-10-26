@@ -14,12 +14,34 @@ export interface PreparedWebjsVersionCache extends WebjsVersionPin {
   webVersionCache: { type: 'local'; path: string; strict: true };
 }
 
+// DEF-353 — rotated 2026-10-26 after the previous pin (2.3000.1043346688,
+// expired 2026-09-17) blocked every QR pairing. QR emission with
+// whatsapp-web.js 1.34.7 proven on clean scratch profiles: 3/3 headful on the
+// host Xvfb + 1/1 headless. `expiresAt` is WhatsApp's own build expiry from
+// wa-version — the deadline the pin-expiry watch announces in advance.
 const DEFAULT_PIN: WebjsVersionPin = {
-  version: '2.3000.1043346688-alpha',
-  sourceUrl: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/d71af1f1094ace8354e0a0f0f5e9c32b67988f96/html/2.3000.1043346688-alpha.html',
-  sha256: '80a55358cdd081b3e58eb4bf62434b9f8bd9802f569e10c53e48823cd8528fcf',
-  expiresAt: '2026-09-17T07:27:10.198Z',
+  version: '2.3000.1051682431-alpha',
+  sourceUrl: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/2f7b8142e7fb95ff1c94e616d86142abb56fc9d2/html/2.3000.1051682431-alpha.html',
+  sha256: '86439c7c0052cf21d4ecc3b40ca2d69c1275a93ef798e022b94651214b4fbedc',
+  expiresAt: '2026-12-26T01:15:39.201Z',
 };
+
+/** DEF-353 — how far the pinned build is from its expiry. */
+export const WEBJS_PIN_WARN_MS = 14 * 24 * 60 * 60 * 1000;
+export const WEBJS_PIN_URGENT_MS = 3 * 24 * 60 * 60 * 1000;
+
+export type WebjsPinExpiryState = 'ok' | 'expiring' | 'urgent' | 'expired';
+
+export function assessWebjsPinExpiry(
+  pin: WebjsVersionPin,
+  now: Date = new Date(),
+): { state: WebjsPinExpiryState; msLeft: number } {
+  const msLeft = Date.parse(pin.expiresAt) - now.getTime();
+  if (msLeft <= 0) return { state: 'expired', msLeft };
+  if (msLeft <= WEBJS_PIN_URGENT_MS) return { state: 'urgent', msLeft };
+  if (msLeft <= WEBJS_PIN_WARN_MS) return { state: 'expiring', msLeft };
+  return { state: 'ok', msLeft };
+}
 const VERSION_RE = /^\d+(?:\.\d+){2,3}(?:-[a-z0-9.-]+)?$/i;
 const SHA256_RE = /^[a-f0-9]{64}$/i;
 const MAX_HTML_BYTES = 2 * 1024 * 1024;

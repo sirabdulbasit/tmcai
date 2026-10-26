@@ -378,6 +378,11 @@ const server = app.listen(env.port, async () => {
       if (sweptFirings.deletedRows > 0) {
         console.log(`[gateFirings] deleted ${sweptFirings.deletedRows} firings older than ${sweptFirings.cutoff}`);
       }
+      // DEF-353 — the pinned WhatsApp Web build expires on a known date; that
+      // date becomes a finding the notify pass delivers, not a failed pairing.
+      const { runWebjsPinExpiryWatch } = await import('./services/selfheal/webjsPinExpiryReporter');
+      await runWebjsPinExpiryWatch();
+
       const r = await runSelfHealPass();
       const healed = Object.entries(r).flatMap(([id, os]) => os.filter((o) => o === 'healed').map(() => id));
       if (healed.length > 0) console.log(`[selfHeal] healed: ${healed.join(', ')}`);

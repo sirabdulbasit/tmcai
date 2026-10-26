@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  assessWebjsPinExpiry,
   prepareVerifiedWebjsVersionCache,
   resolveWebjsVersionPin,
 } from '../src/services/whatsapp/webjsVersionCache';
@@ -42,11 +43,24 @@ afterEach(() => {
 describe('integrity-checked WhatsApp Web version cache', () => {
   it('defaults to the immutable clean-profile QR-verified artifact', () => {
     expect(resolveWebjsVersionPin({} as NodeJS.ProcessEnv)).toEqual({
-      version: '2.3000.1043346688-alpha',
-      sourceUrl: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/d71af1f1094ace8354e0a0f0f5e9c32b67988f96/html/2.3000.1043346688-alpha.html',
-      sha256: '80a55358cdd081b3e58eb4bf62434b9f8bd9802f569e10c53e48823cd8528fcf',
-      expiresAt: '2026-09-17T07:27:10.198Z',
+      version: '2.3000.1051682431-alpha',
+      sourceUrl: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/2f7b8142e7fb95ff1c94e616d86142abb56fc9d2/html/2.3000.1051682431-alpha.html',
+      sha256: '86439c7c0052cf21d4ecc3b40ca2d69c1275a93ef798e022b94651214b4fbedc',
+      expiresAt: '2026-12-26T01:15:39.201Z',
     });
+  });
+
+  it('DEF-353: grades the pin against its expiry (ok → expiring 14d → urgent 3d → expired)', () => {
+    const pin = resolveWebjsVersionPin({} as NodeJS.ProcessEnv);
+    const at = (iso: string) => assessWebjsPinExpiry(pin, new Date(iso)).state;
+    expect(at('2026-12-01T00:00:00.000Z')).toBe('ok');
+    expect(at('2026-12-13T00:00:00.000Z')).toBe('expiring');
+    expect(at('2026-12-24T00:00:00.000Z')).toBe('urgent');
+    expect(at('2026-12-26T01:15:39.201Z')).toBe('expired');
+    // The incident itself: the July pin, judged on the day of CL-059.
+    expect(assessWebjsPinExpiry(
+      { ...pin, expiresAt: '2026-09-17T07:27:10.198Z' }, new Date('2026-10-26T04:25:43Z'),
+    ).state).toBe('expired');
   });
 
   it('requires an atomic version, URL, and digest rotation', () => {
