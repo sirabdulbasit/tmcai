@@ -132,6 +132,62 @@ optional KPI key / period range; latest readings by default). The model decides 
 — no keyword regex. Reaches the reasoning compose path; the legacy composer is not extended (one
 implementation, not two).
 
+## 2b. Stage 1b — API document → REST connection; remarks, filters, instructions; KPI or Context (DEF-362)
+
+Owner, 2026-10-26: *"attach any API document which can be read through AI to understand and build
+connection, where I can ask for any filter or can give remarks … Connect: test connection and see
+the data (1 row only), and give instruction how to map … Review & Mapping: analyze the current
+structure as per Basic and Connect including all remarks — how this data can be mapped, or can
+become Context."*
+
+**Basics**
+- Source kind: Google Sheet (Stage 1) **or API** (new).
+- **API document** (API only): upload PDF / DOCX / TXT / MD / JSON (OpenAPI) or paste text, ≤ 5 MB.
+  Text is extracted (`pdf-parse`, `mammoth`), **credential-looking strings redacted before it is
+  stored or sent to the model**, stored on the integration (`api_doc_text`, `api_doc_name`).
+- **Remarks for the AI** (`admin_brief`, existing) and **Filters** in plain words
+  (`filter_instructions`, e.g. "only active customers, 2025 onwards").
+
+**AI reads the document** (design time, `llmRouter`, `purpose: 'integration_doc_read'`) and drafts
+the connection: base URL, auth scheme (NONE / BEARER / API_KEY header|query / BASIC), endpoint
+path + method, records path in the JSON, pagination (none / page / offset / next-URL), the field
+that identifies a record, a declared-total path if any — **plus the list of what the document did
+not say**. Every value is editable. The model never chooses or stores a secret: the admin types it
+into a secret field; it is encrypted (AES-256-GCM, key HKDF-derived from `ENCRYPTION_KEY` via the
+strict `decodeMEK`, own `v1:` prefix — not `configService`, see DEF-356) and never returned.
+
+**Connect**
+- **Test the connection** = one real request through the guarded fetcher; shows **exactly one
+  record** (flattened field → value) plus "N records on this page (declared total M)".
+  A 200 with no records is a failure. A secret that fails is not stored over one that works.
+- **"How should this data be mapped?"** — instruction box (`connect_instructions`) under the row.
+- Editing any connection field clears the test (fingerprint, as Stage 1).
+
+**Review & Mapping** — the proposer gets, in order: the AI's reading of the document, remarks,
+filter words, connect instructions, field inventory over the read records (fill, type, samples),
+per-field notes, the KPI catalogue, approved rows kept, rejected pairs settled. For every field it
+proposes one of:
+- **KPI** (Stage 1 shapes), or
+- **Context** — Brain knowledge: `per_record` (title field + body fields → one tenant-wide
+  knowledge page per record, ≤ `integrations.max_context_pages`, default 500) or `table` (chosen
+  columns → one page for the whole set), or
+- **Not used**, with the reason.
+It also turns the filter words into a **proposed structured filter** (field / op / value rows) that
+the admin approves like any other row; nothing filters until approved. Every row says which remark
+or instruction it followed.
+
+**Context writer** — `org_doc` wiki pages, `scope='tenant'`, through ONE helper extracted from
+`folderScribeService` (`upsertTenantOrgDoc`) that both the folder scribe and integrations call — not
+a second knowledge writer. Page title `"<integration name> · <record title>"`; key by record id
+in metadata; unchanged content (hash) is skipped; changed pages re-embedded; a blank never
+overwrites a section; records that disappear are marked `stale`, never deleted.
+
+**REST fetch guard** (`sources/integrationFetch.ts`): https only; the host is resolved once and
+**private, loopback, link-local and metadata addresses are refused**, and the connection is pinned
+to the resolved address (no DNS rebinding); same-origin for every page and redirect; ≤ 3 redirects;
+size / time / page caps from behaviorConfig; the secret is attached only to the configured origin.
+Qlik and Odoo stay Stage 4.
+
 ## 3. Rules carried from vm §8/§9 (each pinned by a test that fails when weakened)
 
 Blank never overwrites · identity/account fields unwritable · proposable ≠ writable (approval is
