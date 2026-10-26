@@ -33,7 +33,7 @@ import {
 const AUTH_LABELS = { NONE: 'None', BEARER: 'Bearer token', API_KEY: 'API key', BASIC: 'Username and password' };
 const PAGE_LABELS = { none: 'One page only', page: 'Page numbers', offset: 'Offset and limit', next_url: 'Next-page link in the answer' };
 
-export default function StepConnect({ integ, setInteg, setMsg, signal, setWorking, onProposed }) {
+export default function StepConnect({ integ, setInteg, setMsg, signal, setWorking, onProposed, onBackToBasics }) {
   const isApi = integ?.sourceKind === 'api';
   const savedLink = integ?.sourceConfig?.link ?? '';
   const savedTab = integ?.sourceConfig?.tabLabel ?? '';
@@ -118,6 +118,24 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
   return (
     <div>
       <h3 style={s.h3}>Connect</h3>
+      {/* DEF-362 (owner 10-26, "it stuck here"): Basics' "Save and continue" skips past the
+          API document panel, so an admin landed here with an empty form and no idea the AI
+          could fill it. Say so where they are, with the way back. */}
+      {isApi && !integ?.apiDocReading && !integ?.apiConfig?.baseUrl && (
+        <div style={{ ...s.card, borderColor: 'var(--accent, #cc6b4a)', marginBottom: 14 }}>
+          <div style={{ fontWeight: 600, color: 'var(--text)', fontSize: 'var(--fs-sm)' }}>
+            {integ?.apiDocName ? 'The API document is attached but not read yet.' : 'No API document has been attached yet.'}
+          </div>
+          <p style={s.hint}>
+            Go back to Basics, {integ?.apiDocName ? '' : 'attach the API document under “API document”, then '}press <strong>Read with AI</strong> — it fills in this form for you. Or fill the fields below by hand.
+          </p>
+          {onBackToBasics && (
+            <button style={btn('primary', { small: true })} onClick={onBackToBasics}>
+              {integ?.apiDocName ? 'Back to Basics to read it' : 'Back to Basics to attach it'}
+            </button>
+          )}
+        </div>
+      )}
       {isApi ? (
         <ApiConnectionForm
           integ={integ}

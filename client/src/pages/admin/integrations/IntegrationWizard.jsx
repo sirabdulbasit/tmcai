@@ -138,7 +138,7 @@ export default function IntegrationWizard({ integrationId, initialStep = 1, setM
       ) : (
         <div style={s.card}>
           {step === 1 && <StepBasics {...stepProps} />}
-          {step === 2 && integ && <StepConnect {...stepProps} onProposed={(vid) => { setVersionId(vid); go(3); }} />}
+          {step === 2 && integ && <StepConnect {...stepProps} onBackToBasics={() => go(1)} onProposed={(vid) => { setVersionId(vid); go(3); }} />}
           {step === 3 && integ && <StepReview {...stepProps} />}
           {step === 4 && integ && <StepSchedule {...stepProps} />}
           {step === 5 && integ && <StepTestTurnOn {...stepProps} onDone={onClose} />}
