@@ -44,6 +44,7 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { renderLearnProposalDigest } from '../notifications/proactiveMessageText';
+import { PROMPT_TERMINAL_LOST_STATES } from '../brainPrompts/brainPromptQueueService';
 
 const log = createLogger('proposal-digest');
 
@@ -56,11 +57,15 @@ export const MAX_IDS_PER_DIGEST = 40;
 /**
  * Queue states in which a digest can no longer reach the owner — its
  * proposals fall back out of coverage and are re-announced. Everything else
- * (queued, awaiting_reply, answered, sent, …) covers; an UNKNOWN state
- * defaults to covering, so a future vocabulary change can cost at most a
- * delayed re-announce, never a spam loop.
+ * covers; an UNKNOWN state defaults to covering, so a vocabulary change can
+ * cost at most a delayed re-announce, never a spam loop.
+ *
+ * DEF-351 (Codex DEF-350-review risk #2): this is an ALIAS of the queue's own
+ * canonical classification, not a second definition — the module that writes
+ * the states owns the list, and the DEF-351 tripwire test fails the matrix if
+ * any state literal in src is left unclassified.
  */
-export const DIGEST_LOST_STATES = new Set(['expired', 'cancelled', 'skipped']);
+export const DIGEST_LOST_STATES = PROMPT_TERMINAL_LOST_STATES;
 
 interface PendingRow {
   id: string;

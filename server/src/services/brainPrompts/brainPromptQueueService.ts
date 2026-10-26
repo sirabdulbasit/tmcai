@@ -141,6 +141,18 @@ const DEFAULT_TTL_MS = 48 * 60 * 60 * 1000;
 // every five minutes during a critical incident.
 const VOICE_CALL_COOLDOWN_MS = 30 * 60 * 1000;
 
+/**
+ * DEF-351 — the ONE classification of every state this queue's rows carry,
+ * owned by the module that writes them. DEF-350 derives Learn-digest coverage
+ * from these rows, so an unclassified state would silently decide whether
+ * learned proposals are ever re-announced (its unknown-defaults-to-covering
+ * rule turns a missing entry into silent LOSS, the hard-to-see failure).
+ * Any NEW state literal written anywhere in src MUST be added to exactly one
+ * of these sets — the DEF-351 tripwire test fails the matrix otherwise.
+ */
+export const PROMPT_TERMINAL_LOST_STATES = new Set(['expired', 'cancelled', 'skipped']);
+export const PROMPT_LIVE_OR_DELIVERED_STATES = new Set(['queued', 'awaiting_reply', 'answered']);
+
 export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueResult> {
   const criticality: Criticality = input.criticality ?? 'routine';
   // Carried in metadata rather than a column: additive, no migration, and
@@ -843,25 +855,50 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
     }
   } catch { /* stored text stands */ }
 
-  const r = await brainContactsUser({
-    userId,
-    clientNumber,
-    kind: 'brain_prompt',
-    provenance: (queueMeta.provenance as OwnerMessageProvenance | undefined),
-    summary: clip(questionText, 120),
-    body: questionText,
-    urgency,
-    channel,
-    // We bypass brainOutboundService dedup here — the queue itself is the
-    // dedup mechanism. Passing null is sparingly authorised.
-    dedupKey: null,
-    metadata: {
-      ...queueMeta,
-      promptId: String(promoted.id),
-      openItemId: next.openItemId,
-      criticality: next.criticality,
-    },
-  });
+  let r: Awaited<ReturnType<typeof brainContactsUser>>;
+  try {
+    r = await brainContactsUser({
+      userId,
+      clientNumber,
+      kind: 'brain_prompt',
+      provenance: (queueMeta.provenance as OwnerMessageProvenance | undefined),
+      summary: clip(questionText, 120),
+      body: questionText,
+      urgency,
+      channel,
+      // We bypass brainOutboundService dedup here — the queue itself is the
+      // dedup mechanism. Passing null is sparingly authorised.
+      dedupKey: null,
+      metadata: {
+        ...queueMeta,
+        promptId: String(promoted.id),
+        openItemId: next.openItemId,
+        criticality: next.criticality,
+      },
+    });
+  } catch (sendErr: any) {
+    // DEF-351 (Codex DEF-350-review risk #1) — the optimistic promote above is
+    // honest only if a send that THROWS is rolled back exactly like a send
+    // that returns {sent:false}. Without this, a transient throw stranded the
+    // row in its promoted state: `answered` (a notice) never expires — the
+    // stale sweep targets only 'queued' — and DEF-350's coverage reads it as
+    // delivered, so a learn digest so stranded would mark its proposals
+    // covered-but-undelivered FOREVER; `awaiting_reply` (a question) held the
+    // conversational lock until the stale-lock release. No claim without a
+    // receipt: a sent-shaped state may not outlive a send that never happened.
+    await prisma.brainPromptQueue.update({
+      where: { id: promoted.id },
+      data: {
+        state: 'queued',
+        sentAt: null,
+        ...(promptExpectsReply ? {} : { answeredAt: null }),
+      },
+    }).catch(() => undefined); // the rethrow must carry the ORIGINAL error
+    log.warn('send threw — prompt rolled back to queued', {
+      promptId: String(promoted.id), error: String(sendErr?.message ?? sendErr).slice(0, 200),
+    });
+    throw sendErr;
+  }
 
   // ── DEF-063 — a NOTICE must not hold the conversational lock ──────
   //
