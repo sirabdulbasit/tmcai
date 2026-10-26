@@ -363,7 +363,16 @@ export async function ensureEntityForSender(input: {
     return { id: existing.id, created: false };
   }
 
-  await prisma.$executeRawUnsafe(
+  // DEF-352 `wiki-page-duplicate-insert` — the conflict that actually fires in
+  // production is the COMPOSITE unique (wiki_pages_user_title_idx: client_number,
+  // user_id, page_type, title), not the id PK: a same-titled person page created
+  // under a different id (another producer, or a content-match this lookup
+  // missed) made this INSERT throw 23505 ~2/day instead of reusing the page.
+  // The upsert reuses the existing row — RETURNING tells us which row won, so
+  // the caller links to the REAL page and `created` stays honest. An id-PK race
+  // (same deterministic id, different title) can still throw; it degrades to
+  // the per-sender error counter and the next sweep finds the row by id.
+  const upserted = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
     `INSERT INTO wiki_pages
        (id, client_number, user_id, page_type, title, storage,
         body_markdown, status, confidence, metadata,
@@ -371,7 +380,9 @@ export async function ensureEntityForSender(input: {
      VALUES ($1, $2, $3, 'entity_person', $4, 'postgres',
              $5, 'active', 0.7, $6::jsonb,
              'entity_sweep', NOW(), NOW())
-     ON CONFLICT (id) DO NOTHING`,
+     ON CONFLICT (client_number, user_id, page_type, title)
+     DO UPDATE SET last_updated_at = NOW()
+     RETURNING id`,
     id, input.clientNumber, ownerUserId, title,
     seedBodyForNewEntity(title, email, phone),
     JSON.stringify({
@@ -405,7 +416,8 @@ export async function ensureEntityForSender(input: {
       contactNamesUpdatedAt:       input.contactNames ? new Date().toISOString() : null,
     }),
   );
-  return { id, created: true };
+  const actualId = upserted[0]?.id ?? id;
+  return { id: actualId, created: actualId === id };
 }
 
 /**
