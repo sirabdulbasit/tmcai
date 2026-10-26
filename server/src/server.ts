@@ -196,6 +196,7 @@ const server = app.listen(env.port, async () => {
       { name: 'feed_publish_retry', cadenceMs: 2 * 60_000, policy: 'run_once_if_missed' },
       { name: 'connector_health_sweep', cadenceMs: 5 * 60_000, policy: 'run_once_if_missed' },
       { name: 'kpi_snapshot_morning_brief', cadenceMs: 24 * 60 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'integration_sync_dispatcher', cadenceMs: 60_000, policy: 'run_once_if_missed' },
     ])).catch((e) => console.warn('[jobRunner] missed-run scan failed:', e?.message));
   }, 30_000);
   // Central cleanup governor — the only scheduler for autonomous data
@@ -794,6 +795,24 @@ const server = app.listen(env.port, async () => {
       }
     });
   }, 2 * 60 * 1000);
+
+  // DEF-354 — Admin → Integrations. A run interrupted by a restart can never
+  // finish, and its RUNNING row is the per-integration mutex, so it is
+  // released at boot (single-process server). The dispatcher then claims due
+  // slots each minute; turning an integration on never runs anything itself.
+  import('./services/integrations/engine/runEngine')
+    .then(({ sweepInterruptedRuns }) => sweepInterruptedRuns())
+    .then((n) => { if (n > 0) console.log(`[integrations] released ${n} run(s) interrupted by restart`); })
+    .catch((e) => console.warn('[integrations] interrupted-run sweep failed:', e?.message));
+  setInterval(() => {
+    protectedJob('integration_sync_dispatcher', 'maintenance', async () => {
+      const { dispatchDueIntegrations } = await import('./services/integrations/schedule/dispatcher');
+      const r = await dispatchDueIntegrations();
+      if (r.claimed > 0 || r.started > 0) {
+        console.log(`[integrations] dispatcher claimed=${r.claimed} started=${r.started} skipped=${r.skipped}`);
+      }
+    });
+  }, 60 * 1000);
 
   // ── Queue/archive durability ──────────────────────────────────
   // Scribe backfill is a recovery/copy concern, so it retains its six-hour

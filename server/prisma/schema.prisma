@@ -1169,6 +1169,202 @@ model UserConnector {
   @@map("user_connectors")
 }
 
+// ─── Integrations (DEF-354, Stage 1: Google Sheet → KPI numbers) ──
+//
+// Admin → Integrations. Spec: server/docs/INTEGRATIONS_DESIGN.md §2.1; migration
+// 20261026_integrations_core (hand-written, idempotent). Every table is tenant-owned
+// (client_number, TENANT_SCOPED_MODELS) and every timestamp is TIMESTAMPTZ (vm §5: a
+// schedule slot compared against a zone-less timestamp drifts by the server's offset).
+// The DB carries the invariants code must not be trusted with alone: one APPROVED
+// version per integration, one RUNNING run per integration (the run mutex), and
+// ACTIVE ⇒ activated_at + approved_version_id (enabling is never half-done).
+
+model IntegrationSync {
+  id                    String    @id @default(cuid())
+  clientNumber          String    @map("client_number") @db.VarChar(20)
+  name                  String    @db.VarChar(200)
+  purpose               String?   @db.Text
+  adminBrief            String?   @map("admin_brief") @db.Text
+  sourceKind            String    @default("gsheet") @map("source_kind") @db.VarChar(20) // gsheet (Stage 1)
+  sourceConfig          Json      @default("{}") @map("source_config") // GsheetSourceConfig: {sheetId, gid, tabLabel?, link}
+  status                String    @default("DRAFT") @db.VarChar(10) // DRAFT | ACTIVE | PAUSED
+  frequency             String    @default("weekly") @db.VarChar(10) // daily | weekly | monthly | once
+  runTime               String    @default("02:00") @map("run_time") @db.VarChar(5) // HH:MM, local to `timezone`
+  dayOfWeek             Int?      @map("day_of_week") // 0=Sun..6
+  dayOfMonth            Int?      @map("day_of_month") // 1..31 | -1 = last day
+  timezone              String    @default("Asia/Karachi") @db.VarChar(64) // creator's zone (resolveUserTimezone)
+  changeCapPct          Int       @default(25) @map("change_cap_pct")
+  blankPolicy           String    @default("abnormal") @map("blank_policy") @db.VarChar(10) // normal | abnormal — a blank NEVER overwrites either way
+  connectionTestedAt    DateTime? @map("connection_tested_at") @db.Timestamptz(6)
+  connectionFingerprint String?   @map("connection_fingerprint") @db.VarChar(64) // sha256 of the route config at the last OK test
+  activatedAt           DateTime? @map("activated_at") @db.Timestamptz(6)
+  approvedVersionId     String?   @unique(map: "integration_syncs_approved_version_id_key") @map("approved_version_id") // THE approval pointer
+  lastSlotAt            DateTime? @map("last_slot_at") @db.Timestamptz(6) // last schedule slot claimed by the dispatcher
+  nextRunAt             DateTime? @map("next_run_at") @db.Timestamptz(6)
+  lastRunAt             DateTime? @map("last_run_at") @db.Timestamptz(6)
+  lastRunStatus         String?   @map("last_run_status") @db.VarChar(10)
+  createdBy             Int       @map("created_by")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  approvedVersion IntegrationMappingVersion?  @relation("IntegrationApprovedVersion", fields: [approvedVersionId], references: [id], onDelete: SetNull)
+  versions        IntegrationMappingVersion[] @relation("IntegrationVersions")
+  suggestions     IntegrationSuggestion[]
+  runs            IntegrationRun[]
+  kpiDefinitions  KpiDefinition[]
+
+  @@unique([clientNumber, name], map: "integration_syncs_tenant_name_key")
+  @@index([clientNumber, status], map: "integration_syncs_tenant_status_idx")
+  @@map("integration_syncs")
+}
+
+model IntegrationMappingVersion {
+  id            String    @id @default(cuid())
+  clientNumber  String    @map("client_number") @db.VarChar(20)
+  integrationId String    @map("integration_id")
+  version       Int
+  spec          Json      @default("{}") // {filter, coverage, provider, notices}
+  status        String    @default("DRAFT") @db.VarChar(12) // DRAFT | APPROVED | SUPERSEDED
+  adminPrompt   String?   @map("admin_prompt") @db.Text
+  aiSummary     String?   @map("ai_summary") @db.Text
+  createdBy     Int?      @map("created_by")
+  approvedBy    Int?      @map("approved_by")
+  approvedAt    DateTime? @map("approved_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  integration IntegrationSync         @relation("IntegrationVersions", fields: [integrationId], references: [id], onDelete: Cascade)
+  approvedFor IntegrationSync?        @relation("IntegrationApprovedVersion")
+  suggestions IntegrationSuggestion[]
+
+  @@unique([integrationId, version], map: "integration_mapping_versions_integ_version_key")
+  @@index([clientNumber, integrationId], map: "integration_mapping_versions_tenant_integ_idx")
+  @@map("integration_mapping_versions")
+}
+
+/// One row per FIELD decision, never per record (vm §9 "field-wise approval").
+model IntegrationSuggestion {
+  id               String    @id @default(cuid())
+  clientNumber     String    @map("client_number") @db.VarChar(20)
+  integrationId    String    @map("integration_id")
+  mappingVersionId String    @map("mapping_version_id")
+  targetKind       String    @default("kpi") @map("target_kind") @db.VarChar(12) // kpi (Stage 1)
+  sourceField      String    @map("source_field") @db.VarChar(255)
+  targetKey        String    @map("target_key") @db.VarChar(200) // 'kpi:<key>' | 'kpi:new:<key>'
+  transform        Json? // KpiTransform
+  coverage         Json? // FieldCoverage
+  samples          Json? // ≤3 real values
+  newKpi           Json?     @map("new_kpi") // {kpiKey, label, unit?} when the proposer names a new KPI
+  status           String    @default("PENDING") @db.VarChar(10) // PENDING | APPROVED | REJECTED | SET_ASIDE | BLANK
+  reason           String?   @db.Text // blast radius / set-aside arithmetic
+  carriedFromId    String?   @map("carried_from_id")
+  decidedBy        Int?      @map("decided_by")
+  decidedAt        DateTime? @map("decided_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  integration    IntegrationSync           @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  mappingVersion IntegrationMappingVersion @relation(fields: [mappingVersionId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber, mappingVersionId, status], map: "integration_suggestions_tenant_version_idx")
+  @@index([clientNumber, integrationId, status], map: "integration_suggestions_tenant_integ_idx")
+  @@map("integration_suggestions")
+}
+
+model IntegrationRun {
+  id                    String    @id @default(cuid()) // == the run job id
+  clientNumber          String    @map("client_number") @db.VarChar(20)
+  integrationId         String    @map("integration_id")
+  mappingVersionId      String?   @map("mapping_version_id") // the version this run executed (turn-on binds to it)
+  connectionFingerprint String?   @map("connection_fingerprint") @db.VarChar(64) // the connection this run read
+  dryRun                Boolean   @default(false) @map("dry_run")
+  trigger               String    @db.VarChar(10) // manual | scheduled
+  triggeredBy           String    @map("triggered_by") @db.VarChar(255)
+  status                String    @default("RUNNING") @db.VarChar(10) // RUNNING | SUCCESS | PARTIAL | FAILED | ABORTED
+  recordsRead           Int       @default(0) @map("records_read")
+  recordsFiltered       Int       @default(0) @map("records_filtered_out")
+  subjectsAffected      Int       @default(0) @map("subjects_affected")
+  writes                Int       @default(0)
+  skipped               Int       @default(0)
+  setAside              Int       @default(0) @map("set_aside")
+  blanks                Int       @default(0)
+  changePercent         Decimal?  @map("change_percent") @db.Decimal(6, 2)
+  result                Json? // EngineResult
+  errorMessage          String?   @map("error_message") @db.Text
+  startedAt             DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt            DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  integration IntegrationSync        @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  changes     IntegrationRunChange[]
+
+  @@index([clientNumber, integrationId, dryRun, startedAt(sort: Desc)], map: "integration_runs_tenant_history_idx")
+  @@map("integration_runs")
+}
+
+/// OUTCOME rows: what a live run wrote (same transaction as the write) or what a dry run
+/// would write. cuid id, not BigInt — a BigInt cannot be JSON-serialised (critique #16).
+model IntegrationRunChange {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  integrationId String   @map("integration_id")
+  runId         String   @map("run_id")
+  targetKind    String   @default("kpi") @map("target_kind") @db.VarChar(12)
+  op            String   @db.VarChar(8) // create | update
+  subjectKey    String   @map("subject_key") @db.VarChar(255) // kpiKey|periodStart|dimensionKey
+  subjectLabel  String?  @map("subject_label") @db.VarChar(255)
+  targetKey     String   @map("target_key") @db.VarChar(200)
+  sourceKey     String?  @map("source_key") @db.VarChar(255)
+  beforeValue   String?  @map("before_value") @db.Text
+  afterValue    String?  @map("after_value") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  run IntegrationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber, runId, targetKind], map: "integration_run_changes_tenant_run_idx")
+  @@map("integration_run_changes")
+}
+
+/// Tenant KPI catalogue. `sourceIntegrationId` is the ONE integration allowed to feed the
+/// KPI (vm §9 "one field, one owner"); deleting that integration frees the KPI (SET NULL).
+model KpiDefinition {
+  id                  String   @id @default(cuid())
+  clientNumber        String   @map("client_number") @db.VarChar(20)
+  kpiKey              String   @map("kpi_key") @db.VarChar(80)
+  label               String   @db.VarChar(200)
+  unit                String?  @db.VarChar(20)
+  direction           String   @default("up") @db.VarChar(10) // up | down: which way is good
+  grain               String   @default("month") @db.VarChar(10) // day | week | month
+  sourceIntegrationId String?  @map("source_integration_id")
+  isActive            Boolean  @default(true) @map("is_active")
+  createdBy           Int?     @map("created_by")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sourceIntegration IntegrationSync? @relation(fields: [sourceIntegrationId], references: [id], onDelete: SetNull)
+
+  @@unique([clientNumber, kpiKey], map: "kpi_definitions_tenant_key_key")
+  @@index([clientNumber, isActive], map: "kpi_definitions_tenant_active_idx")
+  @@map("kpi_definitions")
+}
+
+/// Dated measurements. A missing reading is NO ROW, never 0. Readings outlive the
+/// integration that wrote them (spec §5 q3), so integration_id/run_id carry no FK.
+/// `periodStart` is a calendar DATE on purpose: a period is a day on the business's
+/// calendar, not an instant, and TIMESTAMPTZ would shift it across a zone boundary.
+model KpiReading {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  kpiKey        String   @map("kpi_key") @db.VarChar(80)
+  periodStart   DateTime @map("period_start") @db.Date
+  dimensionKey  String   @default("") @map("dimension_key") @db.VarChar(200) // '' = total
+  value         Decimal  @db.Decimal(20, 6)
+  integrationId String   @map("integration_id")
+  runId         String?  @map("run_id")
+  writtenAt     DateTime @default(now()) @map("written_at") @db.Timestamptz(6)
+
+  @@unique([clientNumber, kpiKey, periodStart, dimensionKey], map: "kpi_readings_tenant_key_period_dim_key")
+  @@index([clientNumber, integrationId], map: "kpi_readings_tenant_integ_idx")
+  @@map("kpi_readings")
+}
+
 // ─── Open Items ───────────────────────────────────────────────────
 
 model OpenItem {

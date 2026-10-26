@@ -29,6 +29,7 @@
  */
 import prisma from '../../db/prisma';
 import { getOpenItems, getTodayCalendar } from '../views';
+import { KPI_KEY_RE } from '../integrations/types';
 
 export interface BrainToolContext {
   userId: number;
@@ -678,6 +679,164 @@ const fetchTenantUsers: BrainToolDefinition = {
   },
 };
 
+// ─── Tool: fetch_kpis ────────────────────────────────────────────
+//
+// DEF-354 §2.8 — Brain sees the numbers that Integrations import into
+// kpi_readings. Read-only, tenant-scoped (KPIs belong to the tenant, not to
+// one user, so the scope is client_number). The model decides when to call
+// it from the description — there is no keyword regex in front of it.
+//
+// Two honesty rules shape the output:
+//  - A missing reading is NO ROW, never 0 (spec §1). So the empty state says
+//    "none have been imported" rather than reporting zeros.
+//  - A FAILED lookup must never read as "there are none" (the DEF-085 / 108b
+//    laundering). The queries below are deliberately not `.catch(() => [])`:
+//    a throw reaches executeBrainTool, which renders a "# Tool error" block.
+
+/** Default window: the latest N periods per KPI when no range is given. */
+const KPI_DEFAULT_PERIODS = 3;
+/** Hard cap on lines so one tool call cannot flood the reasoning prompt. */
+const KPI_MAX_LINES = 60;
+const KPI_MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+function kpiMonthStart(raw: unknown): string | null {
+  const m = KPI_MONTH_RE.exec(String(raw ?? '').trim());
+  return m ? `${m[1]}-${m[2]}-01` : null;
+}
+
+/** First day of the month AFTER `YYYY-MM` — the exclusive upper bound. */
+function kpiMonthEndExclusive(raw: unknown): string | null {
+  const m = KPI_MONTH_RE.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  let y = Number(m[1]); let mo = Number(m[2]) + 1;
+  if (mo === 13) { mo = 1; y += 1; }
+  return `${y}-${String(mo).padStart(2, '0')}-01`;
+}
+
+/** NUMERIC(20,6) text ("1234.500000") ⇒ "1,234.5". Done on the string, never
+ *  through a JS float, so large figures do not lose digits. */
+function fmtKpiValue(raw: string): string {
+  const s = String(raw).trim();
+  const neg = s.startsWith('-');
+  const [intPart, frac = ''] = (neg ? s.slice(1) : s).split('.');
+  const fracTrim = frac.replace(/0+$/, '');
+  const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${neg ? '-' : ''}${grouped}${fracTrim ? `.${fracTrim}` : ''}`;
+}
+
+/** period_start (first day of the period) rendered at the KPI's grain. */
+function fmtKpiPeriod(periodStart: string, grain: string): string {
+  if (grain === 'month') return periodStart.slice(0, 7);
+  if (grain === 'week') return `week of ${periodStart}`;
+  return periodStart;
+}
+
+const fetchKpis: BrainToolDefinition = {
+  name: 'fetch_kpis',
+  description: 'Get the business\'s KPI numbers imported by Integrations (e.g. revenue, sales, receivables, targets, collections) by month/period and region or other breakdown. Use whenever the user asks about a business figure — "what were sales in September", "revenue by region", "how are receivables trending", "did we hit target". Without filters returns the latest 3 periods of every KPI. Never guess a number that is not in the result.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      kpi_key:     { type: 'string', description: 'one KPI key (lowercase, e.g. "revenue") — omit for all KPIs' },
+      period_from: { type: 'string', description: 'YYYY-MM, first month to include' },
+      period_to:   { type: 'string', description: 'YYYY-MM, last month to include' },
+      dimension:   { type: 'string', description: 'breakdown filter, e.g. "North" or "region=North" (partial match); omit for every breakdown and the total' },
+    },
+  },
+  handler: async (input, { clientNumber }) => {
+    const kpiKeyRaw = input?.kpi_key != null && String(input.kpi_key).trim() !== ''
+      ? String(input.kpi_key).trim().toLowerCase() : null;
+    if (kpiKeyRaw && !KPI_KEY_RE.test(kpiKeyRaw)) {
+      return `# Business KPIs — invalid kpi_key\nReceived "${String(input.kpi_key).slice(0, 80)}". A KPI key is lowercase letters, digits and underscores (e.g. "revenue"). Omit it to list every KPI.`;
+    }
+    const hasFrom = input?.period_from != null && String(input.period_from).trim() !== '';
+    const hasTo   = input?.period_to   != null && String(input.period_to).trim()   !== '';
+    const from = hasFrom ? kpiMonthStart(input.period_from) : null;
+    const toEx = hasTo ? kpiMonthEndExclusive(input.period_to) : null;
+    if ((hasFrom && !from) || (hasTo && !toEx)) {
+      return `# Business KPIs — invalid period\nReceived period_from="${String(input?.period_from ?? '')}", period_to="${String(input?.period_to ?? '')}". Use YYYY-MM (e.g. 2026-09).`;
+    }
+    const dim = input?.dimension != null && String(input.dimension).trim() !== ''
+      ? String(input.dimension).trim().slice(0, 200) : null;
+    // A range given ⇒ every period in it; none ⇒ the latest N per KPI.
+    const useLatest = !from && !toEx;
+
+    // client_number is bound on BOTH tables and on the integration join: the
+    // tenant Prisma extension does not cover raw SQL (AGENTS tenant rule).
+    // Inactive definitions are excluded — a retired KPI is not a current fact.
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      kpi_key: string; label: string; unit: string | null; grain: string;
+      period_start: string; dimension_key: string; value: string;
+      written_at: Date | string; integration_name: string | null;
+    }>>(
+      `SELECT * FROM (
+         SELECT d.kpi_key, d.label, d.unit, d.grain,
+                to_char(r.period_start, 'YYYY-MM-DD') AS period_start,
+                r.dimension_key, r.value::text AS value, r.written_at,
+                i.name AS integration_name,
+                DENSE_RANK() OVER (PARTITION BY d.kpi_key ORDER BY r.period_start DESC) AS period_rank
+           FROM kpi_definitions d
+           JOIN kpi_readings r
+             ON r.client_number = d.client_number AND r.kpi_key = d.kpi_key
+           LEFT JOIN integration_syncs i
+             ON i.id = r.integration_id AND i.client_number = r.client_number
+          WHERE d.client_number = $1
+            AND d.is_active = TRUE
+            AND ($2::text IS NULL OR d.kpi_key = $2)
+            AND ($3::date IS NULL OR r.period_start >= $3::date)
+            AND ($4::date IS NULL OR r.period_start <  $4::date)
+            AND ($5::text IS NULL OR r.dimension_key ILIKE '%' || $5 || '%')
+       ) x
+       WHERE ($6::boolean = FALSE OR x.period_rank <= $7)
+       ORDER BY x.label ASC, x.kpi_key ASC, x.period_start DESC, x.dimension_key ASC
+       LIMIT $8`,
+      clientNumber, kpiKeyRaw, from, toEx, dim, useLatest, KPI_DEFAULT_PERIODS, KPI_MAX_LINES + 1,
+    );
+
+    const filters = [
+      kpiKeyRaw ? `kpi ${kpiKeyRaw}` : null,
+      from || toEx ? `periods ${hasFrom ? String(input.period_from).trim() : '…'} to ${hasTo ? String(input.period_to).trim() : '…'}` : null,
+      dim ? `dimension "${dim}"` : null,
+    ].filter(Boolean) as string[];
+
+    if (rows.length === 0) {
+      if (filters.length === 0) {
+        return '# Business KPIs\n(no KPI readings yet — none have been imported)';
+      }
+      // Filters matched nothing: say which KPIs DO exist so the model can
+      // re-ask correctly instead of concluding the business has no numbers.
+      const keys = await prisma.$queryRawUnsafe<Array<{ kpi_key: string; label: string }>>(
+        `SELECT DISTINCT d.kpi_key, d.label
+           FROM kpi_definitions d
+           JOIN kpi_readings r ON r.client_number = d.client_number AND r.kpi_key = d.kpi_key
+          WHERE d.client_number = $1 AND d.is_active = TRUE
+          ORDER BY d.label ASC
+          LIMIT 30`,
+        clientNumber,
+      );
+      if (keys.length === 0) return '# Business KPIs\n(no KPI readings yet — none have been imported)';
+      return `# Business KPIs (${filters.join(', ')})\n(no KPI readings match these filters — say so plainly, do not invent)\nKPIs that do have readings: ${keys.map((k) => `${k.label} (${k.kpi_key})`).join(', ')}`;
+    }
+
+    const truncated = rows.length > KPI_MAX_LINES;
+    const shown = rows.slice(0, KPI_MAX_LINES);
+    const lines = shown.map((r) => {
+      const dimLabel = r.dimension_key ? r.dimension_key : 'total';
+      const unit = r.unit ? ` ${r.unit}` : '';
+      const written = r.written_at ? new Date(r.written_at).toISOString().slice(0, 10) : '?';
+      const src = r.integration_name ? `integration ${r.integration_name}` : 'integration (since deleted)';
+      return `- ${r.label} (${r.kpi_key}) · ${fmtKpiPeriod(r.period_start, r.grain)} · ${dimLabel}: ${fmtKpiValue(r.value)}${unit} — source: ${src}, written ${written}`;
+    });
+    const scope = filters.length > 0
+      ? filters.join(', ')
+      : `latest ${KPI_DEFAULT_PERIODS} periods per KPI`;
+    const tail = truncated
+      ? `\n(showing the first ${KPI_MAX_LINES} lines — more exist; narrow by kpi_key, period or dimension)`
+      : '';
+    return `# Business KPIs (${scope})\nA period with no line has no reading — it is unknown, not zero.\n${lines.join('\n')}${tail}`;
+  },
+};
+
 // ─── Registry ────────────────────────────────────────────────────
 
 export const BRAIN_TOOLS: BrainToolDefinition[] = [
@@ -695,6 +854,8 @@ export const BRAIN_TOOLS: BrainToolDefinition[] = [
   fetchUserProfile,
   fetchRecentMessages,
   fetchTenantUsers,
+  // DEF-354 §2.8: business numbers imported by Integrations.
+  fetchKpis,
 ];
 
 export function getBrainTool(name: string): BrainToolDefinition | undefined {

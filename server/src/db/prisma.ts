@@ -42,6 +42,12 @@ export const TENANT_SCOPED_MODELS = new Set<string>([
   // than by reading, which is the point of having the test.
   'NotificationQueue', 'TenantWhatsappNotifier',
   'BrainUserMessage',
+  // DEF-354, 2026-10-26: Integrations (Admin → Integrations) and the KPI store
+  // they feed. Tenant-owned, not user-owned (an admin sets them up for the
+  // tenant), so they are in THIS registry only. Raw SQL against these tables is
+  // not covered by the extension and carries client_number explicitly.
+  'IntegrationSync', 'IntegrationMappingVersion', 'IntegrationSuggestion',
+  'IntegrationRun', 'IntegrationRunChange', 'KpiDefinition', 'KpiReading',
 ]);
 
 const READ_OPS = new Set(['findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy']);

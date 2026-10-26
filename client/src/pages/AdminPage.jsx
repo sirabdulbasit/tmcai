@@ -8,6 +8,7 @@ import WhatsAppMergedTab from './admin/WhatsAppMergedTab';
 import LlmSpendTab from './admin/LlmSpendTab';
 import OrchestratorSpendTab from './admin/OrchestratorSpendTab';
 import ConnectorsAdminTab from './admin/ConnectorsAdminTab';
+import IntegrationsTab from './admin/integrations/IntegrationsTab';
 
 /**
  * Admin surface — grouped by WHAT A SETTING APPLIES TO.
@@ -95,6 +96,7 @@ export default function AdminPage() {
     { key: 'appconfig',  label: 'Application Config' },
     { key: 'whatsapp',   label: 'WhatsApp' },
     { key: 'connectors', label: 'Connectors' },
+    { key: 'integrations', label: 'Integrations' },
     { key: 'sources',    label: 'Knowledge Sources' },
     ...(user?.isSuperAdmin ? [{ key: 'licenses', label: 'Licence' }] : []),
   ];
@@ -177,6 +179,9 @@ export default function AdminPage() {
         )}
         {activeTab === 'client' && clientSub === 'connectors' && (
           <ConnectorsAdminTab user={user} msg={msg} setMsg={setMsg} />
+        )}
+        {activeTab === 'client' && clientSub === 'integrations' && (
+          <IntegrationsTab msg={msg} setMsg={setMsg} />
         )}
         {activeTab === 'client' && clientSub === 'sources' && (
           <ClientManagementTab user={user} msg={msg} setMsg={setMsg} section="connectors" />

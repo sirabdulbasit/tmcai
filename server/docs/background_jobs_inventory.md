@@ -39,6 +39,7 @@ completion exceeds 2× cadence.
 | wa_outbound_reconciliation | server.ts | 10m | important | users | row reconciliation | first_tick | 10m |
 | feed_publish_retry | server.ts | 2m | important | rows | integrity checks + DLQ | first_tick | 10m |
 | generic_feed_poller | server.ts | 2m | important | tenants | ingest dedup (source ids) | cursor | 10m |
+| integration_sync_dispatcher | server.ts | 60s | maintenance | tenants (explicit cross-tenant read of ACTIVE integrations) | atomic slot claim on `last_slot_at`; one RUNNING run per integration (partial unique index); boot sweep releases interrupted runs (DEF-354) | run_once_if_missed — no slot before `activated_at` is ever owed | 10m |
 | notion_mirror_sync | server.ts | 10m | important | tenants | page-hash skip | cursor | 10m |
 | notion_reverse_sync | server.ts | 5m | important | tenants | conflict detection | cursor | 10m |
 | obsidian_vault_export | server.ts | 1h | important | users | appProperties hash-skip | first_tick | 10m |

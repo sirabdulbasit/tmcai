@@ -32,6 +32,7 @@ import profileRoutes from './routes/profileRoutes';
 import schedulerRoutes from './routes/schedulerRoutes';
 import licenseRoutes from './routes/licenseRoutes';
 import adminRoutes from './routes/adminRoutes';
+import integrationAdminRoutes from './routes/admin/integrationAdminRoutes';
 import configRoutes from './routes/configRoutes';
 import tenantRoutes from './routes/tenantRoutes';
 import integrationRoutes from './routes/integrationRoutes';
@@ -183,6 +184,10 @@ v1.use('/profile', profileRoutes);
 v1.use('/conversations', conversationRoutes);
 v1.use('/schedules', schedulerRoutes);
 v1.use('/licenses', licenseRoutes);
+// DEF-354 — mounted BEFORE the generic /admin router: adminRoutes applies a
+// 30 req/min limiter to everything entering /admin, which would 429 the
+// wizard's proposal/run polling. This router carries its own auth + limiter.
+v1.use('/admin/integrations', integrationAdminRoutes);
 v1.use('/admin', adminRoutes);
 v1.use('/config', configRoutes);
 v1.use('/tenants', tenantRoutes);

@@ -26,7 +26,9 @@ const log = createLogger('behavior-config');
 export interface BehaviorSpec {
   /** Dotted key, e.g. 'preactive.meeting_prep_window_min'. */
   key: string;
-  unit: 'minutes' | 'hours' | 'count' | 'days';
+  // DEF-354 added 'bytes' and 'ms' for the integration source caps (a sheet
+  // size and a fetch timeout are not expressible in the older units).
+  unit: 'minutes' | 'hours' | 'count' | 'days' | 'bytes' | 'ms';
   def: number;
   min: number;
   max: number;
@@ -260,6 +262,36 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
   'selfpruning.burst_max_span_minutes': {
     key: 'selfpruning.burst_max_span_minutes', unit: 'minutes', def: 1440, min: 30, max: 43200, scope: 'tenant',
     description: 'DEF-170. How close together repeated unanswered pushes about one subject must be to count as a burst rather than a cadence. The default separates CL-033 (45 minutes) from monthly status notices; the right value is an owner preference. NOTE: iteration 26 shipped the ledger reading this key WITHOUT registering it here, so getBehaviorValue threw "unknown behavior key" and a silent catch pinned the span to 1440 — the owner\'s override could never take effect (Codex iteration-26 HIGH #1).',
+  },
+  // ── DEF-354 — Integrations (Admin → Integrations) ──────────────────
+  //
+  // The caps every source read and every run obeys. The critique of the vm
+  // port (item 27) found them scattered as literals; they are operational
+  // limits a tenant may need to move without a deploy, so they live here.
+  // Tenant scope: an integration belongs to the tenant, not to one user.
+  'integrations.sheet_max_bytes': {
+    key: 'integrations.sheet_max_bytes', unit: 'bytes', def: 10 * 1024 * 1024, min: 64 * 1024, max: 50 * 1024 * 1024, scope: 'tenant',
+    description: 'DEF-354. Largest Google Sheet CSV export a read will accept. The read stops at this size and reports the sheet as truncated rather than holding an unbounded body in memory.',
+  },
+  'integrations.sheet_timeout_ms': {
+    key: 'integrations.sheet_timeout_ms', unit: 'ms', def: 60000, min: 5000, max: 300000, scope: 'tenant',
+    description: 'DEF-354. How long one Google Sheet read may take before it is abandoned and the test/run fails with a timeout.',
+  },
+  'integrations.max_rows': {
+    key: 'integrations.max_rows', unit: 'count', def: 50000, min: 100, max: 500000, scope: 'tenant',
+    description: 'DEF-354. Most data rows one read keeps. Rows past the cap are not read and the result is marked truncated, so a run never silently plans on part of a sheet.',
+  },
+  'integrations.max_concurrent_runs': {
+    key: 'integrations.max_concurrent_runs', unit: 'count', def: 2, min: 1, max: 10, scope: 'tenant',
+    description: 'DEF-354. How many scheduled integration runs the dispatcher starts at once. Slots beyond it wait for the next tick; the per-integration mutex is separate and always one.',
+  },
+  'integrations.route_limit_per_min': {
+    key: 'integrations.route_limit_per_min', unit: 'count', def: 240, min: 30, max: 2000, scope: 'tenant',
+    description: 'DEF-354. Requests per minute the /admin/integrations router allows per client. Higher than the generic 30/min admin limiter because the wizard polls job status while the AI proposes or a run executes.',
+  },
+  'integrations.proposal_job_ttl_ms': {
+    key: 'integrations.proposal_job_ttl_ms', unit: 'ms', def: 3600000, min: 60000, max: 86400000, scope: 'tenant',
+    description: 'DEF-354. How long a finished mapping-proposal job stays readable in memory for the polling screen before it is forgotten.',
   },
 };
 

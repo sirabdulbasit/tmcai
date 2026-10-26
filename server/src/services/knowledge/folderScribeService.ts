@@ -63,7 +63,7 @@ export interface FolderScribeSummary {
  *  Test/Preview said success, scribe failed — same user, different
  *  resolution paths.
  */
-async function pickTenantScribeUser(clientNumber: string): Promise<number | null> {
+export async function pickTenantScribeUser(clientNumber: string): Promise<number | null> {
   // 1. Honour the admin's explicit choice from system_config.
   const cfg = await prisma.systemConfig.findFirst({
     where: { clientNumber, key: 'google_drive_org_user_id' },
