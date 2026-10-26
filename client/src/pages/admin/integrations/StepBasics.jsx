@@ -119,13 +119,9 @@ export default function StepBasics({ integ, setInteg, setMsg, setWorking, onNext
       // A new API integration stays here: the document is attached to an existing
       // integration, and it is the next thing to do.
       if (created && saved?.sourceKind === 'api') return;
-      // DEF-362 (owner 10-26, "it stuck here"): continuing past an unread API document
-      // landed the admin on an empty Connect form. Stay here and point at the panel;
-      // the Connect tab stays clickable for anyone filling the connection by hand.
-      if (saved?.sourceKind === 'api' && !saved?.apiDocReading && !saved?.apiConfig?.baseUrl) {
-        setMsg('Saved. Now attach the API document under “API document” below and press Read with AI — or open Connect to fill the connection by hand.');
-        return;
-      }
+      // "Save and continue" always continues. Holding the admin here when no API document
+      // was read (tried 10-26) read as a dead button — five successful saves, no movement.
+      // Connect explains the missing document instead, with a button back to it.
       onNext();
     } catch (e) {
       setError(errorText(e));
