@@ -5815,3 +5815,97 @@ marker reaching the owner as raw JSON.
 
 **Deploy prediction:** yes — one service rewrite + one script line + tests, 3688/0, and
 the first live proof is already scheduled by production itself for 10-27 02:31.
+
+## Iteration 82 (continuation 4, DEF-351 + DEF-352 — the loss edges under DEF-350 closed, and the Memory pin's person-page upsert) — 2026-10-26
+
+**THE CONTINUATION QUESTION, answered:** last turn (DEF-350, Learn) was reviewed SOUND —
+what remained insufficient is exactly what Codex's own review named: two loss edges the
+coverage-from-queue-state design newly leans on. Commit 1 closes both. The pin's target
+(Memory) gets commit 2 — the analyst's thrice-carried `wiki-page-duplicate-insert`. For
+once the turn is ON PIN and on the reviewer's directive simultaneously: remediation won
+scope (Codex #1 first), the pin won the second commit.
+
+**Commit 1 — DEF-351 (Codex DEF-350-review directive #1, both edges, RELIABILITY-ONLY):**
+- **(1) Throw-safety at the one send site** (`brainPromptQueueService.ts`): the
+  dispatcher's optimistic promote (`answered`/`awaiting_reply` + `sentAt` BEFORE the
+  send) now rolls back on a THROWN send exactly like `{sent:false}` — `state: 'queued'`,
+  `sentAt: null`, `answeredAt: null` for the notice shape — then rethrows the ORIGINAL
+  error (the rollback's own failure is swallowed so it can never mask it). Without this,
+  a transient throw stranded a notice in `answered`: never expired (the stale sweep
+  targets only `queued`), counted as covering by DEF-350 — a learn digest stranded that
+  way would mark its proposals covered-but-undelivered FOREVER. Guardrail:
+  no-claim-without-a-receipt.
+- **(2) One state vocabulary, owned by its writer:** `PROMPT_TERMINAL_LOST_STATES` /
+  `PROMPT_LIVE_OR_DELIVERED_STATES` now live in `brainPromptQueueService`;
+  `proposalDigest.DIGEST_LOST_STATES` is an alias BY REFERENCE (`toBe`-verified in the
+  test), not a copy that can drift — the `protection-with-two-implementations` shape
+  (§3 count 10) one level down, answered structurally: reference, don't copy. A
+  TRIPWIRE test scans every src site that touches the prompt queue (Prisma-accessor
+  windows + raw-SQL strings naming `brain_prompt_queue`) and fails the matrix on any
+  unclassified state literal, with a >15-literal floor so a degraded extractor cannot
+  go green (the DEF-346 lesson). Developed empirically: the first corpus run correctly
+  surfaced OTHER tables' state machines sharing those files (delegation
+  `dispatch_pending`, withdrawal-batch `pending`/`sent`) and the gate was narrowed to
+  per-site scope — measured out, not assumed out.
+
+**Commit 2 — DEF-352 (`wiki-page-duplicate-insert`, Memory — ON PIN):** the live ~2/day
+23505. `ensureEntityForSender`'s INSERT guarded `ON CONFLICT (id)` — the PK — but the
+conflict that fires in production is the COMPOSITE unique `wiki_pages_user_title_idx`
+(verified against live `pg_indexes`: plain, not partial). A same-titled person page
+under a different id threw daily (Umair Bin Wasim, Hamna Latif) and the sweep's error
+counter ate it — Brain's memory of a person silently failing to refresh. Now the upsert
+targets the composite index, `DO UPDATE SET last_updated_at = NOW() RETURNING id`, and
+the caller links to the REAL page id with `created` honest. Conflict touches ONLY
+`last_updated_at` — another producer's page content is never overwritten by a seed
+body. Residual id-PK race named, not claimed. The new SQL sits inside DEF-346's
+schema-conformance scope automatically. LIVE CHECK is immediate: the ~2/day 23505 stops
+after deploy.
+
+**Codex's ranked directives, disposed:** #1 CLOSED (commit 1, both edges + tripwire).
+#2 (watch the 10-27 re-announce) — fires tomorrow 02:31, not observable this turn; the
+10-26 digest row (3 new ids, no overlap with the queued 10-25 digest) already shows
+coverage-from-queue working live; the next pulse should quote the 10-27 line. #3 (the
+Self-Healing ingestion/channel-degradation detector) — **still owed, now THRICE
+deferred**, said loudly: this turn's scope was consumed by directive #1 (remediation
+wins scope) and the Memory pin; it is the first candidate for the next turn that is not
+pinned elsewhere. #4 (C4 only via compose, after #1–#3) — untouched, per its own
+ordering. #5 (channel re-pair) — the owner's, echoed once more: one human action
+releases an 875-deep backlog and three capabilities' shipped work.
+
+**Three-docs verdict, out loud:** DEF-351 edge (2) is the §3 recurrence champion
+(`protection-with-two-implementations`, count 10) — the fix is its structural response
+(delete the copy, tripwire the remainder), not an instance patch; edge (1) is the first
+fix of the throw-path gap in the DEF-105 rollback lineage. DEF-352 — *progressing*: new
+root cause (wrong conflict target), first fix of the analyst's tag.
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **329 files passed | 1 skipped; 3694 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (3,688 → 3,694: +3 DEF-351, +3 DEF-352). `git diff
+--check` → clean. `npm run build` NOT run — dist immutable, `--noEmit` is the build
+check (CLAUDE.md).
+
+**What I did NOT do:** the ingestion-degradation detector (thrice deferred — flagged in
+bold above); DEF-347 and the prisma-drift backfills (standing); DEF-149's live classify
+path (Thinking, standing); the variance-aware gauge + scoreboard governance
+(harness-owned, fourth turn flagged); Codex's INFO items (the `newSinceLast` >40
+under-report — cosmetic, overflow still rolls forward losslessly; the "Settings → Brain
+Memories" label check against the client UI — needs the client repo, named). Unsure
+about: whether any OTHER wiki_pages producer carries the same wrong-conflict-target
+shape (odooWikiMirror's two INSERTs guard `(id)` too — but with zero odoo tenants they
+cannot fire today; named for the class, not patched blind this turn).
+
+CAPABILITY: RELIABILITY-ONLY (DEF-351) · Memory (DEF-352, ON PIN — matches the
+continuation target).
+PREDICTED: DEF-351 — +0 behaviour today (the live dark-channel path already returns
+`{sent:false}` gracefully); the "no proposal silently lost" guarantee now survives send
+THROWS and queue-vocabulary growth. DEF-352 — the ~2/day person-page 23505 stops and
+the sweep links to the one true page per person; no score points claimed.
+MECHANISM: the throw path joins the existing rollback and the coverage consumer
+references the vocabulary instead of copying it; the person-page upsert targets the
+unique constraint production actually enforces.
+FALSIFIER: a prompt row in a sent-shaped state with no send receipt after a thrown
+dispatch; a new queue state shipping unclassified with a green matrix; any post-deploy
+`entity_person` 23505 from the sweep; the 10-27 re-announce missing (DEF-350's watch).
+
+**Deploy prediction:** yes — two small commits, both mechanism-tested, 3694/0. The
+10-27 02:31 expiry is the scheduled live proof for the whole Learn-loss arc.
