@@ -22,11 +22,20 @@
  *   - KPI values travel as canonical decimal STRINGS (e.g. "1234.5"), never JS
  *     floats: the column is NUMERIC(20,6) and a float round-trip would invent
  *     changes the IS DISTINCT FROM guard then writes.
+ *
+ * DEF-362 (Stage 1b, spec §2b) widens these contracts additively: an `api`
+ * source read through the guarded fetcher, the API document the AI reads,
+ * the admin's remarks / filter words / connect instructions, and two new
+ * mapping targets — Context (Brain knowledge pages) and the structured record
+ * filter. Every Stage 1 shape keeps its meaning; a Google Sheet integration
+ * sees the new DTO fields only as null / false.
  */
 
-// ── Enumerations (mirror the CHECK constraints in 20261026_integrations_core) ──
+// ── Enumerations (mirror the CHECK constraints in 20261026_integrations_core,
+//    widened by 20261026b_integrations_api) ────────────────────────────────
 
-export const SOURCE_KINDS = ['gsheet'] as const;
+/** DEF-362: 'api' = a REST endpoint drafted from an uploaded API document. */
+export const SOURCE_KINDS = ['gsheet', 'api'] as const;
 export type SourceKind = typeof SOURCE_KINDS[number];
 
 export const INTEGRATION_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED'] as const;
@@ -47,8 +56,10 @@ export type VersionStatus = typeof VERSION_STATUSES[number];
 export const SUGGESTION_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'SET_ASIDE', 'BLANK'] as const;
 export type SuggestionStatus = typeof SUGGESTION_STATUSES[number];
 
-/** Stage 1 maps to KPI numbers only; later stages widen this and the CHECK. */
-export const TARGET_KINDS = ['kpi'] as const;
+/** Stage 1 mapped to KPI numbers only. DEF-362 adds 'context' (Brain knowledge
+ *  pages) and 'filter' (the ONE structured record-filter row per version, made
+ *  from the admin's filter words — nothing filters until it is approved). */
+export const TARGET_KINDS = ['kpi', 'context', 'filter'] as const;
 export type TargetKind = typeof TARGET_KINDS[number];
 
 /** RUNNING is the mutex state (partial unique index). PARTIAL = completed and
@@ -72,6 +83,12 @@ export const KPI_KEY_RE = /^[a-z][a-z0-9_]{0,79}$/;
 /** targetKey forms: an existing catalogue KPI, or one the proposer names new
  *  (approving that row creates the definition — spec §2.3). */
 export type KpiTargetKey = `kpi:${string}` | `kpi:new:${string}`;
+
+/** DEF-362 targetKey forms for the new kinds (mirror the suggestions CHECK). */
+export const CONTEXT_TARGET_KEYS = ['context:per_record', 'context:table'] as const;
+export type ContextTargetKey = typeof CONTEXT_TARGET_KEYS[number];
+export const FILTER_TARGET_KEY = 'filter' as const;
+export type FilterTargetKey = typeof FILTER_TARGET_KEY;
 
 /** `triggeredBy` of a scheduled run; a manual run uses `user:<id>`. */
 export const SCHEDULER_ACTOR = 'scheduler';
@@ -99,7 +116,9 @@ export interface IntegrationSourceRef {
 
 export interface ReadResult {
   /** One object per data row, keyed by header. Cells are raw trimmed strings;
-   *  an empty cell is '' (never undefined) so blank detection is uniform. */
+   *  an empty cell is '' (never undefined) so blank detection is uniform.
+   *  API sources: each JSON record FLATTENED (dotted keys) to the same shape,
+   *  so the inventory, planner and filter never learn a second record form. */
   records: Record<string, string>[];
   headers: string[];
   rowCount: number;
@@ -111,6 +130,12 @@ export interface ReadResult {
   anomalies: string[];
   /** Human label for messages, e.g. "Sales 2026 › Monthly". */
   sourceLabel: string;
+  /** DEF-362, API only: the total the system itself declared (declaredTotalPath
+   *  on the first page), or null when it declares none. "Read 900 of a
+   *  declared 1,156" is a partial read, not a success (vm fetchRecordsWithMeta). */
+  declaredTotal?: number | null;
+  /** DEF-362, API only: pages actually fetched. */
+  pagesRead?: number;
 }
 
 /** Connect-step test (spec §2.2: a 200 with 0 rows is NOT ok). */
@@ -121,11 +146,156 @@ export interface TestResult {
   sampleRow: Record<string, string> | null;
   /** Why it failed, in words the admin can act on (e.g. "not shared"). */
   reason?: string;
+  /** DEF-362, API only (spec §2b Connect: "exactly one record … plus N records
+   *  on this page (declared total M)"). `sampleRow` is that ONE record,
+   *  flattened; `rows` equals `pageRecords` for an API test (one page read). */
+  pageRecords?: number;
+  declaredTotal?: number | null;
 }
 
 export interface SourceReader {
   test(cn: string, integ: IntegrationSourceRef): Promise<TestResult>;
   read(cn: string, integ: IntegrationSourceRef): Promise<ReadResult>;
+}
+
+// ── API source (DEF-362, spec §2b) ─────────────────────────────────────────
+
+/** How the secret rides on the request. The model may DRAFT the scheme from the
+ *  document; it never sees, chooses or stores the secret itself.
+ *  BASIC: the stored secret is "user:password" and is base64'd at send time. */
+export const AUTH_SCHEMES = ['NONE', 'BEARER', 'API_KEY', 'BASIC'] as const;
+export type AuthScheme = typeof AUTH_SCHEMES[number];
+
+export const API_METHODS = ['GET', 'POST'] as const;
+export type ApiMethod = typeof API_METHODS[number];
+
+export const PAGINATION_KINDS = ['none', 'page', 'offset', 'next_url'] as const;
+export type PaginationKind = typeof PAGINATION_KINDS[number];
+
+/**
+ * How to walk the result set. `maxPages` is a per-integration ceiling that can
+ * only LOWER behavior `integrations.api_max_pages`, never raise it.
+ *  - page:     ?<pageParam>=startPage,startPage+1… (+ <pageSizeParam>=pageSize)
+ *  - offset:   ?<offsetParam>=0,pageSize,2·pageSize… (+ <limitParam>=pageSize)
+ *  - next_url: the URL at `nextUrlPath` in each body; it must be SAME-ORIGIN
+ *              (vm assertSameOrigin — a cross-origin next page ends the read
+ *              as a failure, it is never followed with the secret attached).
+ * Every kind stops on an empty page.
+ */
+export type Pagination =
+  | { kind: 'none' }
+  | { kind: 'page'; pageParam: string; pageSizeParam?: string; pageSize?: number; startPage?: number; maxPages?: number }
+  | { kind: 'offset'; offsetParam: string; limitParam?: string; pageSize: number; maxPages?: number }
+  | { kind: 'next_url'; nextUrlPath: string; maxPages?: number };
+
+/**
+ * Stored in integration_syncs.api_config. NEVER contains the secret (that is
+ * secret_enc, encrypted, store/secretStore.ts). Every value is editable by the
+ * admin; the AI's reading of the document only pre-fills it.
+ */
+export interface ApiConfig {
+  /** https://host[:port][/base/path]. Its ORIGIN is the only origin any request,
+   *  redirect or next page may reach, and the only one the secret is sent to. */
+  baseUrl: string;
+  method: ApiMethod;
+  /** Joined to baseUrl. A full URL is accepted only when it is same-origin. */
+  path: string;
+  /** Fixed query parameters sent on every page. */
+  query: Record<string, string>;
+  /** JSON body for POST endpoints (search APIs); ignored for GET. */
+  body?: Record<string, unknown> | null;
+  authScheme: AuthScheme;
+  /** API_KEY in a header (default 'X-API-Key' when neither name is set). */
+  authHeaderName?: string | null;
+  /** API_KEY in the query string instead of a header. Wins over authHeaderName. */
+  authQueryParam?: string | null;
+  /** Dotted path to the records array in the JSON body ('' = the body IS the array). */
+  recordsPath: string;
+  /** The (flattened) field that identifies a record — the Context page key. */
+  idField: string | null;
+  pagination: Pagination;
+  /** Dotted path to the system's own total count, if it states one. */
+  declaredTotalPath?: string | null;
+}
+
+/** What the AI made of the API document (integration_syncs.api_doc_reading).
+ *  `gaps` = what the document did NOT say, shown to the admin verbatim — a
+ *  guessed value is worse than an asked question (vm integrationDocReader). */
+export interface ApiDocReading {
+  draft: Partial<ApiConfig>;
+  gaps: string[];
+  summary: string;
+  /** Which provider answered — a plain string, so this file imports no LLM. */
+  provider?: string;
+  readAt?: string;
+  /** How many credential-looking strings were redacted before the model saw it. */
+  redactions?: number;
+}
+
+/** What an API reader needs: the integration id (to load its secret, tenant-
+ *  scoped) and its connection. Separate from IntegrationSourceRef so the Stage 1
+ *  sheet reader's signature is unchanged. */
+export interface ApiSourceRef {
+  id: string;
+  sourceKind: 'api';
+  apiConfig: ApiConfig;
+}
+
+/** Where the secret goes on a request, built from ApiConfig + the decrypted
+ *  secret (vm buildAuth). guardedFetch attaches it ONLY to the configured
+ *  origin. Never logged, never put in an error message. */
+export interface AuthAttachment {
+  headers: Record<string, string>;
+  query: Array<{ name: string; value: string }>;
+}
+
+export interface GuardedFetchOptions {
+  /** The configured origin (new URL(apiConfig.baseUrl).origin). The request URL,
+   *  every redirect hop and every next page must be on it. */
+  origin: string;
+  method?: ApiMethod;
+  headers?: Record<string, string>;
+  body?: string;
+  /** Attached only when the hop's origin === `origin`. */
+  auth?: AuthAttachment | null;
+  /** behavior integrations.api_max_bytes — over it the fetch FAILS (truncated
+   *  JSON is not a smaller answer, it is no answer). */
+  maxBytes: number;
+  /** behavior integrations.api_timeout_ms — one deadline across all hops. */
+  timeoutMs: number;
+  /** ≤ 3 (spec §2b); larger values are clamped to 3. */
+  maxRedirects?: number;
+}
+
+export interface GuardedResponse {
+  status: number;
+  /** Lower-cased header names. */
+  headers: Record<string, string>;
+  body: Buffer;
+  /** The URL that answered (after same-origin redirects), auth query params removed. */
+  finalUrl: string;
+  redirects: number;
+}
+
+export interface FetchLimits {
+  maxBytes: number;
+  timeoutMs: number;
+  maxPages: number;
+}
+
+export interface SetSecretOptions {
+  /** Called with the CANDIDATE secret before anything is stored. A failing test
+   *  stores nothing, so a working secret is never overwritten by a broken one
+   *  (spec §2b "a secret that fails is not stored over one that works"). */
+  testFirst?: (plain: string) => Promise<TestResult>;
+}
+
+export interface SetSecretResult {
+  stored: boolean;
+  /** The testFirst result, or null when no test was asked for. */
+  test: TestResult | null;
+  /** Why it was not stored, in admin words. */
+  reason?: string;
 }
 
 // ── Mapping (design time, spec §2.3) ──────────────────────────────────────
@@ -156,21 +326,83 @@ export type KpiTransform =
   | { mode: 'long'; valueField: string; periodField: string; dimensionField?: string }
   | { mode: 'wide'; columns: string[]; periodFrom: 'header'; dimensionField?: string };
 
-/** What the proposer hands mappingStore to persist as one suggestion row.
- *  For mode 'wide', sourceField = transform.columns[0] (display), and the
- *  header check uses every transform column. */
-export interface SuggestionDraft {
-  targetKind: 'kpi';
+/**
+ * DEF-362 — Context: records become tenant-wide Brain knowledge (org_doc pages).
+ *  - per_record: one page per record, titled "<integration> · <titleField>",
+ *    body = the bodyFields as "Field: value" lines (a blank field is left out,
+ *    never written over a filled section). Capped at integrations.max_context_pages.
+ *  - table: ONE page for the whole set, the chosen columns as a table.
+ */
+export type ContextTransform =
+  | { mode: 'per_record'; titleField: string; bodyFields: string[] }
+  | { mode: 'table'; columns: string[] };
+
+/** DEF-362 — the structured filter the proposer makes from the admin's filter
+ *  words. `after`/`before` compare DATES (parsed, never string order); the
+ *  greater/less ops compare NUMBERS (planner.parseNumber); a row whose cell does
+ *  not parse for a numeric/date op does NOT match (filtered out and counted). */
+export const FILTER_OPS = [
+  'equals', 'not_equals', 'contains', 'not_contains',
+  'greater_than', 'greater_or_equal', 'less_than', 'less_or_equal',
+  'is_blank', 'is_not_blank', 'after', 'before',
+] as const;
+export type FilterOp = typeof FILTER_OPS[number];
+/** Ops that take no value. */
+export const VALUELESS_FILTER_OPS: ReadonlyArray<FilterOp> = ['is_blank', 'is_not_blank'];
+
+export interface FilterCondition {
+  field: string;
+  op: FilterOp;
+  /** Required for every op except is_blank / is_not_blank. */
+  value?: string;
+}
+
+export interface RecordFilter {
+  match: 'all' | 'any';
+  conditions: FilterCondition[];
+}
+
+/** Fields every proposed row shares. `followed` (DEF-362): WHICH remark, filter
+ *  words or connect instruction the row followed, quoted or named — the owner's
+ *  "every row says which remark or instruction it followed". Absent when none. */
+interface SuggestionDraftBase {
   sourceField: string;
-  targetKey: KpiTargetKey;
-  transform: KpiTransform;
-  coverage: FieldCoverage;
   samples: string[];
   /** Blast radius / set-aside arithmetic, in plain words. */
   reason: string;
+  followed?: string;
+}
+
+/** What the proposer hands mappingStore to persist as one suggestion row.
+ *  For mode 'wide', sourceField = transform.columns[0] (display), and the
+ *  header check uses every transform column. */
+export interface KpiSuggestionDraft extends SuggestionDraftBase {
+  targetKind: 'kpi';
+  targetKey: KpiTargetKey;
+  transform: KpiTransform;
+  coverage: FieldCoverage;
   /** Present iff targetKey is `kpi:new:<key>`; key must match KPI_KEY_RE. */
   newKpi?: { kpiKey: string; label: string; unit?: string };
 }
+
+/** sourceField = titleField (per_record) or columns[0] (table), for display;
+ *  the header check uses every field the transform names. */
+export interface ContextSuggestionDraft extends SuggestionDraftBase {
+  targetKind: 'context';
+  targetKey: ContextTargetKey;
+  transform: ContextTransform;
+  coverage: FieldCoverage | null;
+}
+
+/** At most ONE per version. sourceField = the first condition's field (display). */
+export interface FilterSuggestionDraft extends SuggestionDraftBase {
+  targetKind: 'filter';
+  targetKey: FilterTargetKey;
+  transform: RecordFilter;
+  coverage: FieldCoverage | null;
+}
+
+export type SuggestionDraft = KpiSuggestionDraft | ContextSuggestionDraft | FilterSuggestionDraft;
 
 export interface ProposeOptions {
   prompt?: string;
@@ -224,6 +456,59 @@ export interface ApprovedKpiRow {
   /** Always `kpi:<key>` by now: approving `kpi:new:<key>` rewrites it. */
   targetKey: `kpi:${string}`;
   transform: KpiTransform;
+}
+
+/** DEF-362: an APPROVED context row of one version, as the context writer
+ *  consumes it (computed when the run starts, never stored). */
+export interface ApprovedContextRow {
+  suggestionId: string;
+  targetKey: ContextTargetKey;
+  transform: ContextTransform;
+}
+
+/** One planned knowledge page (pure planning output of the context writer). */
+export interface ContextPagePlan {
+  /** Stable identity: `<integrationId>:<idField value>` (per_record) or
+   *  `<integrationId>:table`. Stored in page metadata; the page TITLE is display. */
+  recordKey: string;
+  title: string;
+  body: string;
+  /** sha256 hex of `body` — unchanged content is skipped, never rewritten. */
+  contentHash: string;
+  /** e.g. "record 14 › id=A-77", for the change row. */
+  sourceKey: string;
+}
+
+export interface ContextWriteResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  /** Pages whose record disappeared from the source — marked stale, never deleted. */
+  stale: number;
+  /** Records that produced no page (no title / no id / all body fields blank). */
+  skipped: number;
+  /** True when integrations.max_context_pages stopped planning early. */
+  truncated: boolean;
+  anomalies: string[];
+}
+
+export interface ContextWriteOptions {
+  dryRun: boolean;
+  runId: string;
+  /** apiConfig.idField; a sheet uses the row number when absent. */
+  idField: string | null;
+  /** The tenant user the org_doc pages are attributed to (the designated
+   *  account, as the folder scribe uses). */
+  userId: number;
+}
+
+/** DEF-362: what applying the APPROVED filter did. */
+export interface FilterOutcome {
+  kept: Record<string, string>[];
+  filteredOut: number;
+  /** e.g. 'Field "Status" is not in the data' — a condition naming a missing
+   *  field FAILS the run (an unconfigured target), it never silently passes. */
+  problems: string[];
 }
 
 export interface KpiDefinitionRef {
@@ -345,7 +630,10 @@ export interface RunStatusView {
 
 export interface RunChangeDTO {
   id: string;
-  op: 'create' | 'update';
+  /** 'stale' (DEF-362): a context page whose record disappeared from the source. */
+  op: 'create' | 'update' | 'stale';
+  /** 'kpi' | 'context' (DEF-362). Optional so Stage 1 producers stay valid. */
+  targetKind?: 'kpi' | 'context';
   subjectKey: ReadingKey;
   subjectLabel: string | null;
   targetKey: string;
@@ -396,6 +684,19 @@ export class CredentialUnreadableError extends Error {
 
 /** 400: IntegrationInput / KpiDefinitionInput failed the closed whitelist or a
  *  field validation. `field` names the offending key. */
+/** DEF-362: the REST fetch guard refused or aborted a request. `kind` says
+ *  which rule fired; `message` is admin-readable and NEVER contains the secret
+ *  or a URL carrying it. */
+export type FetchGuardKind =
+  | 'scheme' | 'address' | 'dns' | 'origin' | 'redirect' | 'size' | 'timeout' | 'network';
+export class FetchGuardError extends Error {
+  readonly code = 'FETCH_GUARD';
+  constructor(readonly kind: FetchGuardKind, message: string) {
+    super(message);
+    this.name = 'FetchGuardError';
+  }
+}
+
 export class IntegrationInputError extends Error {
   readonly code = 'INTEGRATION_INPUT';
   constructor(message: string, readonly field?: string) {
@@ -467,6 +768,16 @@ export interface IntegrationDTO {
   createdAt: string;
   updatedAt: string;
   stage: WizardStage;
+  // DEF-362 (Stage 1b). Null / false on a Google Sheet integration.
+  /** A secret is stored. The secret itself is NEVER returned. */
+  hasSecret: boolean;
+  apiDocName: string | null;
+  apiDocReading: ApiDocReading | null;
+  filterInstructions: string | null;
+  connectInstructions: string | null;
+  apiConfig: ApiConfig | null;
+  /** The filter the admin APPROVED (read-only here; set only by approval). */
+  approvedFilter: RecordFilter | null;
 }
 
 /**
@@ -475,6 +786,12 @@ export interface IntegrationDTO {
  * fingerprint and createdBy are absent ON PURPOSE. Unknown keys are REJECTED
  * (IntegrationInputError), not ignored. The sheet arrives as a link and is
  * parsed server-side (parseSheetLink); sheetId/gid are never taken raw.
+ *
+ * DEF-362: the API fields join the whitelist. The SECRET is NOT here — it has
+ * its own write-only endpoint (secretStore.setSecret) so it can never ride on a
+ * PUT that echoes the integration back. `approvedFilter`, `apiDocText` and
+ * `apiDocReading` are NOT here either: approval writes the first, the document
+ * upload and the AI reading write the others.
  */
 export interface IntegrationInput {
   name?: string;
@@ -492,6 +809,12 @@ export interface IntegrationInput {
   timezone?: string;
   changeCapPct?: number;
   blankPolicy?: BlankPolicy;
+  /** sourceKind 'api'. Editing it clears the connection test (fingerprint). */
+  apiConfig?: ApiConfig | null;
+  /** Plain-word filters ("only active customers, 2025 onwards"). */
+  filterInstructions?: string | null;
+  /** "How should this data be mapped?" from the Connect step. */
+  connectInstructions?: string | null;
 }
 
 /** Runtime copy of the whitelist, for the unknown-key check. */
@@ -499,6 +822,7 @@ export const INTEGRATION_INPUT_KEYS: ReadonlyArray<keyof IntegrationInput> = [
   'name', 'purpose', 'adminBrief', 'sourceKind', 'link', 'tabLabel',
   'frequency', 'runTime', 'dayOfWeek', 'dayOfMonth', 'timezone',
   'changeCapPct', 'blankPolicy',
+  'apiConfig', 'filterInstructions', 'connectInstructions',
 ];
 
 export interface MappingVersionDTO {
@@ -520,12 +844,15 @@ export interface SuggestionDTO {
   targetKind: TargetKind;
   sourceField: string;
   targetKey: string;
-  transform: KpiTransform | null;
+  /** KpiTransform for 'kpi', ContextTransform for 'context', RecordFilter for 'filter'. */
+  transform: KpiTransform | ContextTransform | RecordFilter | null;
   coverage: FieldCoverage | null;
   samples: string[];
   newKpi: { kpiKey: string; label: string; unit?: string } | null;
   status: SuggestionStatus;
   reason: string | null;
+  /** DEF-362: which remark / instruction this row followed. */
+  followed: string | null;
   carriedFromId: string | null;
   decidedBy: number | null;
   decidedAt: string | null;
@@ -691,4 +1018,116 @@ export interface RunJobsModule {
 /** schedule/dispatcher.ts — protectedJob 'integration_sync_dispatcher', 60 s. */
 export interface DispatcherModule {
   dispatchDueIntegrations(now?: Date): Promise<DispatchResult>;
+}
+
+// ── DEF-362 MODULE SIGNATURES (Stage 1b, spec §2b) ─────────────────────────
+
+/** sources/docReader.ts — the API document. readApiDocument is the ONLY Stage 1b
+ *  module besides the proposer that calls a model (llmRouter, purpose
+ *  'integration_doc_read'). */
+export interface DocReaderModule {
+  /** PDF (pdf-parse) / DOCX (mammoth) / TXT / MD / JSON (OpenAPI) → plain text.
+   *  Over integrations.doc_max_bytes or an unsupported type ⇒ IntegrationInputError. */
+  extractDocText(buf: Buffer, filename: string, mime: string): Promise<string>;
+  /** Credential-looking strings (bearer tokens, JWTs, sk_/ghp_ keys, AIza…,
+   *  "api_key: …" values) replaced BEFORE the text is stored or sent to a model. */
+  redactSecrets(text: string): { text: string; redactions: number };
+  /** Reads the stored (already redacted) api_doc_text with the admin's remarks
+   *  and filter words; stores and returns the reading. It never proposes a
+   *  secret value. Throws IntegrationNotFoundError / IntegrationInputError
+   *  (no document attached). */
+  readApiDocument(cn: string, integrationId: string, actorId: number): Promise<ApiDocReading>;
+}
+
+/** sources/apiReader.ts — deterministic, model-free (it runs on the execution path). */
+export interface ApiReaderModule {
+  /** ONE real request (first page only) through guardedFetch. ok only with ≥1
+   *  record; sampleRow = exactly one record, flattened; pageRecords and
+   *  declaredTotal reported. Never throws for a bad connection — ok:false + reason. */
+  testApi(cn: string, integ: ApiSourceRef): Promise<TestResult>;
+  /** Every page up to min(pagination.maxPages, integrations.api_max_pages);
+   *  records flattened; truncated when a cap stopped it or fewer than the
+   *  declared total arrived. Throws on a refused/failed fetch (the run FAILS). */
+  readApi(cn: string, integ: ApiSourceRef): Promise<ReadResult>;
+  /** Nested JSON → dotted keys with string cells ('' for null/undefined);
+   *  arrays of scalars joined with ', ', deeper arrays as JSON. Pure. */
+  flattenRecord(rec: unknown): Record<string, string>;
+}
+
+/** sources/integrationFetch.ts — THE only way an integration reaches a REST API. */
+export interface IntegrationFetchModule {
+  /** https only; every resolved address vetted (private / loopback / link-local
+   *  / CGNAT / multicast / metadata refused); the socket pinned to the vetted
+   *  address; ≤ 3 same-origin redirects, each re-vetted; byte cap and one
+   *  deadline. Throws FetchGuardError. Non-2xx statuses are RETURNED, not thrown. */
+  guardedFetch(url: string | URL, opts: GuardedFetchOptions): Promise<GuardedResponse>;
+  /** Resolve `candidate` (absolute, or relative to `base`) and refuse it unless
+   *  its origin is `origin` (vm assertSameOrigin). Throws FetchGuardError('origin'). */
+  assertSameOrigin(candidate: string | URL, origin: string, base?: string): URL;
+  /** ApiConfig + decrypted secret → where it rides (vm buildAuth). NONE or a
+   *  null secret ⇒ nothing attached. */
+  buildAuth(cfg: Pick<ApiConfig, 'authScheme' | 'authHeaderName' | 'authQueryParam'>, secret: string | null): AuthAttachment;
+  /** behavior integrations.api_max_bytes / api_timeout_ms / api_max_pages. */
+  fetchLimits(cn: string): Promise<FetchLimits>;
+}
+
+/** store/secretStore.ts — AES-256-GCM, key HKDF-derived from ENCRYPTION_KEY via
+ *  the strict decodeMEK; 'v1:<iv>:<tag>:<ct>'. Fails closed. Plaintext is never
+ *  logged and never returned by any route. */
+export interface SecretStoreModule {
+  /** Stores (and clears the connection test — a new credential is a new
+   *  connection) unless testFirst fails. Throws IntegrationNotFoundError. */
+  setSecret(cn: string, integrationId: string, plain: string, opts?: SetSecretOptions): Promise<SetSecretResult>;
+  hasSecret(cn: string, integrationId: string): Promise<boolean>;
+  /** null when none is stored. Throws CredentialUnreadableError when the stored
+   *  value cannot be decrypted (wrong key, tampered, unknown format) — the
+   *  test/run fails with that reason; nothing is retried without a credential. */
+  getSecret(cn: string, integrationId: string): Promise<string | null>;
+}
+
+/** engine/contextWriter.ts — imports NO AI provider (engine rule). Embedding of
+ *  changed pages is queued by the knowledge helper, not called from here. */
+export interface ContextWriterModule {
+  /** PURE: approved context rows × records ⇒ pages (per_record capped at
+   *  integrations.max_context_pages; table ⇒ one page). */
+  planContextPages(
+    integ: { id: string; name: string },
+    records: Record<string, string>[],
+    rows: ApprovedContextRow[],
+    idField: string | null,
+    maxPages: number,
+  ): { pages: ContextPagePlan[]; skipped: number; truncated: boolean; anomalies: string[] };
+  /** Dry run: change rows only. Live: upsertTenantOrgDoc per changed page +
+   *  stale-marking of vanished records + their run-change rows. */
+  writeContextPages(
+    cn: string,
+    integ: { id: string; name: string },
+    records: Record<string, string>[],
+    rows: ApprovedContextRow[],
+    opts: ContextWriteOptions,
+  ): Promise<ContextWriteResult>;
+}
+
+/** engine/recordFilter.ts — PURE, no I/O, no model. */
+export interface RecordFilterModule {
+  /** null filter ⇒ every record kept (nothing filters until approved). */
+  applyRecordFilter(records: Record<string, string>[], filter: RecordFilter | null): FilterOutcome;
+  /** Closed validation of a proposed/approved filter: known ops, value present
+   *  where required, ≤ 20 conditions, fields (when given) must exist.
+   *  Throws IntegrationInputError. */
+  validateRecordFilter(raw: unknown, fields?: string[]): RecordFilter;
+}
+
+/** services/knowledge/tenantOrgDoc.ts — the ONE tenant org_doc writer, extracted
+ *  from folderScribeService and used by both it and the context writer. */
+export interface TenantOrgDocModule {
+  /** Upsert by (clientNumber, userId, pageType 'org_doc', title), scope 'tenant'.
+   *  metadata.contentHash === contentHash ⇒ untouched, changed:false. */
+  upsertTenantOrgDoc(cn: string, doc: {
+    userId: number;
+    title: string;
+    body: string;
+    metadata: Record<string, unknown>;
+    contentHash: string;
+  }): Promise<{ id: string; changed: boolean }>;
 }

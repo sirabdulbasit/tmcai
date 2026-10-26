@@ -25,20 +25,42 @@
  *
  * Mount note: `/kpi-definitions` is declared BEFORE `/:id` so it is not
  * captured as an integration id.
+ *
+ * DEF-362 (Stage 1b, spec §2b) adds, for an API integration:
+ *   - POST /:id/api-document — multipart `file` (the repo's multer, in memory)
+ *     or JSON {filename, base64} / {text, name}; capped at behavior
+ *     integrations.doc_max_bytes (default 5 MB) BEFORE extraction; extracted,
+ *     credential-redacted and stored by docReader.attachApiDocument.
+ *   - POST /:id/api-document/read + GET /:id/api-document/read/status — the AI
+ *     reading, as an async job (a document read can outlast a proxy timeout),
+ *     like the proposal endpoints.
+ *   - PUT /:id/secret {secret} — WRITE-ONLY. The candidate is tested first
+ *     (one real request with it); a failing candidate is never stored, so it
+ *     can never replace a working one. Answers {stored, verified, reason} —
+ *     no response of this router ever carries the secret or its ciphertext.
+ *   - GET /:id/connection-check also answers {ok, sampleRecord (ONE record),
+ *     pageRecords, declaredTotal, columns, reason} beside {result, integration}.
+ * approved_filter has no endpoint: approving a filter row is its only writer.
  */
 
+import crypto from 'crypto';
 import { Router, Request, Response, NextFunction } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import multer from 'multer';
 import { requireAuth, requireAdmin } from '../../middleware/auth';
 import createLogger from '../../utils/logger';
-import { BEHAVIOR_SPECS, resolveBehaviorValue } from '../../services/behaviorConfig';
+import { BEHAVIOR_SPECS, getBehaviorValue, resolveBehaviorValue } from '../../services/behaviorConfig';
 import {
   INTEGRATION_INPUT_KEYS,
+  type ApiDocReading,
   type IntegrationInput,
   type KpiDefinitionInput,
   type TestResult,
 } from '../../services/integrations/types';
-import { testGsheet } from '../../services/integrations/sources/gsheetReader';
+import { sourceProblem, testSource } from '../../services/integrations/sources';
+import { readApiConfig, testApiWith } from '../../services/integrations/sources/apiReader';
+import { attachApiDocument, readApiDocument } from '../../services/integrations/sources/docReader';
+import { setSecret } from '../../services/integrations/store/secretStore';
 import { startProposalJob, getProposalJob } from '../../services/integrations/mapping/proposalJobs';
 import {
   listIntegrations,
@@ -326,18 +348,227 @@ router.get('/:id/connection-check', handle('GET /:id/connection-check', async (r
   const cn = tenantOf(req);
   const id = idParam(req);
   const integ = await requireIntegration(cn, id);
-  if (!integ.sourceConfig) {
-    throw new HttpError(400, 'Paste the Google Sheet link first.', { field: 'link' });
-  }
+  // DEF-362: gsheet | api through the source router.
+  const problem = sourceProblem(integ);
+  if (problem) throw new HttpError(400, problem.message, { field: problem.field });
+  // Taken BEFORE the (remote, slow) test: a config or credential changed while
+  // it runs must not inherit its pass (integrationStore.RecordTestOptions).
+  const testStartedAt = new Date();
   let result: TestResult;
   try {
-    result = await testGsheet(cn, integ.sourceConfig);
+    result = await testSource(cn, integ);
   } catch (err) {
     if ((err as { code?: unknown })?.code !== 'CREDENTIAL_UNREADABLE') throw err;
     result = { ok: false, rows: 0, columns: [], sampleRow: null, reason: (err as Error).message };
   }
-  const integration = await recordConnectionTest(cn, id, result);
-  res.json({ result, integration });
+  const integration = await recordConnectionTest(cn, id, result, {
+    tested: { sourceKind: integ.sourceKind, sourceConfig: integ.sourceConfig, apiConfig: integ.apiConfig },
+    testStartedAt,
+  });
+  res.json({
+    // DEF-362 Connect view (spec §2b): exactly ONE record, plus the page count
+    // and the total the system declares.
+    ok: result.ok,
+    sampleRecord: result.sampleRow ?? null,
+    pageRecords: result.pageRecords ?? result.rows,
+    declaredTotal: result.declaredTotal ?? null,
+    columns: result.columns,
+    reason: result.reason ?? null,
+    result,
+    integration,
+  });
+}));
+
+// ── DEF-362: the API document (Basics) ─────────────────────────────────────
+
+/** Hard ceiling for the in-memory upload = the largest doc_max_bytes a tenant
+ *  may configure; the tenant's own cap is checked in the handler. */
+const DOC_UPLOAD_CEILING = BEHAVIOR_SPECS['integrations.doc_max_bytes']?.max ?? 20 * 1024 * 1024;
+const DOC_DEFAULT_MAX = 5 * 1024 * 1024;
+
+const docUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: DOC_UPLOAD_CEILING, files: 1, fields: 10 },
+});
+
+/** multer as a promise, so its errors go through sendError (a too-large file
+ *  is a 413 the admin can act on, not a 500). Non-multipart bodies pass. */
+function runDocUpload(req: Request, res: Response): Promise<void> {
+  return new Promise((resolve, reject) => {
+    docUpload.single('file')(req, res, (err: unknown) => {
+      if (!err) { resolve(); return; }
+      if ((err as { code?: string })?.code === 'LIMIT_FILE_SIZE') {
+        reject(new HttpError(413, 'The document is too large.', { field: 'file' }));
+        return;
+      }
+      reject(new HttpError(400, 'The upload could not be read. Attach one document as "file".', { field: 'file' }));
+    });
+  });
+}
+
+const mb = (n: number): string => `${Math.round((n / (1024 * 1024)) * 10) / 10} MB`;
+
+async function requireApiIntegration(cn: string, id: string) {
+  const integ = await requireIntegration(cn, id);
+  if (integ.sourceKind !== 'api') {
+    throw new HttpError(400, 'This integration reads a Google Sheet; an API document or credential does not apply.', { field: 'sourceKind' });
+  }
+  return integ;
+}
+
+router.post('/:id/api-document', handle('POST /:id/api-document', async (req, res) => {
+  await runDocUpload(req, res);
+  const cn = tenantOf(req);
+  const id = idParam(req);
+  await requireApiIntegration(cn, id);
+  const maxBytes = await getBehaviorValue('integrations.doc_max_bytes', { clientNumber: cn }).catch(() => DOC_DEFAULT_MAX);
+  const tooBig = (n: number) => new HttpError(413, `The document is ${mb(n)}; the limit is ${mb(maxBytes)}. Attach the part that describes the endpoints.`, { field: 'file' });
+
+  const file = (req as Request & { file?: { buffer: Buffer; originalname: string; mimetype: string; size: number } }).file;
+  let result;
+  if (file) {
+    if (file.size > maxBytes || file.buffer.length > maxBytes) throw tooBig(file.buffer.length);
+    result = await attachApiDocument(cn, id, { buffer: file.buffer, filename: file.originalname, mime: file.mimetype });
+  } else {
+    const body = bodyOf(req);
+    const allowed = new Set(['filename', 'base64', 'mime', 'text', 'name', 'clientNumber']);
+    const unknown = Object.keys(body).filter((k) => !allowed.has(k));
+    if (unknown.length) throw new HttpError(400, `These fields cannot be set here: ${unknown.join(', ')}`, { field: unknown[0] });
+    if (typeof body.base64 === 'string') {
+      if (typeof body.filename !== 'string' || !body.filename.trim() || body.filename.length > 255) {
+        throw new HttpError(400, 'filename is required with base64', { field: 'filename' });
+      }
+      // Checked on the encoded length first, so an oversized string is refused
+      // before it is decoded into a second copy in memory.
+      if (Math.floor((body.base64.length * 3) / 4) > maxBytes + 3) throw tooBig(Math.floor((body.base64.length * 3) / 4));
+      const buffer = Buffer.from(body.base64, 'base64');
+      if (buffer.length > maxBytes) throw tooBig(buffer.length);
+      if (buffer.length === 0) throw new HttpError(400, 'The document is empty.', { field: 'base64' });
+      const mime = typeof body.mime === 'string' ? body.mime.slice(0, 100) : '';
+      result = await attachApiDocument(cn, id, { buffer, filename: body.filename.trim(), mime });
+    } else if (typeof body.text === 'string') {
+      const bytes = Buffer.byteLength(body.text, 'utf8');
+      if (bytes > maxBytes) throw tooBig(bytes);
+      if (!body.text.trim()) throw new HttpError(400, 'Paste the document text first.', { field: 'text' });
+      result = await attachApiDocument(cn, id, {
+        text: body.text,
+        ...(typeof body.name === 'string' && body.name.trim() ? { name: body.name.trim().slice(0, 255) } : {}),
+      });
+    } else {
+      throw new HttpError(400, 'Attach a document as "file", or send {filename, base64} or {text}.', { field: 'file' });
+    }
+  }
+  // {name, chars, redactions} — never the text back (it may be large, and the
+  // AI reading is what the admin reviews).
+  res.status(201).json({ document: result, integration: await requireIntegration(cn, id) });
+}));
+
+/** In-memory AI-reading jobs, one per integration (same shape as the proposal
+ *  jobs). Lost on restart — the admin just asks again; the stored reading is
+ *  the durable result. */
+interface DocReadJob {
+  jobId: string;
+  cn: string;
+  integrationId: string;
+  state: 'running' | 'done' | 'failed';
+  startedAt: string;
+  finishedAt: string | null;
+  reading: ApiDocReading | null;
+  error: string | null;
+}
+const DOC_JOB_TTL_MS = 60 * 60 * 1000;
+const docJobs = new Map<string, DocReadJob>();
+const docJobKey = (cn: string, id: string) => `${cn}\u0000${id}`;
+
+function sweepDocJobs(now = Date.now()): void {
+  for (const [k, j] of docJobs) {
+    if (now - Date.parse(j.finishedAt ?? j.startedAt) > DOC_JOB_TTL_MS) docJobs.delete(k);
+  }
+}
+
+/** Test hook. */
+export function __resetDocReadJobs(): void {
+  docJobs.clear();
+}
+
+router.post('/:id/api-document/read', handle('POST /:id/api-document/read', async (req, res) => {
+  const cn = tenantOf(req);
+  const id = idParam(req);
+  await requireApiIntegration(cn, id);
+  sweepDocJobs();
+  const key = docJobKey(cn, id);
+  const current = docJobs.get(key);
+  // A second click while reading joins the running job — never a second model call.
+  if (current && current.state === 'running') {
+    res.status(202).json({ jobId: current.jobId });
+    return;
+  }
+  const job: DocReadJob = {
+    jobId: crypto.randomUUID(), cn, integrationId: id, state: 'running',
+    startedAt: new Date().toISOString(), finishedAt: null, reading: null, error: null,
+  };
+  docJobs.set(key, job);
+  const actorId = actorOf(req);
+  void readApiDocument(cn, id, actorId)
+    .then((reading) => { Object.assign(job, { state: 'done', reading, finishedAt: new Date().toISOString() }); })
+    .catch((err) => {
+      const code = (err as { code?: unknown })?.code;
+      // Deliberate errors carry admin words; anything else is logged, never echoed.
+      const message = code === 'INTEGRATION_INPUT' || code === 'INTEGRATION_NOT_FOUND'
+        ? (err as Error).message
+        : 'The AI could not read the document. Please try again.';
+      if (message !== (err as Error)?.message) {
+        log.error('api document read failed', { clientNumber: cn, integrationId: id, error: err instanceof Error ? err.message : String(err) });
+      }
+      Object.assign(job, { state: 'failed', error: message, finishedAt: new Date().toISOString() });
+    });
+  res.status(202).json({ jobId: job.jobId });
+}));
+
+router.get('/:id/api-document/read/status', handle('GET /:id/api-document/read/status', async (req, res) => {
+  const cn = tenantOf(req);
+  const id = idParam(req);
+  const jobId = queryString(req, 'jobId');
+  if (!jobId) throw new HttpError(400, 'jobId is required', { field: 'jobId' });
+  const job = docJobs.get(docJobKey(cn, id));
+  // Another tenant / integration / an old job id reads as gone (never confirms it exists).
+  if (!job || job.jobId !== jobId) throw new HttpError(404, 'That reading is no longer available. Ask the AI to read the document again.');
+  const { cn: _cn, ...view } = job;
+  res.json({ job: view });
+}));
+
+// ── DEF-362: the API credential (write-only) ───────────────────────────────
+
+const MAX_SECRET_BODY_CHARS = 8192;
+
+router.put('/:id/secret', handle('PUT /:id/secret', async (req, res) => {
+  const cn = tenantOf(req);
+  const id = idParam(req);
+  const body = bodyOf(req);
+  const unknown = Object.keys(body).filter((k) => k !== 'secret' && k !== 'clientNumber');
+  if (unknown.length) throw new HttpError(400, `These fields cannot be set here: ${unknown.join(', ')}`, { field: unknown[0] });
+  if (typeof body.secret !== 'string' || !body.secret.trim() || body.secret.length > MAX_SECRET_BODY_CHARS) {
+    throw new HttpError(400, 'Enter the credential.', { field: 'secret' });
+  }
+  const integ = await requireApiIntegration(cn, id);
+  // The stored config through the readers' own normaliser (the DTO's apiConfig
+  // already is; re-applied so this route never trusts a shape it did not check):
+  // the candidate is tested against exactly what a run would use.
+  const cfg = readApiConfig(integ.apiConfig);
+  if (!cfg) throw new HttpError(400, 'Set up the API connection (an https base URL, endpoint and records path) first.', { field: 'apiConfig' });
+  if (cfg.authScheme === 'NONE') {
+    throw new HttpError(400, 'This connection is set to sign in with nothing; choose Bearer token, API key or Basic first.', { field: 'authScheme' });
+  }
+  // Test-first (spec §2b): one real request WITH THE CANDIDATE. A failing
+  // candidate is not stored, so a working secret is never overwritten by it.
+  const out = await setSecret(cn, id, body.secret, { testFirst: (plain) => testApiWith(cn, cfg, plain) });
+  const verified = out.stored && !!out.test?.ok;
+  res.json({
+    stored: out.stored,
+    verified,
+    reason: out.reason ?? null,
+    integration: await requireIntegration(cn, id),
+  });
 }));
 
 // ── Step 3: Mapping ────────────────────────────────────────────────────────

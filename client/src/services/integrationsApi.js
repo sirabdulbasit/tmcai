@@ -25,6 +25,9 @@ export const INTEGRATION_INPUT_KEYS = [
   'name', 'purpose', 'adminBrief', 'sourceKind', 'link', 'tabLabel',
   'frequency', 'runTime', 'dayOfWeek', 'dayOfMonth', 'timezone',
   'changeCapPct', 'blankPolicy',
+  // DEF-362 (Stage 1b). The secret is NOT here: it has its own write-only call
+  // (setIntegrationSecret) so it never rides on a PUT that echoes the integration.
+  'apiConfig', 'filterInstructions', 'connectInstructions',
 ];
 
 export function pickInput(obj) {
@@ -78,6 +81,75 @@ export async function deleteIntegration(id) {
 export async function checkConnection(id) {
   const { data } = await api.get(`${BASE}/${encodeURIComponent(id)}/connection-check`);
   return { result: data?.result ?? null, integration: data?.integration ?? null };
+}
+
+// ── API document and secret (DEF-362, spec §2b) ──────────────────────────
+
+/** Biggest document the server accepts (behavior integrations.doc_max_bytes default).
+ *  Checked here only so the admin hears it before a 5 MB upload; the server checks again. */
+export const DOC_MAX_BYTES = 5 * 1024 * 1024;
+export const DOC_ACCEPT = '.pdf,.docx,.txt,.md,.json';
+
+/** Upload the API document (multipart field `file`). The server extracts the text,
+ *  redacts credential-looking strings BEFORE storing it, and clears the previous AI
+ *  reading. Returns `{document: {name, chars, redactions}, integration}`. */
+export async function uploadApiDocument(id, file) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  // The shared client defaults to 'Content-Type: application/json', and axios 1.x turns a
+  // FormData sent with a JSON type into JSON.stringify(formDataToJSON(form)) — the File
+  // becomes {} and multer never runs (DEF-362 review). A multipart type keeps it a
+  // FormData; the browser adapter then drops the header so the browser adds the boundary.
+  const { data } = await api.post(`${BASE}/${encodeURIComponent(id)}/api-document`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return { document: data?.document ?? null, integration: data?.integration ?? null };
+}
+
+/** Same as uploadApiDocument, for pasted text. */
+export async function attachApiDocumentText(id, text, name) {
+  const body = { text };
+  if (name && name.trim()) body.name = name.trim();
+  const { data } = await api.post(`${BASE}/${encodeURIComponent(id)}/api-document`, body);
+  return { document: data?.document ?? null, integration: data?.integration ?? null };
+}
+
+/** The AI reads the stored (already redacted) document with the remarks and filter
+ *  words. The server runs it as a job (one model call can outlast a request): POST
+ *  /api-document/read answers 202 {jobId}; GET /api-document/read/status?jobId= answers
+ *  {job: {state, reading, error}}. Resolves with `{reading, integration}` only once the
+ *  job is done — the integration is re-fetched so the stored reading (and the draft
+ *  Connect pre-fills from) is the server's, never a stale copy. */
+export async function startApiDocumentRead(id) {
+  const { data } = await api.post(`${BASE}/${encodeURIComponent(id)}/api-document/read`);
+  return data; // { jobId }
+}
+
+export async function getApiDocumentReadStatus(id, jobId) {
+  const { data } = await api.get(`${BASE}/${encodeURIComponent(id)}/api-document/read/status`, { params: { jobId } });
+  return unwrap(data, 'job');
+}
+
+export async function readApiDocument(id, { onTick, signal } = {}) {
+  const { jobId } = await startApiDocumentRead(id);
+  const job = await pollJob(() => getApiDocumentReadStatus(id, jobId), (j) => j.state !== 'running', { onTick, signal });
+  if (job.state === 'failed') throw new Error(job.error || 'The AI could not read the document.');
+  const integration = await getIntegration(id);
+  return { reading: job.reading ?? integration?.apiDocReading ?? null, integration };
+}
+
+/** Write-only. The server tests the candidate first and keeps a working secret over a
+ *  failing one (spec §2b). The route is PUT /:id/secret and answers
+ *  `{stored, verified, reason, integration}` — `verified` = stored AND the API answered
+ *  with it. The secret itself never comes back. */
+export async function setIntegrationSecret(id, secret) {
+  const { data } = await api.put(`${BASE}/${encodeURIComponent(id)}/secret`, { secret });
+  return {
+    stored: !!data?.stored,
+    verified: !!data?.verified,
+    reason: data?.reason ?? null,
+    integration: data?.integration ?? null,
+  };
 }
 
 // ── Mapping ───────────────────────────────────────────────────────────────

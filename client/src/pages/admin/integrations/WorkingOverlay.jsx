@@ -71,7 +71,7 @@ export default function WorkingOverlay({ open, title, stage, startedAt }) {
 export function proposalStageText(job) {
   if (!job) return 'Sending the request…';
   if (job.stage) return job.stage;
-  if (job.state === 'running') return 'The AI is reading every field of the sheet and matching it to your KPIs.';
+  if (job.state === 'running') return 'The AI is reading every field of the data, with your remarks, and matching it to KPIs, knowledge and filters.';
   if (job.state === 'done') return 'Saving the new mapping version…';
   return job.error || '';
 }
@@ -82,8 +82,8 @@ export function runStageText(run, dryRun) {
   if (run.stage) return run.stage;
   if (run.status === 'RUNNING') {
     return dryRun
-      ? 'Reading the sheet and working out what would change. Nothing is written.'
-      : 'Reading the sheet and writing the approved KPI numbers.';
+      ? 'Reading the source and working out what would change. Nothing is written.'
+      : 'Reading the source and writing what you approved.';
   }
   return 'Finishing…';
 }

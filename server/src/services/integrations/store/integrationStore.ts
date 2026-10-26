@@ -22,24 +22,43 @@
  *    approved one, else the latest): approvals on an older version say nothing
  *    about what the next run writes.
  *
+ * DEF-362 (Stage 1b, spec §2b):
+ *  - The whitelist grows by apiConfig, filterInstructions, connectInstructions.
+ *    apiConfig is itself a CLOSED shape (unknown keys refused): no field of it
+ *    can carry a credential — a `secret`/`token` key, a user:password in the
+ *    base URL or a credential-named query parameter is refused with "use the
+ *    credential field". The secret has its own write-only endpoint
+ *    (secretStore.setSecret); approved_filter is written only by approval.
+ *  - For an api integration "which connection" is api_config (normalised) +
+ *    secret_set_at: editing either clears the connection test, exactly like a
+ *    new sheet link (vm §9 "the tested connection is the one runs use").
+ *  - The DTO carries hasSecret, NEVER the secret or its ciphertext, and never
+ *    the document text (only its name and the AI's reading).
+ *
  * Tenant rule: `cn` is the first parameter and is in every `where`, even though
  * the Prisma tenant extension would add it — the dispatcher and boot paths run
  * outside a tenant scope, where the extension does nothing.
  */
 import { createHash } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import createLogger from '../../../utils/logger';
 import prisma from '../../../db/prisma';
 import { isValidTimezone, resolveUserTimezone } from '../../userTimezoneService';
 import { parseSheetLink } from '../sources/sheetLink';
+import { readApiConfig, readPagination } from '../sources/apiReader';
 import { nextScheduledRun } from '../engine/planner';
 import {
+  API_METHODS,
+  AUTH_SCHEMES,
   BLANK_POLICIES,
   FREQUENCIES,
   INTEGRATION_INPUT_KEYS,
   IntegrationInputError,
   IntegrationNotFoundError,
   SOURCE_KINDS,
+  type ApiConfig,
+  type ApiDocReading,
   type BlankPolicy,
   type Frequency,
   type GsheetSourceConfig,
@@ -47,6 +66,7 @@ import {
   type IntegrationInput,
   type IntegrationStatus,
   type IntegrationStoreModule,
+  type RecordFilter,
   type RunStatus,
   type ScheduleConfig,
   type SourceKind,
@@ -76,7 +96,136 @@ const inputSchema = z.object({
   timezone: z.string().max(64),
   changeCapPct: z.number().int().min(1, 'The change limit must be 1–100%.').max(100, 'The change limit must be 1–100%.'),
   blankPolicy: z.enum(BLANK_POLICIES),
+  // DEF-362. apiConfig is checked by validateApiConfigInput (closed shape).
+  apiConfig: z.unknown(),
+  filterInstructions: z.string().max(5000, 'The filter words are too long (5000 characters at most).').nullable(),
+  connectInstructions: z.string().max(5000, 'The mapping instructions are too long (5000 characters at most).').nullable(),
 }).partial().strict();
+
+// ── API connection input (DEF-362) ────────────────────────────────────────
+
+const API_CONFIG_KEYS = new Set<string>([
+  'baseUrl', 'method', 'path', 'query', 'body', 'authScheme', 'authHeaderName', 'authQueryParam',
+  'recordsPath', 'idField', 'pagination', 'declaredTotalPath',
+]);
+/** A query parameter whose NAME says it carries a credential (vm
+ *  integrationDocReader's credential-named params). Its value would be stored
+ *  in api_config and echoed in every DTO — the key belongs in the secret field,
+ *  with authQueryParam naming where it rides. */
+const CREDENTIAL_PARAM_RE = /^(api[_-]?key|apikey|key|access[_-]?key|access[_-]?token|token|auth|auth[_-]?token|secret|client[_-]?secret|password|passwd|pwd|sig|signature)$/i;
+/** DEF-362 review: the anchored list above misses names that CONTAIN a
+ *  credential word ("hapikey", "app_key", "subscription-key",
+ *  "consumer_secret") — and body keys were never checked at all (JSON-RPC
+ *  APIs such as Odoo carry {"params": {"password": …}}). A name matching
+ *  either is refused in query AND body, at any depth. */
+const CREDENTIAL_NAME_PART_RE = /(api[_-]?key|apikey|app[_-]?key|subscription[_-]?key|consumer[_-]?(?:key|secret)|access[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|secret|passw(?:or)?d|credential)/i;
+const isCredentialName = (k: string): boolean => CREDENTIAL_PARAM_RE.test(k) || CREDENTIAL_NAME_PART_RE.test(k);
+
+/** First credential-named key anywhere in a JSON body, or null. Depth-bounded
+ *  (the body is already capped at MAX_API_BODY_CHARS). */
+function credentialKeyIn(v: unknown, depth = 0): string | null {
+  if (depth > 20 || v === null || typeof v !== 'object') return null;
+  if (Array.isArray(v)) {
+    for (const x of v) { const hit = credentialKeyIn(x, depth + 1); if (hit) return hit; }
+    return null;
+  }
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (isCredentialName(k)) return k;
+    const hit = credentialKeyIn(x, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+const HEADER_NAME_RE = /^[A-Za-z0-9-]{1,64}$/;
+const PARAM_NAME_RE = /^[A-Za-z0-9_.\-[\]]{1,64}$/;
+const MAX_API_BODY_CHARS = 10_000;
+const MAX_QUERY_PARAMS = 30;
+
+/** The origin a stored secret is bound to (DEF-362 review), or null. */
+function apiOrigin(cfg: ApiConfig): string | null {
+  try { return new URL(cfg.baseUrl).origin; } catch { return null; }
+}
+
+/**
+ * The admin's api_config, as the ONE normalised ApiConfig the readers use, or
+ * null (clear it). Throws IntegrationInputError naming the field. Exported for
+ * the route and tests.
+ */
+export function validateApiConfigInput(raw: unknown): ApiConfig | null {
+  if (raw === null) return null;
+  const bad = (msg: string): never => { throw new IntegrationInputError(msg, 'apiConfig'); };
+  if (typeof raw !== 'object' || Array.isArray(raw)) bad('Send the API connection as an object.');
+  const o = raw as Record<string, unknown>;
+  for (const k of Object.keys(o)) {
+    if (!API_CONFIG_KEYS.has(k)) {
+      bad(/secret|token|password|credential|apikey|api_key/i.test(k)
+        ? 'The credential is never part of the connection settings — enter it in the credential field.'
+        : `"${k}" is not an API connection setting.`);
+    }
+  }
+  if (typeof o.baseUrl !== 'string' || !o.baseUrl.trim()) bad('Give the API base address (https://…).');
+  let base: URL;
+  try { base = new URL((o.baseUrl as string).trim()); } catch { return bad('The API base address is not a valid web address.'); }
+  if (base.protocol !== 'https:') bad('Only https:// API addresses can be used.');
+  if (base.username || base.password) bad('Remove the user name / password from the address — enter the credential in the credential field.');
+  if (base.search || base.hash) bad('Put query parameters in "query", not in the base address.');
+  if (o.method !== undefined && !(API_METHODS as readonly unknown[]).includes(o.method)) bad('Method must be GET or POST.');
+  if (o.authScheme !== undefined && !(AUTH_SCHEMES as readonly unknown[]).includes(o.authScheme)) {
+    bad('Sign-in must be None, Bearer token, API key or Basic.');
+  }
+  if (o.path !== undefined && o.path !== null) {
+    if (typeof o.path !== 'string' || o.path.length > 500) bad('The endpoint path is invalid.');
+    const p = (o.path as string).trim();
+    if (/^[a-z][a-z0-9+.-]*:/i.test(p)) {
+      // A full URL is accepted only on the base address's own origin (spec §2b
+      // same-origin rule) — the secret is never sent anywhere else.
+      let u: URL;
+      try { u = new URL(p); } catch { return bad('The endpoint path is not a valid address.'); }
+      if (u.origin !== base.origin) bad('The endpoint must be on the same address as the base address.');
+    }
+    if (p.includes('?')) bad('Put query parameters in "query", not in the path.');
+  }
+  if (o.query !== undefined && o.query !== null) {
+    if (typeof o.query !== 'object' || Array.isArray(o.query)) bad('"query" must be a list of name → value.');
+    const entries = Object.entries(o.query as Record<string, unknown>);
+    if (entries.length > MAX_QUERY_PARAMS) bad(`At most ${MAX_QUERY_PARAMS} query parameters.`);
+    for (const [k, v] of entries) {
+      if (!PARAM_NAME_RE.test(k)) bad(`"${k}" is not a valid parameter name.`);
+      if (isCredentialName(k)) {
+        bad(`"${k}" looks like a credential parameter — enter the key in the credential field and choose "API key in the URL" with that name.`);
+      }
+      if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') bad(`The value of "${k}" must be text.`);
+      if (String(v).length > 500) bad(`The value of "${k}" is too long.`);
+    }
+  }
+  if (o.body !== undefined && o.body !== null) {
+    if (typeof o.body !== 'object' || Array.isArray(o.body)) bad('The request body must be a JSON object.');
+    if (JSON.stringify(o.body).length > MAX_API_BODY_CHARS) bad('The request body is too large.');
+    const credKey = credentialKeyIn(o.body);
+    if (credKey) bad(`"${credKey}" in the request body looks like a credential — it would be stored and shown in plain text. Enter it in the credential field instead.`);
+  }
+  for (const k of ['authHeaderName', 'authQueryParam', 'recordsPath', 'idField', 'declaredTotalPath'] as const) {
+    const v = o[k];
+    if (v !== undefined && v !== null && (typeof v !== 'string' || v.length > 200)) bad(`"${k}" is invalid.`);
+  }
+  if (typeof o.authHeaderName === 'string' && o.authHeaderName.trim() && !HEADER_NAME_RE.test(o.authHeaderName.trim())) {
+    bad('The credential header name is invalid.');
+  }
+  if (/^host$/i.test(String(o.authHeaderName ?? '').trim())) bad('The credential header cannot be "Host".');
+  if (typeof o.authQueryParam === 'string' && o.authQueryParam.trim() && !PARAM_NAME_RE.test(o.authQueryParam.trim())) {
+    bad('The credential parameter name is invalid.');
+  }
+  if (o.pagination !== undefined && readPagination(o.pagination) === null) bad('The paging settings are incomplete.');
+  if (typeof o.authQueryParam === 'string' && o.query && typeof o.query === 'object'
+      && Object.prototype.hasOwnProperty.call(o.query, o.authQueryParam.trim())) {
+    bad(`"${o.authQueryParam.trim()}" is where the credential goes — remove it from the fixed query parameters.`);
+  }
+  // One normal form (apiReader.readApiConfig) — the same function the readers
+  // apply on every read, so what is stored, fingerprinted and run is one shape.
+  const cfg = readApiConfig({ ...o, baseUrl: `${base.origin}${base.pathname.replace(/\/+$/, '')}` });
+  if (!cfg) return bad('The API connection settings are incomplete.');
+  return cfg;
+}
 
 /**
  * Validate a client payload against the closed whitelist. Throws
@@ -103,7 +252,14 @@ export function validateIntegrationInput(raw: unknown): IntegrationInput {
   if (parsed.data.timezone !== undefined && !isValidTimezone(parsed.data.timezone)) {
     throw new IntegrationInputError(`"${parsed.data.timezone}" is not a known time zone.`, 'timezone');
   }
-  return parsed.data as IntegrationInput;
+  const out = parsed.data as IntegrationInput;
+  if (parsed.data.apiConfig !== undefined) out.apiConfig = validateApiConfigInput(parsed.data.apiConfig);
+  for (const k of ['filterInstructions', 'connectInstructions'] as const) {
+    // Blank words are no words: stored as null, so "a filter was asked for" is
+    // never true for whitespace.
+    if (typeof out[k] === 'string' && !out[k]!.trim()) out[k] = null;
+  }
+  return out;
 }
 
 /**
@@ -144,15 +300,57 @@ export function readSourceConfig(raw: unknown): GsheetSourceConfig | null {
   };
 }
 
-/** Fingerprint of a row's CURRENT config, or null when it has no sheet. */
-export function currentFingerprint(row: { sourceKind: string; sourceConfig: unknown }): string | null {
+/** Stable JSON: object keys sorted, so the same config always hashes the same. */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v as object).sort()
+      .filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+/**
+ * DEF-362: "which connection" for an api integration — the normalised
+ * api_config AND the instant the credential was set. A new credential is a
+ * new connection: the run must never use a secret no test has proven. Only
+ * secret_set_at enters the hash, never the secret or its ciphertext.
+ */
+export function apiConnectionFingerprint(cfg: ApiConfig, secretSetAt: Date | null): string {
+  return createHash('sha256')
+    .update(`api\n${canonicalJson(cfg)}\n${secretSetAt ? secretSetAt.toISOString() : ''}`)
+    .digest('hex');
+}
+
+/** The row's connection columns. apiConfig / secretSetAt are REQUIRED in the
+ *  type on purpose: a caller that selects only the sheet columns would get
+ *  "not connected" for every api integration, so the compiler names it. */
+export interface ConnectionColumns {
+  sourceKind: string;
+  sourceConfig: unknown;
+  apiConfig: unknown;
+  secretSetAt: Date | null;
+}
+
+/** Fingerprint of a row's CURRENT config, or null when it has no usable source. */
+export function currentFingerprint(row: ConnectionColumns): string | null {
+  if (row.sourceKind === 'api') {
+    const cfg = readApiConfig(row.apiConfig);
+    return cfg ? apiConnectionFingerprint(cfg, row.secretSetAt ?? null) : null;
+  }
   const cfg = readSourceConfig(row.sourceConfig);
   return cfg ? connectionFingerprint(row.sourceKind as SourceKind, cfg) : null;
 }
 
+/** The row has a source a reader can use (sheet parsed / api_config valid). */
+export function hasUsableSource(row: Pick<ConnectionColumns, 'sourceKind' | 'sourceConfig' | 'apiConfig'>): boolean {
+  return row.sourceKind === 'api' ? readApiConfig(row.apiConfig) !== null : readSourceConfig(row.sourceConfig) !== null;
+}
+
 /** Tested AND the tested fingerprint is the current config's. */
-export function isConnectionOk(row: {
-  sourceKind: string; sourceConfig: unknown; connectionTestedAt: Date | null; connectionFingerprint: string | null;
+export function isConnectionOk(row: ConnectionColumns & {
+  connectionTestedAt: Date | null; connectionFingerprint: string | null;
 }): boolean {
   const fp = currentFingerprint(row);
   return !!(row.connectionTestedAt && fp && row.connectionFingerprint === fp);
@@ -230,7 +428,7 @@ async function loadStageFacts(cn: string, rows: SyncRow[]): Promise<Map<string, 
     const fp = currentFingerprint(r);
     out.set(r.id, {
       status: r.status as IntegrationStatus,
-      hasSource: readSourceConfig(r.sourceConfig) !== null,
+      hasSource: hasUsableSource(r),
       connectionTested: isConnectionOk(r),
       hasMapping: latest.has(r.id),
       hasApproval: v !== null && approvedVersions.has(v),
@@ -272,6 +470,15 @@ function toDTO(r: SyncRow, facts: StageFacts): IntegrationDTO {
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     stage: deriveWizardStage(facts),
+    // DEF-362. secret_enc and api_doc_text are deliberately NOT mapped: the
+    // credential never leaves the server, and the document is only named.
+    hasSecret: !!r.secretEnc,
+    apiDocName: r.apiDocName ?? null,
+    apiDocReading: (r.apiDocReading as ApiDocReading | null) ?? null,
+    filterInstructions: r.filterInstructions ?? null,
+    connectInstructions: r.connectInstructions ?? null,
+    apiConfig: r.apiConfig == null ? null : readApiConfig(r.apiConfig),
+    approvedFilter: (r.approvedFilter as RecordFilter | null) ?? null,
   };
 }
 
@@ -308,9 +515,22 @@ export const getIntegration: IntegrationStoreModule['getIntegration'] = async (c
   return row ? rowToDTO(cn, row) : null;
 };
 
+/** DEF-362: a sheet link on an API integration (or an API connection on a
+ *  sheet one) is a client mix-up; refusing it beats storing a route no reader
+ *  of that kind will ever use. */
+function assertSourceFieldsMatch(kind: string, input: IntegrationInput): void {
+  if (kind === 'api' && input.link !== undefined && input.link.trim() !== '') {
+    throw new IntegrationInputError('This integration reads an API; a Google Sheet link does not apply.', 'link');
+  }
+  if (kind !== 'api' && input.apiConfig) {
+    throw new IntegrationInputError('This integration reads a Google Sheet; choose "API" as the source first.', 'apiConfig');
+  }
+}
+
 export const createIntegration: IntegrationStoreModule['createIntegration'] = async (cn, rawInput, actorId) => {
   const input = validateIntegrationInput(rawInput);
   if (!input.name) throw new IntegrationInputError('Give the integration a name.', 'name');
+  assertSourceFieldsMatch(input.sourceKind ?? 'gsheet', input);
 
   let sourceConfig: GsheetSourceConfig | Record<string, never> = {};
   if (input.link) {
@@ -341,6 +561,9 @@ export const createIntegration: IntegrationStoreModule['createIntegration'] = as
       timezone,
       ...(input.changeCapPct !== undefined ? { changeCapPct: input.changeCapPct } : {}),
       ...(input.blankPolicy !== undefined ? { blankPolicy: input.blankPolicy } : {}),
+      ...(input.apiConfig ? { apiConfig: JSON.parse(JSON.stringify(input.apiConfig)) } : {}),
+      filterInstructions: input.filterInstructions ?? null,
+      connectInstructions: input.connectInstructions ?? null,
       createdBy: actorId,
     },
   }).catch(rethrowNameClash);
@@ -364,10 +587,15 @@ export const updateIntegration: IntegrationStoreModule['updateIntegration'] = as
   if (patch.timezone !== undefined) data.timezone = patch.timezone;
   if (patch.changeCapPct !== undefined) data.changeCapPct = patch.changeCapPct;
   if (patch.blankPolicy !== undefined) data.blankPolicy = patch.blankPolicy;
+  // DEF-362: the admin's words. They steer the next PROPOSAL only — nothing
+  // that runs reads them — so they never clear the connection test.
+  if (patch.filterInstructions !== undefined) data.filterInstructions = patch.filterInstructions;
+  if (patch.connectInstructions !== undefined) data.connectInstructions = patch.connectInstructions;
 
   // ── Source: the route may only change with the test cleared ──
   const oldCfg = readSourceConfig(row.sourceConfig);
   const kind = (patch.sourceKind ?? row.sourceKind) as SourceKind;
+  assertSourceFieldsMatch(kind, patch);
   let newCfg = oldCfg;
   if (patch.link !== undefined) {
     newCfg = patch.link.trim() === '' ? null : parseSheetLink(patch.link);
@@ -377,16 +605,39 @@ export const updateIntegration: IntegrationStoreModule['updateIntegration'] = as
     newCfg = { ...oldCfg };
     if (patch.tabLabel) newCfg.tabLabel = patch.tabLabel; else delete newCfg.tabLabel;
   }
-  const oldFp = oldCfg ? connectionFingerprint(row.sourceKind as SourceKind, oldCfg) : null;
-  const newFp = newCfg ? connectionFingerprint(kind, newCfg) : null;
+  // DEF-362: the api connection. Compared in its normalised form, so a save
+  // that changes nothing does not clear a passed test.
+  const newApi = patch.apiConfig !== undefined ? patch.apiConfig : row.apiConfig;
+  const oldFp = currentFingerprint(row);
+  const newFp = currentFingerprint({ sourceKind: kind, sourceConfig: newCfg ?? {}, apiConfig: newApi, secretSetAt: row.secretSetAt });
   const routeChanged = oldFp !== newFp;
   if (patch.sourceKind !== undefined) data.sourceKind = patch.sourceKind;
   if (newCfg !== oldCfg) data.sourceConfig = (newCfg ?? {}) as object;
+  if (patch.apiConfig !== undefined) {
+    data.apiConfig = patch.apiConfig ? JSON.parse(JSON.stringify(patch.apiConfig)) : Prisma.DbNull;
+    // DEF-362 review: the secret is bound to the origin (and sign-in scheme) it
+    // was entered for. The fetch guard's "secret only to the configured origin"
+    // rule cannot protect it once the configured origin itself moves — e.g. an
+    // AI draft lifted from a prompt-injected document re-applied in Connect —
+    // so a move drops the stored credential and the admin enters it again for
+    // the new host.
+    if (row.secretEnc) {
+      const before = readApiConfig(row.apiConfig);
+      const after = patch.apiConfig;
+      if (!before || !after || apiOrigin(before) !== apiOrigin(after) || before.authScheme !== after.authScheme) {
+        data.secretEnc = null;
+        data.secretSetAt = null;
+        log.info('integration secret dropped: api origin or sign-in changed', { cn, id });
+      }
+    }
+  }
   if (routeChanged || (patch.link !== undefined && patch.link.trim() !== (oldCfg?.link ?? ''))) {
     if (row.status === 'ACTIVE') {
       // Spec §3 "the tested connection is the one runs use": an ACTIVE row would
-      // read the new, untested sheet at its next slot. Pause, edit, re-test, turn on.
-      throw new IntegrationInputError('Pause this integration before changing its sheet.', 'link');
+      // read the new, untested source at its next slot. Pause, edit, re-test, turn on.
+      throw kind === 'api' || row.sourceKind === 'api'
+        ? new IntegrationInputError('Pause this integration before changing its API connection.', 'apiConfig')
+        : new IntegrationInputError('Pause this integration before changing its sheet.', 'link');
     }
     data.connectionTestedAt = null;
     data.connectionFingerprint = null;
@@ -427,21 +678,56 @@ export const deleteIntegration: IntegrationStoreModule['deleteIntegration'] = as
   log.info('integration deleted', { cn, id });
 };
 
-export const recordConnectionTest: IntegrationStoreModule['recordConnectionTest'] = async (cn, id, result) => {
+export interface RecordTestOptions {
+  /**
+   * DEF-362: the connection AS TESTED — the sourceKind / sourceConfig /
+   * apiConfig the caller read BEFORE starting the (slow, remote) test (an
+   * IntegrationDTO has exactly these). The row read below is read AFTER the
+   * test, so without this a config edited while the test ran would inherit the
+   * pass that the old config earned.
+   */
+  tested?: { sourceKind: string; sourceConfig: unknown; apiConfig: unknown };
+  /** When the test started. A credential stored after it (secret_set_at) was
+   *  not the one tested. */
+  testStartedAt?: Date;
+}
+
+export const recordConnectionTest = async (
+  cn: string, id: string, result: Parameters<IntegrationStoreModule['recordConnectionTest']>[2], opts: RecordTestOptions = {},
+): Promise<IntegrationDTO> => {
   const row = await findRow(cn, id);
   if (!row) throw new IntegrationNotFoundError(id);
   const fp = currentFingerprint(row);
+  const changedDuringTest =
+    (opts.tested !== undefined && currentFingerprint({ ...opts.tested, secretSetAt: row.secretSetAt ?? null }) !== fp)
+    || (opts.testStartedAt !== undefined && !!row.secretSetAt && row.secretSetAt.getTime() > opts.testStartedAt.getTime());
+  if (changedDuringTest) {
+    throw new IntegrationInputError('The connection changed while it was being tested. Test it again.',
+      row.sourceKind === 'api' ? 'apiConfig' : 'link');
+  }
   const ok = result.ok && fp !== null;
-  // The WHERE re-checks the source_config read above, so a link edited between
-  // the read and this write cannot inherit a pass that was earned by the old one.
+  // The WHERE re-checks the config read above, so a link edited between the
+  // read and this write cannot inherit a pass that was earned by the old one.
+  // DEF-362: for an api row that is api_config AND secret_set_at — a secret
+  // replaced mid-test must not inherit the old secret's pass.
+  const isApi = row.sourceKind === 'api';
+  const guard = isApi
+    ? {
+      sourceKind: 'api',
+      apiConfig: row.apiConfig == null ? { equals: Prisma.AnyNull } : { equals: row.apiConfig as Prisma.InputJsonValue },
+      secretSetAt: row.secretSetAt ?? null,
+    }
+    : { sourceConfig: { equals: (row.sourceConfig ?? {}) as object } };
   const res = await prisma.integrationSync.updateMany({
-    where: { id, clientNumber: cn, sourceConfig: { equals: (row.sourceConfig ?? {}) as object } },
+    where: { id, clientNumber: cn, ...guard },
     data: ok
       ? { connectionTestedAt: new Date(), connectionFingerprint: fp }
       : { connectionTestedAt: null, connectionFingerprint: null },
   });
   if (res.count === 0) {
-    throw new IntegrationInputError('The sheet link changed while it was being tested. Test it again.', 'link');
+    throw isApi
+      ? new IntegrationInputError('The API connection or its credential changed while it was being tested. Test it again.', 'apiConfig')
+      : new IntegrationInputError('The sheet link changed while it was being tested. Test it again.', 'link');
   }
   const fresh = await findRow(cn, id);
   if (!fresh) throw new IntegrationNotFoundError(id);

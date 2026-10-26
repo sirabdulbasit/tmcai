@@ -174,11 +174,45 @@ export function describeTarget(sugg) {
     return `New KPI “${sugg.newKpi?.label || k}” (${k}${sugg.newKpi?.unit ? `, ${sugg.newKpi.unit}` : ''})`;
   }
   if (key.startsWith('kpi:')) return `KPI ${key.slice(4)}`;
+  // DEF-362: Context = Brain knowledge pages; filter = the one record filter row.
+  if (key === 'context:per_record') return 'Knowledge — one page per record';
+  if (key === 'context:table') return 'Knowledge — one table page';
+  if (key === 'filter') return 'Filter';
   return key;
+}
+
+const quote = (f) => `“${f}”`;
+
+function listFields(fields, max = 4) {
+  const arr = Array.isArray(fields) ? fields : [];
+  const shown = arr.slice(0, max).map(quote).join(', ');
+  return arr.length > max ? `${shown} and ${arr.length - max} more` : shown;
+}
+
+/** DEF-362: the plain words for each filter op (types.ts FILTER_OPS). */
+export const FILTER_OP_WORDS = {
+  equals: 'is', not_equals: 'is not', contains: 'contains', not_contains: 'does not contain',
+  greater_than: 'is more than', greater_or_equal: 'is at least', less_than: 'is less than',
+  less_or_equal: 'is at most', is_blank: 'is blank', is_not_blank: 'is filled in',
+  after: 'is after', before: 'is before',
+};
+
+export function describeCondition(c) {
+  const words = FILTER_OP_WORDS[c?.op] || c?.op || '';
+  const valueless = c?.op === 'is_blank' || c?.op === 'is_not_blank';
+  return `${quote(c?.field ?? '')} ${words}${valueless ? '' : ` “${c?.value ?? ''}”`}`;
 }
 
 export function describeTransform(tr) {
   if (!tr) return '';
+  if (tr.mode === 'per_record') {
+    return `One knowledge page per record, titled by ${quote(tr.titleField)}${(tr.bodyFields || []).length ? `, holding ${listFields(tr.bodyFields)}` : ''}.`;
+  }
+  if (tr.mode === 'table') return `One knowledge page with a table of ${listFields(tr.columns)}.`;
+  if (Array.isArray(tr.conditions)) {
+    const joiner = tr.match === 'any' ? ' or ' : ' and ';
+    return `Keep only records where ${tr.conditions.map(describeCondition).join(joiner)}.`;
+  }
   const dim = tr.dimensionField ? `, one reading per “${tr.dimensionField}”` : ', as a total';
   if (tr.mode === 'long') return `Value from “${tr.valueField}”, dated by “${tr.periodField}”${dim}.`;
   if (tr.mode === 'wide') {
@@ -187,6 +221,51 @@ export function describeTransform(tr) {
     return `One column per period (${cols.length}: ${shown}${cols.length > 3 ? '…' : ''}), dated by each column heading${dim}.`;
   }
   return '';
+}
+
+/** Every source field a suggestion reads — for "Where it goes" (KPI, Context, filter). */
+export function fieldsOfSuggestion(sg) {
+  const tr = sg?.transform;
+  if (!tr) return [sg?.sourceField].filter(Boolean);
+  if (tr.mode === 'wide') return tr.columns || [];
+  if (tr.mode === 'long') return [tr.valueField, tr.periodField, tr.dimensionField].filter(Boolean);
+  if (tr.mode === 'per_record') return [tr.titleField, ...(tr.bodyFields || [])].filter(Boolean);
+  if (tr.mode === 'table') return tr.columns || [];
+  if (Array.isArray(tr.conditions)) return tr.conditions.map((c) => c.field).filter(Boolean);
+  return [sg.sourceField].filter(Boolean);
+}
+
+/**
+ * DEF-362 — exactly ONE record, as a field → value table (spec §2b Connect: "see the
+ * data (1 row only)"). Vertical, so an API record with 40 flattened fields stays
+ * readable; the same view serves a Google Sheet's first data row.
+ */
+export function OneRecord({ record, columns }) {
+  if (!record) return null;
+  const fields = Array.isArray(columns) && columns.length ? columns : Object.keys(record);
+  return (
+    <div style={{ overflowX: 'auto', marginTop: 8, maxHeight: 360, overflowY: 'auto' }}>
+      <table style={s.table}>
+        <thead>
+          <tr><th style={s.th}>Field</th><th style={s.th}>Value</th></tr>
+        </thead>
+        <tbody>
+          {fields.map((f) => {
+            const v = record[f];
+            const blank = v === undefined || v === null || String(v) === '';
+            return (
+              <tr key={f}>
+                <td style={{ ...s.td, ...s.mono, whiteSpace: 'nowrap' }}>{f}</td>
+                <td style={{ ...s.td, wordBreak: 'break-word' }}>
+                  {blank ? <em style={{ color: 'var(--text-muted)' }}>blank</em> : String(v)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 /** Splits a ReadingKey `${kpiKey}|${periodStart}|${dimensionKey}` for display. */
@@ -244,8 +323,26 @@ export function runResult(run) {
   }
 }
 
+/** DEF-362: a change row about a knowledge page rather than a KPI reading. */
+export function isContextChange(c) {
+  return c?.targetKind === 'context' || String(c?.targetKey || '').startsWith('context:');
+}
+
+const PAGE_OP_WORDS = {
+  create: { text: 'New page', color: C.ok },
+  update: { text: 'Updated', color: C.info },
+  stale: { text: 'Marked stale', color: C.warn },
+};
+
+function clipText(v, n = 160) {
+  const t = String(v ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+}
+
 /** Before → after list of one run's change rows (outcome rows, written in the same
- *  transaction as the data — or the preview rows of a dry run). */
+ *  transaction as the data — or the preview rows of a dry run). DEF-362: knowledge-page
+ *  rows (create / update / stale) are listed in their own table, since a page has no
+ *  period or number. */
 export function ChangesList({ changes, loading, dryRun }) {
   const [q, setQ] = useState('');
   if (loading) return <div style={s.hint}>Loading changes…</div>;
@@ -257,39 +354,72 @@ export function ChangesList({ changes, loading, dryRun }) {
     ? changes.filter((c) => `${c.subjectKey} ${c.subjectLabel || ''} ${c.sourceKey || ''}`.toLowerCase().includes(needle))
     : changes;
   const shown = rows.slice(0, 500);
+  const readings = shown.filter((c) => !isContextChange(c));
+  const pages = shown.filter(isContextChange);
+  const hasPages = changes.some(isContextChange);
   return (
     <div>
       <div style={{ ...s.row, marginBottom: 8 }}>
-        <input style={{ ...s.input, maxWidth: 260 }} placeholder="Filter by KPI, period or row…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <span style={s.hint}>{rows.length} {rows.length === 1 ? 'reading' : 'readings'}{rows.length > shown.length ? ` — first ${shown.length} shown` : ''}</span>
+        <input style={{ ...s.input, maxWidth: 260 }} placeholder={hasPages ? 'Filter by KPI, page or record…' : 'Filter by KPI, period or row…'} value={q} onChange={(e) => setQ(e.target.value)} />
+        <span style={s.hint}>{rows.length} {rows.length === 1 ? 'change' : 'changes'}{rows.length > shown.length ? ` — first ${shown.length} shown` : ''}</span>
       </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={s.table}>
-          <thead>
-            <tr>
-              <th style={s.th}>KPI</th><th style={s.th}>Period</th><th style={s.th}>Breakdown</th>
-              <th style={s.th}>From</th><th style={{ ...s.th, textAlign: 'right' }}>Before</th>
-              <th style={s.th}></th><th style={{ ...s.th, textAlign: 'right' }}>After</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((c) => {
-              const p = readingParts(c.subjectKey);
-              return (
-                <tr key={c.id}>
-                  <td style={s.td}>{c.subjectLabel || p.kpi}</td>
-                  <td style={s.td}>{p.period}</td>
-                  <td style={s.td}>{p.dim || <span style={{ color: 'var(--text-muted)' }}>Total</span>}</td>
-                  <td style={{ ...s.td, color: 'var(--text-muted)' }}>{c.sourceKey || ''}</td>
-                  <td style={s.tdNum}>{c.beforeValue ?? <em style={{ color: 'var(--text-muted)' }}>new</em>}</td>
-                  <td style={{ ...s.td, color: 'var(--text-muted)' }}>→</td>
-                  <td style={s.tdNum}>{c.afterValue ?? ''}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {readings.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>KPI</th><th style={s.th}>Period</th><th style={s.th}>Breakdown</th>
+                <th style={s.th}>From</th><th style={{ ...s.th, textAlign: 'right' }}>Before</th>
+                <th style={s.th}></th><th style={{ ...s.th, textAlign: 'right' }}>After</th>
+              </tr>
+            </thead>
+            <tbody>
+              {readings.map((c) => {
+                const p = readingParts(c.subjectKey);
+                return (
+                  <tr key={c.id}>
+                    <td style={s.td}>{c.subjectLabel || p.kpi}</td>
+                    <td style={s.td}>{p.period}</td>
+                    <td style={s.td}>{p.dim || <span style={{ color: 'var(--text-muted)' }}>Total</span>}</td>
+                    <td style={{ ...s.td, color: 'var(--text-muted)' }}>{c.sourceKey || ''}</td>
+                    <td style={s.tdNum}>{c.beforeValue ?? <em style={{ color: 'var(--text-muted)' }}>new</em>}</td>
+                    <td style={{ ...s.td, color: 'var(--text-muted)' }}>→</td>
+                    <td style={s.tdNum}>{c.afterValue ?? ''}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {pages.length > 0 && (
+        <div style={{ overflowX: 'auto', marginTop: readings.length ? 12 : 0 }}>
+          <div style={{ ...s.hint, marginBottom: 4 }}>Knowledge pages Brain reads</div>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>Page</th><th style={s.th}>What</th><th style={s.th}>From</th><th style={s.th}>Content</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pages.map((c) => {
+                const op = PAGE_OP_WORDS[c.op] || { text: c.op, color: C.grey };
+                const text = c.op === 'stale' ? c.beforeValue : c.afterValue;
+                return (
+                  <tr key={c.id}>
+                    <td style={s.td}>{c.subjectLabel || c.subjectKey}</td>
+                    <td style={s.td}><Pill color={op.color}>{op.text}</Pill></td>
+                    <td style={{ ...s.td, color: 'var(--text-muted)' }}>{c.sourceKey || ''}</td>
+                    <td style={{ ...s.td, color: 'var(--text-muted)' }} title={String(text ?? '')}>
+                      {c.op === 'stale' ? 'The record is no longer in the source. The page is kept and marked stale, never deleted.' : clipText(text)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

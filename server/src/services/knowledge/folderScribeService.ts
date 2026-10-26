@@ -27,6 +27,7 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import crypto from 'crypto';
+import { findTenantOrgDoc, upsertTenantOrgDoc } from './tenantOrgDoc';
 
 const log = createLogger('folder-scribe');
 
@@ -406,10 +407,10 @@ export async function scribeFaclFolder(
       const hash = crypto.createHash('md5').update(text).digest('hex');
       const pageTitle = f._parentName ? `${f._parentName}/${f.name}` : f.name;
 
-      const existing = await prisma.wikiPage.findFirst({
-        where: { clientNumber, userId, pageType: 'org_doc', title: pageTitle } as any,
-        select: { id: true, metadata: true },
-      }).catch(() => null);
+      // DEF-362: lookup + upsert live in the shared tenant org_doc helper. The
+      // hash is still checked HERE first, so an unchanged doc never pays for
+      // the LLM summary below.
+      const existing = await findTenantOrgDoc(clientNumber, userId, pageTitle);
 
       const prevMeta: any = existing?.metadata ?? {};
       if (prevMeta.contentHash === hash) { summary.unchanged += 1; continue; }
@@ -474,35 +475,12 @@ export async function scribeFaclFolder(
         scope: 'tenant', // readable by every user in the tenant
       };
 
-      let scribePageId: string;
-      if (existing) {
-        await prisma.wikiPage.update({
-          where: { id: existing.id },
-          data: { bodyMarkdown: body, metadata: nextMeta as any, lastUpdatedBy: 'facl_scribe', lastUpdatedAt: new Date(), status: 'active' },
-        });
-        scribePageId = existing.id;
-      } else {
-        const created = await prisma.wikiPage.create({
-          data: {
-            clientNumber, userId, pageType: 'org_doc', title: pageTitle,
-            storage: 'postgres', bodyMarkdown: body, metadata: nextMeta as any,
-            lastUpdatedBy: 'facl_scribe', status: 'active',
-            // Explicit — FACL is a tenant connector, every page it
-            // produces must be visible to every user in the tenant.
-            // Don't rely on the page-type heuristic alone.
-            scope: 'tenant',
-          } as any,
-        });
-        scribePageId = created.id;
-      }
-      // Embed each FACL doc for semantic retrieval. Tenant-scope, so
-      // every user in the tenant can find it.
-      void (async () => {
-        try {
-          const { embedWikiPage } = await import('./wikiEmbeddingService');
-          await embedWikiPage(scribePageId);
-        } catch { /* best effort */ }
-      })();
+      // Writes (update or create, scope 'tenant') and queues the re-embed —
+      // the same steps that lived inline here, now shared with Integrations.
+      await upsertTenantOrgDoc(clientNumber, {
+        userId, title: pageTitle, body, metadata: nextMeta, contentHash: hash,
+        lastUpdatedBy: 'facl_scribe', existing,
+      });
       summary.updated += 1;
     } catch (err: any) {
       summary.errors += 1;

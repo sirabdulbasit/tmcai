@@ -116,7 +116,12 @@ export const startProposalJob: ProposalJobsModule['startProposalJob'] = async (c
   sweepProposalJobs();
   const integ = await prisma.integrationSync.findFirst({
     where: { id: integrationId, clientNumber: cn },
-    select: { id: true, sourceKind: true, sourceConfig: true, connectionTestedAt: true, connectionFingerprint: true },
+    // DEF-362: apiConfig + secretSetAt are part of an api row's fingerprint;
+    // without them isConnectionOk could never be true for an API integration.
+    select: {
+      id: true, sourceKind: true, sourceConfig: true, apiConfig: true, secretSetAt: true,
+      connectionTestedAt: true, connectionFingerprint: true,
+    },
   });
   if (!integ) throw new IntegrationNotFoundError(integrationId);
   // Spec §2.2: "Suggest the mapping" stays disabled until the CURRENT

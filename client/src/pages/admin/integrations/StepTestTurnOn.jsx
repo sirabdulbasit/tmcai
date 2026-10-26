@@ -11,12 +11,18 @@
  * same thing again in one transaction — a SUCCESS dry run of this version with the current
  * connection fingerprint (spec §2.5) — and its refusal reasons are shown verbatim. Turning
  * on NEVER runs anything; the confirm says so and shows when the first run would be.
+ *
+ * DEF-362 (Stage 1b): the dry run also previews knowledge pages (Context rows) — pages
+ * that would be created, updated or marked stale — and how many records the approved
+ * filter leaves out. A filter approved on its own is not a runnable mapping, so it does
+ * not count as "an approved field" here (runEngine fails such a run).
  */
 import { useEffect, useState } from 'react';
 import {
   listSuggestions, listRuns, listRunChanges, runAndWait, activateIntegration, errorText,
 } from '../../../services/integrationsApi';
 import { runStageText } from './WorkingOverlay';
+import { runnableApprovedCount } from './integrationLogic';
 import {
   C, s, btn, InlineConfirm, ChangesList, formatPkt, scheduleText, previewNextRun, runResult,
 } from './integrationUi';
@@ -43,7 +49,7 @@ export default function StepTestTurnOn({ integ, refresh, setMsg, signal, setWork
         const res = await listSuggestions(integ.id, versionId || undefined);
         if (cancelled) return;
         setVersion(res.version);
-        setApprovedCount(res.suggestions.filter((x) => x.status === 'APPROVED').length);
+        setApprovedCount(runnableApprovedCount(res.suggestions));
         if (res.version && res.version.id !== versionId) setVersionId(res.version.id);
         if (res.version) {
           const runs = await listRuns(integ.id, { limit: 20 });
@@ -134,6 +140,10 @@ export default function StepTestTurnOn({ integ, refresh, setMsg, signal, setWork
   }
 
   const r = run?.result;
+  // DEF-362: the engine stores the knowledge-page counts as result.context
+  // (runEngine ContextRunSummary); absent when the version has no Context rows.
+  const ctx = r?.context && typeof r.context === 'object' ? r.context : null;
+  const hasFilter = !!integ.approvedFilter;
   const passed = run?.status === 'SUCCESS';
   const alreadyRunning = integ.status === 'ACTIVE' && integ.approvedVersionId === version.id;
   const canTurnOn = passed && approvedCount > 0 && !alreadyRunning;
@@ -149,14 +159,14 @@ export default function StepTestTurnOn({ integ, refresh, setMsg, signal, setWork
         <span style={s.hint}>Mapping version {version.version} · {approvedCount} approved field{approvedCount === 1 ? '' : 's'}</span>
       </div>
       <p style={s.hint}>
-        The test reads the sheet now and shows exactly what would change. It writes nothing.
+        The test reads the {integ.sourceKind === 'api' ? 'API' : 'sheet'} now and shows exactly what would change — numbers and knowledge pages. It writes nothing.
       </p>
 
       <div style={{ ...s.row, marginTop: 12 }}>
         <button style={btn('primary', { disabled: approvedCount === 0 })} disabled={approvedCount === 0} onClick={runTest}>
           {run ? 'Run the test again' : 'Run the test'}
         </button>
-        {approvedCount === 0 && <span style={s.hint}>Approve at least one field first.</span>}
+        {approvedCount === 0 && <span style={s.hint}>Approve at least one KPI or Context field first.</span>}
         {run && <span style={s.hint}>Last test {formatPkt(run.finishedAt || run.startedAt)}</span>}
       </div>
 
@@ -165,13 +175,18 @@ export default function StepTestTurnOn({ integ, refresh, setMsg, signal, setWork
           {run.status === 'FAILED' || run.status === 'ABORTED' ? (
             <div style={s.error}>The test did not pass. {run.error || r?.error || ''}</div>
           ) : run.status === 'PARTIAL' ? (
-            <div style={s.warnBox}>Only part of the sheet could be read, so this test does not count as a pass. {(r?.anomalies || []).join(' ')}</div>
+            <div style={s.warnBox}>Only part of the {integ.sourceKind === 'api' ? 'data' : 'sheet'} could be read, so this test does not count as a pass. {(r?.anomalies || []).join(' ')}</div>
           ) : null}
 
           {r && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8, marginTop: 12 }}>
-              <Tile label="Rows read" value={r.recordsRead} />
+              <Tile label={integ.sourceKind === 'api' ? 'Records read' : 'Rows read'} value={r.recordsRead} />
+              {(Number(r.filteredOut) > 0 || hasFilter) && <Tile label="Records filtered out" value={r.filteredOut} />}
               <Tile label="Readings that would change" value={r.writes} />
+              {ctx && <Tile label="Knowledge pages to create" value={ctx.created} color={ctx.created ? C.ok : undefined} />}
+              {ctx && <Tile label="Knowledge pages to update" value={ctx.updated} color={ctx.updated ? C.info : undefined} />}
+              {ctx && <Tile label="Pages to mark stale" value={ctx.stale} color={ctx.stale ? C.warn : undefined} />}
+              {ctx && Number(ctx.unchanged) > 0 && <Tile label="Pages unchanged" value={ctx.unchanged} />}
               <Tile label="Set aside" value={r.setAside} />
               <Tile label="Blanks (kept as they are)" value={r.blanks} />
               <Tile label="Change" value={`${Number(r.changePercent ?? 0).toFixed(1)}%`} />
@@ -194,6 +209,13 @@ export default function StepTestTurnOn({ integ, refresh, setMsg, signal, setWork
               <strong>Worth a look:</strong>
               <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{r.anomalies.map((a, i) => <li key={i}>{a}</li>)}</ul>
             </div>
+          )}
+
+          {ctx?.truncated && (
+            <div style={s.warnBox}>More records than the knowledge-page limit allows — only the first pages are kept. Narrow it with a filter, or use one table page.</div>
+          )}
+          {ctx && Number(ctx.skipped) > 0 && (
+            <p style={s.hint}>{ctx.skipped} record{ctx.skipped === 1 ? '' : 's'} made no page (no title, or every chosen field blank).</p>
           )}
 
           <div style={s.sectionTitle}>What would change</div>

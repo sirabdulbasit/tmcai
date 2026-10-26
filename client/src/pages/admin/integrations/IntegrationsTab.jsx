@@ -143,7 +143,7 @@ export default function IntegrationsTab({ setMsg }) {
       <div style={{ ...s.row, justifyContent: 'space-between', marginBottom: 12 }}>
         <div>
           <h2 style={s.h2}>Integrations</h2>
-          <p style={s.hint}>Connect a Google Sheet once; Nexeo keeps Brain’s KPI numbers current from it, writing only what you approved.</p>
+          <p style={s.hint}>Connect a Google Sheet or an API once; Nexeo keeps Brain’s KPI numbers and knowledge current from it, writing only what you approved.</p>
         </div>
         <button style={btn('primary')} onClick={() => setView({ mode: 'wizard', id: null, step: 1 })}>+ New integration</button>
       </div>
@@ -152,7 +152,7 @@ export default function IntegrationsTab({ setMsg }) {
       {!loading && list.length === 0 && (
         <div style={s.card}>
           <div style={s.h3}>No integrations yet</div>
-          <p style={s.hint}>Start with “New integration”: name it, paste a Google Sheet link, review the mapping the AI suggests, pick a schedule, test it and turn it on.</p>
+          <p style={s.hint}>Start with “New integration”: name it, paste a Google Sheet link or attach an API document, review the mapping the AI suggests, pick a schedule, test it and turn it on.</p>
         </div>
       )}
 
@@ -208,7 +208,7 @@ function IntegrationRow({ integ, busy, onOpen, onHistory, onRunNow, onPauseResum
             confirmLabel="Run it now"
             kind="primary"
             disabled={busy}
-            consequence="Reads the sheet now and writes the approved KPI numbers. The safety limit does not apply to Run now."
+            consequence="Reads the source now and writes what you approved. The safety limit does not apply to Run now."
             onConfirm={onRunNow}
           />
         )}

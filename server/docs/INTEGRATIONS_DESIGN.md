@@ -180,7 +180,11 @@ or instruction it followed.
 `folderScribeService` (`upsertTenantOrgDoc`) that both the folder scribe and integrations call — not
 a second knowledge writer. Page title `"<integration name> · <record title>"`; key by record id
 in metadata; unchanged content (hash) is skipped; changed pages re-embedded; a blank never
-overwrites a section; records that disappear are marked `stale`, never deleted.
+overwrites a section; records that disappear are marked `stale` (kept in page metadata, which the hourly wiki linter does
+not rewrite), never deleted. **Table mode is a full snapshot** of the chosen columns at each run —
+a blank source cell shows as blank; "a blank never overwrites" applies to per-record sections.
+**Not in 1b:** KPI rows copy numbers the source already holds; a KPI that COUNTS or SUMS records
+(e.g. headcount per department) needs an aggregate transform — named next increment.
 
 **REST fetch guard** (`sources/integrationFetch.ts`): https only; the host is resolved once and
 **private, loopback, link-local and metadata addresses are refused**, and the connection is pinned

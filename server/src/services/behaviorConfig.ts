@@ -293,6 +293,28 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'integrations.proposal_job_ttl_ms', unit: 'ms', def: 3600000, min: 60000, max: 86400000, scope: 'tenant',
     description: 'DEF-354. How long a finished mapping-proposal job stays readable in memory for the polling screen before it is forgotten.',
   },
+  // DEF-362 (Integrations Stage 1b, spec §2b): caps for the REST source, the
+  // context writer and the API document upload — same reason as above.
+  'integrations.api_max_bytes': {
+    key: 'integrations.api_max_bytes', unit: 'bytes', def: 20 * 1024 * 1024, min: 64 * 1024, max: 100 * 1024 * 1024, scope: 'tenant',
+    description: 'DEF-362. Largest single REST API response an integration will accept. Over it the request FAILS (a cut-off JSON body is not a smaller answer), rather than holding an unbounded body in memory.',
+  },
+  'integrations.api_timeout_ms': {
+    key: 'integrations.api_timeout_ms', unit: 'ms', def: 60000, min: 5000, max: 300000, scope: 'tenant',
+    description: 'DEF-362. One deadline for a REST API request including its redirects. A slower answer fails the test or run instead of holding a worker.',
+  },
+  'integrations.api_max_pages': {
+    key: 'integrations.api_max_pages', unit: 'count', def: 50, min: 1, max: 1000, scope: 'tenant',
+    description: 'DEF-362. Most pages one REST read follows. A runaway cursor stops here and the read is reported as truncated, never as complete.',
+  },
+  'integrations.max_context_pages': {
+    key: 'integrations.max_context_pages', unit: 'count', def: 500, min: 1, max: 5000, scope: 'tenant',
+    description: 'DEF-362. Most per-record Brain knowledge pages one integration writes. Records beyond it are reported, not written.',
+  },
+  'integrations.doc_max_bytes': {
+    key: 'integrations.doc_max_bytes', unit: 'bytes', def: 5 * 1024 * 1024, min: 64 * 1024, max: 20 * 1024 * 1024, scope: 'tenant',
+    description: 'DEF-362. Largest API document (PDF / DOCX / TXT / MD / JSON) an admin may attach for the AI to read.',
+  },
 };
 
 /** Pure resolution: first PRESENT and VALID (numeric) candidate wins,

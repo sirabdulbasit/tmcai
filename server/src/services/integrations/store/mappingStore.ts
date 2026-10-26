@@ -23,11 +23,31 @@
  *  - activated_at is stamped only on a real transition into ACTIVE (vm
  *    re-stamped it on every save and could swallow a due slot).
  *
+ * DEF-362 (Stage 1b, spec §2b) adds two row kinds:
+ *  - Context rows need no catalogue: approving one checks that its layout is
+ *    one the context writer can execute (and is one of its kind per layout).
+ *  - The FILTER row. integration.approved_filter is written HERE ONLY — by the
+ *    approval transitions of this module, never by PUT (closed whitelist) or by
+ *    the proposer (vm §9 "approval is the only write permission"):
+ *      · approving the filter row writes it, in the same transaction, while the
+ *        integration has never been turned on (that draft IS what will run);
+ *      · withdrawing (rejecting) an approved filter row clears it, likewise;
+ *      · turning a version on writes that version's approved filter (or none).
+ *    An integration that is already ACTIVE / PAUSED keeps running its approved
+ *    version, so a filter approved on a newer DRAFT must not change what the
+ *    running version reads until that draft is itself turned on (after its own
+ *    dry run) — "a scheduled run never writes a field no dry run has seen".
+ *  - The activation fingerprint is the store's currentFingerprint, which for an
+ *    api integration covers api_config + secret_set_at.
+ *
  * Tenant rule: `cn` is the first parameter and is in every `where`.
  */
+import { Prisma } from '@prisma/client';
 import createLogger from '../../../utils/logger';
 import prisma from '../../../db/prisma';
 import { nextScheduledRun } from '../engine/planner';
+import { validateRecordFilter } from '../engine/recordFilter';
+import { readContextTransform } from '../engine/contextWriter';
 import {
   currentFingerprint,
   getIntegration,
@@ -47,8 +67,8 @@ import {
   type KpiDefinitionInput,
   type KpiDirection,
   type KpiGrain,
-  type KpiTransform,
   type MappingStoreModule,
+  type RecordFilter,
   type MappingVersionDTO,
   type SuggestionDecisionResult,
   type SuggestionDTO,
@@ -112,12 +132,13 @@ function suggestionDTO(s: SuggestionRow): SuggestionDTO {
     targetKind: s.targetKind as TargetKind,
     sourceField: s.sourceField,
     targetKey: s.targetKey,
-    transform: (s.transform as KpiTransform | null) ?? null,
+    transform: (s.transform as SuggestionDTO['transform']) ?? null,
     coverage: (s.coverage as FieldCoverage | null) ?? null,
     samples: Array.isArray(s.samples) ? (s.samples as unknown[]).map(String) : [],
     newKpi: (s.newKpi as SuggestionDTO['newKpi']) ?? null,
     status: s.status as SuggestionStatus,
     reason: s.reason ?? null,
+    followed: s.followed ?? null,
     carriedFromId: s.carriedFromId ?? null,
     decidedBy: s.decidedBy ?? null,
     decidedAt: iso(s.decidedAt),
@@ -136,6 +157,21 @@ function kpiDTO(k: KpiRow): KpiDefinitionDTO {
     isActive: k.isActive,
     createdAt: k.createdAt.toISOString(),
   };
+}
+
+/** Why a Context row cannot be approved, or null. No catalogue is involved
+ *  (spec §2b); the layout must be one the context writer executes, and its
+ *  target key must name that same layout. */
+export function contextRowProblem(row: { targetKey: string; transform: unknown }): string | null {
+  const t = readContextTransform(row.transform);
+  if (!t) return 'This Context row has no usable layout. Ask for a new proposal.';
+  if (row.targetKey !== `context:${t.mode}`) return `"${row.targetKey}" does not match its layout (${t.mode}).`;
+  return null;
+}
+
+/** approved_filter as Prisma writes it: the filter, or SQL NULL. */
+function filterColumn(f: RecordFilter | null): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  return f ? (JSON.parse(JSON.stringify(f)) as Prisma.InputJsonValue) : Prisma.DbNull;
 }
 
 async function assertIntegration(db: Tx, cn: string, id: string): Promise<void> {
@@ -213,12 +249,21 @@ export const approveSuggestions: MappingStoreModule['approveSuggestions'] = asyn
     const fedBy = new Map<string, string>();
     const approvedNow = await tx.integrationSuggestion.findMany({
       where: { clientNumber: cn, integrationId, mappingVersionId: versionId, status: 'APPROVED' },
-      select: { targetKey: true, sourceField: true },
+      select: { targetKey: true, sourceField: true, targetKind: true },
     });
+    // DEF-362: at most ONE approved filter per version — two would leave the
+    // run to guess which records count.
+    let filterApproved = approvedNow.some((a) => a.targetKind === 'filter');
     for (const a of approvedNow) {
       const t = parseKpiTarget(a.targetKey);
       if (t) fedBy.set(t.kpiKey, a.sourceField);
     }
+    // approved_filter follows this draft only while nothing is turned on (see
+    // header); an ACTIVE / PAUSED integration keeps its running version's filter.
+    const integRow = await tx.integrationSync.findFirst({
+      where: { id: integrationId, clientNumber: cn }, select: { approvedVersionId: true },
+    });
+    const draftIsWhatRuns = !integRow?.approvedVersionId;
 
     const ownerNames = new Map<string, string>();
     const ownerName = async (ownerId: string): Promise<string> => {
@@ -234,6 +279,61 @@ export const approveSuggestions: MappingStoreModule['approveSuggestions'] = asyn
         // vm §9: only a pending decision can be approved — a SET_ASIDE row carries
         // a risk finding the admin has not resolved, a REJECTED one is settled.
         result.refused.push({ id: row.id, reason: `Already ${row.status.toLowerCase().replace('_', ' ')}.` });
+        continue;
+      }
+      const kind = row.targetKind ?? 'kpi';
+      if (kind === 'context') {
+        const problem = contextRowProblem(row);
+        if (problem) {
+          result.refused.push({ id: row.id, reason: problem });
+          continue;
+        }
+        const upd = await tx.integrationSuggestion.updateMany({
+          where: { id: row.id, clientNumber: cn, integrationId, mappingVersionId: versionId, status: 'PENDING' },
+          data: { status: 'APPROVED', decidedBy: actorId, decidedAt: new Date() },
+        });
+        if (upd.count === 0) {
+          result.refused.push({ id: row.id, reason: 'Someone else decided this field meanwhile.' });
+          continue;
+        }
+        result.updated += 1;
+        continue;
+      }
+      if (kind === 'filter') {
+        let filter: RecordFilter;
+        try {
+          // Re-validated at approval: the stored JSON is what will run.
+          filter = validateRecordFilter(row.transform);
+        } catch (err) {
+          result.refused.push({ id: row.id, reason: err instanceof Error ? err.message : 'This filter cannot be used.' });
+          continue;
+        }
+        if (filterApproved) {
+          result.refused.push({ id: row.id, reason: 'Another filter is already approved in this mapping. Withdraw it first.' });
+          continue;
+        }
+        const upd = await tx.integrationSuggestion.updateMany({
+          where: { id: row.id, clientNumber: cn, integrationId, mappingVersionId: versionId, status: 'PENDING' },
+          data: { status: 'APPROVED', decidedBy: actorId, decidedAt: new Date() },
+        });
+        if (upd.count === 0) {
+          result.refused.push({ id: row.id, reason: 'Someone else decided this field meanwhile.' });
+          continue;
+        }
+        if (draftIsWhatRuns) {
+          // The ONLY writer of approved_filter besides turn-on — same transaction
+          // as the approval, so the two can never disagree.
+          await tx.integrationSync.updateMany({
+            where: { id: integrationId, clientNumber: cn },
+            data: { approvedFilter: filterColumn(filter) },
+          });
+        }
+        filterApproved = true;
+        result.updated += 1;
+        continue;
+      }
+      if (kind !== 'kpi') {
+        result.refused.push({ id: row.id, reason: `Unknown row kind "${kind}".` });
         continue;
       }
       const target = parseKpiTarget(row.targetKey);
@@ -333,11 +433,15 @@ export const rejectSuggestions: MappingStoreModule['rejectSuggestions'] = async 
   await prisma.$transaction(async (tx) => {
     await decisionVersion(tx, cn, integrationId, versionId);
     const rows = await decisionRows(tx, cn, integrationId, versionId, ids, result.refused);
+    const integRow = await tx.integrationSync.findFirst({
+      where: { id: integrationId, clientNumber: cn }, select: { approvedVersionId: true },
+    });
     for (const row of rows) {
       if (!REJECTABLE.has(row.status)) {
         result.refused.push({ id: row.id, reason: 'Already rejected.' });
         continue;
       }
+      const wasApprovedFilter = row.targetKind === 'filter' && row.status === 'APPROVED';
       const upd = await tx.integrationSuggestion.updateMany({
         where: { id: row.id, clientNumber: cn, integrationId, mappingVersionId: versionId, status: row.status },
         data: { status: 'REJECTED', decidedBy: actorId, decidedAt: new Date() },
@@ -345,6 +449,14 @@ export const rejectSuggestions: MappingStoreModule['rejectSuggestions'] = async 
       if (upd.count === 0) {
         result.refused.push({ id: row.id, reason: 'Someone else decided this field meanwhile.' });
         continue;
+      }
+      if (wasApprovedFilter && !integRow?.approvedVersionId) {
+        // DEF-362: withdrawing the approved filter of the draft that will run
+        // stops the filtering, in the same transaction (see header).
+        await tx.integrationSync.updateMany({
+          where: { id: integrationId, clientNumber: cn },
+          data: { approvedFilter: filterColumn(null) },
+        });
       }
       result.updated += 1;
     }
@@ -396,6 +508,21 @@ export const createKpiDefinition: MappingStoreModule['createKpiDefinition'] = as
 
 // ── Turn on / pause (spec §2.5) ───────────────────────────────────────────
 
+
+/** DEF-362 review: a PARTIAL dry run whose read was complete and whose only
+ *  shortfall was the Context page cap (runEngine EngineResultWithContext). */
+function isCapOnlyPartial(result: unknown): boolean {
+  const r = (result && typeof result === 'object' ? result : {}) as { readComplete?: unknown; context?: { truncated?: unknown } };
+  return r.readComplete === true && r.context?.truncated === true;
+}
+
+/** Why a PARTIAL dry run did not count, in admin words (its first note). */
+function partialWhy(result: unknown): string {
+  const a = (result && typeof result === 'object' ? (result as { anomalies?: unknown }).anomalies : null);
+  const first = Array.isArray(a) ? a.find((x) => typeof x === 'string' && x.trim()) : null;
+  return typeof first === 'string' ? first.trim().replace(/[.\s]+$/, '').slice(0, 300) : 'only part of it was read';
+}
+
 export const activate: MappingStoreModule['activate'] = async (cn, id, versionId, actorId) => {
   const now = new Date();
   await prisma.$transaction(async (tx) => {
@@ -414,17 +541,37 @@ export const activate: MappingStoreModule['activate'] = async (cn, id, versionId
     }
     if (version.status === 'SUPERSEDED') reasons.push('This mapping version was replaced by a newer one.');
 
+    // DEF-362: a filter alone writes nothing — at least one KPI or Context row.
     const approvedRows = await tx.integrationSuggestion.count({
-      where: { clientNumber: cn, integrationId: id, mappingVersionId: versionId, status: 'APPROVED' },
+      where: { clientNumber: cn, integrationId: id, mappingVersionId: versionId, status: 'APPROVED', targetKind: { in: ['kpi', 'context'] } },
     });
     if (approvedRows === 0) reasons.push('Approve at least one field of this mapping.');
 
+    // The version's approved filter becomes approved_filter at turn-on (header).
+    const filterRow = await tx.integrationSuggestion.findFirst({
+      where: { clientNumber: cn, integrationId: id, mappingVersionId: versionId, status: 'APPROVED', targetKind: 'filter' },
+      select: { transform: true },
+    });
+    let filter: RecordFilter | null = null;
+    if (filterRow) {
+      try {
+        filter = validateRecordFilter(filterRow.transform);
+      } catch (err) {
+        reasons.push(`The approved filter cannot be used: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     // "The tested connection is the one runs use" (spec §3): the stored test
-    // must be for the CURRENT sheet, and so must the dry run below.
+    // must be for the CURRENT connection, and so must the dry run below. For
+    // an api integration that is api_config + secret_set_at (a new credential
+    // is a new connection).
+    const isApi = row.sourceKind === 'api';
     const fp = currentFingerprint(row);
-    if (!fp) reasons.push('Connect a Google Sheet first.');
+    if (!fp) reasons.push(isApi ? 'Set up the API connection first.' : 'Connect a Google Sheet first.');
     else if (!row.connectionTestedAt || row.connectionFingerprint !== fp) {
-      reasons.push('The sheet changed since its connection test. Test the connection again.');
+      reasons.push(isApi
+        ? 'The API connection or its credential changed since its connection test. Test the connection again.'
+        : 'The sheet changed since its connection test. Test the connection again.');
     }
 
     if (fp) {
@@ -436,15 +583,27 @@ export const activate: MappingStoreModule['activate'] = async (cn, id, versionId
         orderBy: { decidedAt: 'desc' },
         select: { decidedAt: true },
       });
-      const dry = await tx.integrationRun.findFirst({
+      // DEF-362 review: a PARTIAL dry run also counts when the read was complete
+      // and its only shortfall was the Context page cap (max_context_pages) —
+      // every live run applies the same cap, so what it previewed is what runs.
+      // A read that fell short (row/page limit, fewer than the declared total)
+      // still does not count, exactly as in Stage 1, and the refusal says why.
+      const dryRuns = await tx.integrationRun.findMany({
         where: {
           clientNumber: cn, integrationId: id, mappingVersionId: versionId,
-          dryRun: true, status: 'SUCCESS', connectionFingerprint: fp,
+          dryRun: true, status: { in: ['SUCCESS', 'PARTIAL'] }, connectionFingerprint: fp,
           ...(lastDecision?.decidedAt ? { startedAt: { gte: lastDecision.decidedAt } } : {}),
         },
-        select: { id: true },
+        orderBy: { startedAt: 'desc' },
+        select: { id: true, status: true, result: true },
+        take: 20,
       });
-      if (!dry) reasons.push('Run a successful test (dry run) of this mapping on the current sheet first.');
+      const dry = dryRuns.find((r) => r.status === 'SUCCESS' || isCapOnlyPartial(r.result));
+      if (!dry) {
+        reasons.push(dryRuns.length
+          ? `The latest test (dry run) did not read the whole ${isApi ? 'API' : 'sheet'} (${partialWhy(dryRuns[0].result)}), so it cannot be turned on from it. Narrow the filter or fix the source, then test again.`
+          : `Run a successful test (dry run) of this mapping on the current ${isApi ? 'API connection' : 'sheet'} first.`);
+      }
     }
 
     const schedule = scheduleOf(row);
@@ -476,6 +635,7 @@ export const activate: MappingStoreModule['activate'] = async (cn, id, versionId
         approvedVersionId: versionId,
         activatedAt,
         nextRunAt: nextScheduledRun(schedule, now, row.timezone),
+        approvedFilter: filterColumn(filter),
       },
     });
     // Nothing else: turning on NEVER starts a run (vm §9 "enabling never triggers

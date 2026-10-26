@@ -11,6 +11,12 @@
  *   - refused decisions come back with their reason (e.g. the KPI is already fed by another
  *     integration — "one field, one owner") and are shown, never swallowed;
  *   - Continue stays disabled until ≥1 field is approved.
+ *
+ * DEF-362 (Stage 1b, spec §2b): rows are grouped by target — KPI numbers · Context
+ * (Brain knowledge pages: per record, or one table) · Filter (the structured conditions
+ * next to the words they came from; nothing filters until it is approved) · Not used,
+ * with the reason. Every row says which remark or instruction it followed. A filter
+ * approved on its own gives a run nothing to do, so it does not unlock Continue.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -18,7 +24,10 @@ import {
   proposeAndWait, errorText,
 } from '../../../services/integrationsApi';
 import { proposalStageText } from './WorkingOverlay';
-import { C, s, btn, Pill, describeTarget, describeTransform } from './integrationUi';
+import {
+  C, s, btn, Pill, describeTarget, describeTransform, describeCondition, fieldsOfSuggestion, FILTER_OP_WORDS,
+} from './integrationUi';
+import { groupSuggestions, notUsedFromSpec, reviewNotices, runnableApprovedCount } from './integrationLogic';
 
 const STATUS_PILL = {
   PENDING: { text: 'Waiting for you', color: C.info },
@@ -63,17 +72,20 @@ export default function StepReview({ integ, setMsg, signal, setWorking, versionI
   const editable = version?.status === 'DRAFT';
   const approved = suggestions.filter((x) => x.status === 'APPROVED');
   const pending = suggestions.filter((x) => x.status === 'PENDING');
+  const runnable = runnableApprovedCount(suggestions);
+  const groups = groupSuggestions(suggestions);
   const spec = version?.spec || {};
-  const notices = Array.isArray(spec.notices) ? spec.notices : [];
+  const notices = reviewNotices(spec);
   const coverage = Array.isArray(spec.coverage) ? spec.coverage : [];
+  const notUsed = notUsedFromSpec(spec);
+  const isApi = integ.sourceKind === 'api';
 
   // "Where it goes" for the coverage table: every suggestion that reads the field.
   const destinations = useMemo(() => {
     const m = new Map();
     for (const sg of suggestions) {
       if (sg.status === 'REJECTED') continue;
-      const fields = sg.transform?.mode === 'wide' ? (sg.transform.columns || []) : [sg.sourceField];
-      for (const f of fields) {
+      for (const f of fieldsOfSuggestion(sg)) {
         if (!m.has(f)) m.set(f, []);
         m.get(f).push(sg);
       }
@@ -137,6 +149,7 @@ export default function StepReview({ integ, setMsg, signal, setWorking, versionI
   }
 
   const refusedById = new Map(refused.map((r) => [r.id, r.reason]));
+  const cardProps = { editable, busy, decide, refusedById, isApi };
 
   return (
     <div>
@@ -170,7 +183,7 @@ export default function StepReview({ integ, setMsg, signal, setWorking, versionI
 
       {coverage.length > 0 && (
         <>
-          <div style={s.sectionTitle}>What is in the sheet</div>
+          <div style={s.sectionTitle}>What is in the {isApi ? 'data' : 'sheet'}</div>
           <div style={{ overflowX: 'auto' }}>
             <table style={s.table}>
               <thead>
@@ -196,7 +209,7 @@ export default function StepReview({ integ, setMsg, signal, setWorking, versionI
                       <td style={s.td}>
                         {dest.length === 0
                           ? <span style={{ color: 'var(--text-muted)' }}>Not used</span>
-                          : dest.map((d) => (
+                          : dest.filter((d, i) => dest.findIndex((x) => x.id === d.id) === i).map((d) => (
                             <div key={d.id}>{describeTarget(d)} <Pill color={(STATUS_PILL[d.status] || {}).color}>{(STATUS_PILL[d.status] || {}).text || d.status}</Pill></div>
                           ))}
                       </td>
@@ -229,42 +242,52 @@ export default function StepReview({ integ, setMsg, signal, setWorking, versionI
 
       {suggestions.length === 0 && <p style={s.hint}>The AI found nothing it could map. Ask it again below, or add the KPI you expect first.</p>}
 
-      {suggestions.map((sg) => {
-        const pill = STATUS_PILL[sg.status] || { text: sg.status, color: C.grey };
-        const why = refusedById.get(sg.id);
-        return (
-          <div key={sg.id} style={{ ...s.card, background: 'var(--bg-1)', padding: 12, marginBottom: 8 }}>
-            <div style={{ ...s.row, justifyContent: 'space-between' }}>
+      {groups.kpi.length > 0 && (
+        <Group title="KPI numbers" count={groups.kpi.length} hint="Numbers Brain answers from (fetch_kpis), one reading per period.">
+          {groups.kpi.map((sg) => <SuggestionCard key={sg.id} sg={sg} {...cardProps} />)}
+        </Group>
+      )}
+
+      {groups.context.length > 0 && (
+        <Group
+          title="Context"
+          count={groups.context.length}
+          hint="Brain will be able to read this as knowledge — pages in your organisation’s wiki, kept up to date by each run. A record that disappears is marked stale, never deleted."
+        >
+          {groups.context.map((sg) => <SuggestionCard key={sg.id} sg={sg} {...cardProps} />)}
+        </Group>
+      )}
+
+      {groups.filter.length > 0 && (
+        <Group title="Filter" count={groups.filter.length} hint="Only records that pass the filter are read by the rows above. Nothing is filtered until you approve it.">
+          {groups.filter.map((sg) => (
+            <SuggestionCard key={sg.id} sg={sg} {...cardProps}>
+              <FilterConditions filter={sg.transform} words={integ.filterInstructions} />
+            </SuggestionCard>
+          ))}
+        </Group>
+      )}
+      {groups.filter.length === 0 && integ.filterInstructions && suggestions.length > 0 && (
+        <div style={s.warnBox}>
+          No filter was suggested for your words “{integ.filterInstructions}”, so every record is read. Ask the AI below if you need it.
+        </div>
+      )}
+
+      {(groups.not_used.length > 0 || notUsed.length > 0) && (
+        <Group title="Not used" count={groups.not_used.length + notUsed.length} hint="Fields that go nowhere, and why.">
+          {groups.not_used.map((sg) => <SuggestionCard key={sg.id} sg={sg} {...cardProps} />)}
+          {notUsed.map((n) => (
+            <div key={`nu:${n.field}`} style={{ ...s.card, background: 'var(--bg-1)', padding: 12, marginBottom: 8 }}>
               <div style={{ ...s.row, gap: 8 }}>
-                <strong style={{ color: 'var(--text)' }}>{sg.sourceField}</strong>
-                <span style={{ color: 'var(--text-muted)' }}>→</span>
-                <span style={{ color: 'var(--text)' }}>{describeTarget(sg)}</span>
-                <Pill color={pill.color}>{pill.text}</Pill>
-                {sg.carriedFromId && <Pill color={C.grey} title="Approved in an earlier version and carried over">Carried over</Pill>}
+                <strong style={{ color: 'var(--text)' }}>{n.field}</strong>
+                <Pill color={C.grey}>Not used</Pill>
               </div>
-              {editable && (
-                <span style={s.row}>
-                  {sg.status === 'PENDING' && (
-                    <button style={btn('success', { small: true, disabled: busy })} disabled={busy} onClick={() => decide('approve', [sg.id])}>Approve</button>
-                  )}
-                  {sg.status === 'APPROVED' && (
-                    <button style={btn('outline', { small: true, disabled: busy })} disabled={busy} onClick={() => decide('reject', [sg.id])}>Withdraw</button>
-                  )}
-                  {(sg.status === 'PENDING' || sg.status === 'SET_ASIDE' || sg.status === 'BLANK') && (
-                    <button style={btn('outline', { small: true, disabled: busy })} disabled={busy} onClick={() => decide('reject', [sg.id])}>Don’t use</button>
-                  )}
-                </span>
-              )}
+              {n.reason && <div style={s.hint}>{n.reason}</div>}
+              {n.followed && <Followed text={n.followed} />}
             </div>
-            {sg.transform && <div style={{ ...s.hint, marginTop: 6 }}>{describeTransform(sg.transform)}</div>}
-            {sg.samples?.length > 0 && (
-              <div style={s.hint}>Values in the sheet: {sg.samples.slice(0, 3).map((v) => `“${v}”`).join(', ')}</div>
-            )}
-            {sg.reason && <div style={{ ...s.hint, color: sg.status === 'SET_ASIDE' ? C.warn : 'var(--text-muted)' }}>{sg.reason}</div>}
-            {why && <div style={s.error}>Not changed: {why}</div>}
-          </div>
-        );
-      })}
+          ))}
+        </Group>
+      )}
 
       {refused.filter((r) => !suggestions.some((x) => x.id === r.id)).map((r) => (
         <div key={r.id} style={s.error}>Not changed: {r.reason}</div>
@@ -296,12 +319,107 @@ export default function StepReview({ integ, setMsg, signal, setWorking, versionI
       <div style={{ ...s.row, justifyContent: 'space-between', marginTop: 16 }}>
         <button style={btn('outline')} onClick={onBack}>← Connect</button>
         <span style={s.row}>
-          {approved.length === 0 && <span style={s.hint}>Approve at least one field to continue.</span>}
-          <button style={btn('primary', { disabled: approved.length === 0 })} disabled={approved.length === 0} onClick={onNext}>
+          {runnable === 0 && (
+            <span style={s.hint}>
+              {approved.length > 0 ? 'Approve at least one KPI or Context row — a filter alone has nothing to feed.' : 'Approve at least one field to continue.'}
+            </span>
+          )}
+          <button style={btn('primary', { disabled: runnable === 0 })} disabled={runnable === 0} onClick={onNext}>
             Continue
           </button>
         </span>
       </div>
+    </div>
+  );
+}
+
+function Group({ title, count, hint, children }) {
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ ...s.row, gap: 8, margin: '12px 0 6px' }}>
+        <strong style={{ color: 'var(--text)', fontSize: 'var(--fs-sm)' }}>{title}</strong>
+        <Pill color={C.grey}>{count}</Pill>
+      </div>
+      {hint && <p style={{ ...s.hint, marginBottom: 8 }}>{hint}</p>}
+      {children}
+    </div>
+  );
+}
+
+function Followed({ text }) {
+  return (
+    <div style={{ ...s.hint, marginTop: 4 }}>
+      <span style={{ color: C.accent }}>Followed:</span> {text}
+    </div>
+  );
+}
+
+/** One proposed row. Approve / withdraw / don't use exactly as Stage 1. */
+function SuggestionCard({ sg, editable, busy, decide, refusedById, isApi, children }) {
+  const pill = STATUS_PILL[sg.status] || { text: sg.status, color: C.grey };
+  const why = refusedById.get(sg.id);
+  const isFilter = sg.targetKind === 'filter';
+  return (
+    <div style={{ ...s.card, background: 'var(--bg-1)', padding: 12, marginBottom: 8 }}>
+      <div style={{ ...s.row, justifyContent: 'space-between' }}>
+        <div style={{ ...s.row, gap: 8 }}>
+          {!isFilter && <strong style={{ color: 'var(--text)' }}>{sg.sourceField}</strong>}
+          {!isFilter && <span style={{ color: 'var(--text-muted)' }}>→</span>}
+          <span style={{ color: 'var(--text)' }}>{describeTarget(sg)}</span>
+          <Pill color={pill.color}>{pill.text}</Pill>
+          {sg.carriedFromId && <Pill color={C.grey} title="Approved in an earlier version and carried over">Carried over</Pill>}
+        </div>
+        {editable && (
+          <span style={s.row}>
+            {sg.status === 'PENDING' && (
+              <button style={btn('success', { small: true, disabled: busy })} disabled={busy} onClick={() => decide('approve', [sg.id])}>Approve</button>
+            )}
+            {sg.status === 'APPROVED' && (
+              <button style={btn('outline', { small: true, disabled: busy })} disabled={busy} onClick={() => decide('reject', [sg.id])}>Withdraw</button>
+            )}
+            {(sg.status === 'PENDING' || sg.status === 'SET_ASIDE' || sg.status === 'BLANK') && (
+              <button style={btn('outline', { small: true, disabled: busy })} disabled={busy} onClick={() => decide('reject', [sg.id])}>Don’t use</button>
+            )}
+          </span>
+        )}
+      </div>
+      {sg.transform && !isFilter && <div style={{ ...s.hint, marginTop: 6 }}>{describeTransform(sg.transform)}</div>}
+      {children}
+      {sg.samples?.length > 0 && !isFilter && (
+        <div style={s.hint}>Values in the {isApi ? 'data' : 'sheet'}: {sg.samples.slice(0, 3).map((v) => `“${v}”`).join(', ')}</div>
+      )}
+      {sg.reason && <div style={{ ...s.hint, color: sg.status === 'SET_ASIDE' ? C.warn : 'var(--text-muted)' }}>{sg.reason}</div>}
+      {sg.followed && <Followed text={sg.followed} />}
+      {why && <div style={s.error}>Not changed: {why}</div>}
+    </div>
+  );
+}
+
+/** The structured conditions next to the admin's own words, so the admin can check
+ *  the AI understood them before approving (nothing filters until then). */
+function FilterConditions({ filter, words }) {
+  const conds = Array.isArray(filter?.conditions) ? filter.conditions : [];
+  return (
+    <div style={{ marginTop: 6 }}>
+      {words && <div style={s.hint}>Your words: “{words}”</div>}
+      <div style={{ ...s.hint, color: 'var(--text)', marginTop: 4 }}>
+        Keep a record when {filter?.match === 'any' ? 'ANY' : 'ALL'} of these hold:
+      </div>
+      <table style={{ ...s.table, marginTop: 4 }}>
+        <thead>
+          <tr><th style={s.th}>Field</th><th style={s.th}>Rule</th><th style={s.th}>Value</th></tr>
+        </thead>
+        <tbody>
+          {conds.map((c, i) => (
+            <tr key={i} title={describeCondition(c)}>
+              <td style={{ ...s.td, ...s.mono }}>{c.field}</td>
+              <td style={s.td}>{FILTER_OP_WORDS[c.op] || c.op}</td>
+              <td style={s.td}>{c.op === 'is_blank' || c.op === 'is_not_blank' ? '' : c.value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {conds.length === 0 && <div style={s.hint}>No conditions.</div>}
     </div>
   );
 }

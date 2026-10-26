@@ -24,6 +24,17 @@
  *    computed value must not also be settable"): only APPROVED rows of the
  *    run's version are read. A live run uses approved_version_id, nothing else.
  *
+ * DEF-362 (Stage 1b, spec §2b) adds, in this order after the read:
+ *  - the APPROVED record filter is applied BEFORE planning (nothing filters
+ *    until approved; a filter naming a field the data lacks FAILS the run);
+ *  - approved Context rows of the run's version are planned alongside the KPI
+ *    rows (engine/contextWriter.ts); a dry run previews them as change rows and
+ *    touches no wiki page; the change cap counts page rewrites (updates and
+ *    stale marks) like reading rewrites;
+ *  - a live run writes the pages AFTER the KPI transaction commits — pages go
+ *    through the shared knowledge helper and cannot join that SQL transaction,
+ *    so each page records its change row right after its own write.
+ *
  * Tenant rule: `cn` is in every where and every raw statement — the dispatcher
  * and boot sweep run outside a tenant scope, where the Prisma extension adds
  * nothing.
@@ -31,12 +42,28 @@
 import createLogger from '../../../utils/logger';
 import prisma from '../../../db/prisma';
 import { runWithoutTenant } from '../../../db/tenantContext';
-import { readGsheet } from '../sources/gsheetReader';
-import { currentFingerprint, isConnectionOk, readSourceConfig, scheduleOf } from '../store/integrationStore';
+import { readSource, sourceProblem } from '../sources';
+import { currentFingerprint, isConnectionOk, scheduleOf } from '../store/integrationStore';
+import {
+  applyContextDiff,
+  contextFieldsRead,
+  contextRewrites,
+  diffContextPages,
+  loadStoredContextPages,
+  bareKeyOwner,
+  maxContextPages,
+  planContextPages,
+  previewNote,
+  readContextTransform,
+  type ContextDiff,
+  type ContextPlanResult,
+} from './contextWriter';
+import { applyRecordFilter, validateRecordFilter } from './recordFilter';
 import {
   IntegrationInputError,
   IntegrationNotFoundError,
   RunBusyError,
+  type ApprovedContextRow,
   type ApprovedKpiRow,
   type BlankPolicy,
   type CapVerdict,
@@ -44,6 +71,7 @@ import {
   type ExistingReadings,
   type KpiTransform,
   type PlannedReading,
+  type RecordFilter,
   type RunCounts,
   type RunEngineModule,
   type RunOptions,
@@ -89,6 +117,13 @@ export function fieldsRead(t: KpiTransform): string[] {
   return t.dimensionField ? [...own, t.dimensionField] : own;
 }
 
+/** apiConfig.idField (DEF-362) — the field that identifies a record for
+ *  Context pages; null for a Google Sheet (the writer then keys by title). */
+export function apiIdField(raw: unknown): string | null {
+  const v = (raw && typeof raw === 'object' ? (raw as Record<string, unknown>).idField : null);
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === 'P2002';
 }
@@ -112,12 +147,32 @@ function clip(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/** DEF-362: what the run did (or, dry, would do) to knowledge pages. Rides
+ *  in the stored run result next to the Stage 1 counts. */
+export interface ContextRunSummary {
+  created: number;
+  updated: number;
+  unchanged: number;
+  stale: number;
+  skipped: number;
+  failed: number;
+  truncated: boolean;
+}
+
+/** `readComplete` (DEF-362 review): false when the read itself fell short
+ *  (row/page/byte limit, fewer than the declared total). Turn-on accepts a
+ *  PARTIAL dry run only when the read was complete and the one shortfall was
+ *  the Context page cap — a limit every live run applies the same way. */
+export type EngineResultWithContext = EngineResult & { context?: ContextRunSummary; readComplete?: boolean };
+
 interface Outcome {
   status: FinalStatus;
   counts: RunCounts;
   capVerdict: CapVerdict;
   anomalies: string[];
   error?: string;
+  context?: ContextRunSummary;
+  readComplete?: boolean;
 }
 
 /**
@@ -141,9 +196,11 @@ async function finishRun(
   o: Outcome,
   integ: { status: string; frequency: string; runTime: string; dayOfWeek: number | null; dayOfMonth: number | null; timezone: string } | null,
 ): Promise<EngineResult> {
-  const result: EngineResult = {
+  const result: EngineResultWithContext = {
     runId, dryRun, status: o.status, changePercent: o.capVerdict.pct, capVerdict: o.capVerdict,
     anomalies: o.anomalies, ...o.counts, ...(o.error ? { error: o.error } : {}),
+    ...(o.context ? { context: o.context } : {}),
+    ...(o.readComplete !== undefined ? { readComplete: o.readComplete } : {}),
   };
   const now = new Date();
   await db.integrationRun.updateMany({
@@ -223,11 +280,11 @@ interface WrittenRow { kpi_key: string; period_start: string; dimension_key: str
  * reports exactly the rows that changed — those, and only those, get a change
  * row. Any error rolls everything back.
  */
-async function writeReadings(
+async function writeReadings<R>(
   cn: string, integrationId: string, runId: string,
   readings: PlannedReading[], labels: Map<string, string>,
-  closeInTx: (tx: CloseDb, writes: number) => Promise<EngineResult>,
-): Promise<EngineResult> {
+  closeInTx: (tx: CloseDb, writes: number) => Promise<R>,
+): Promise<R> {
   const byKey = new Map(readings.map((r) => [readingKey(r.kpiKey, r.periodStart, r.dimensionKey), r]));
   return prisma.$transaction(async (tx) => {
     let writes = 0;
@@ -262,6 +319,8 @@ async function writeReadings(
     }
     // The run's close commits WITH the readings: a close that fails rolls the
     // readings back, so a run row never says FAILED/RUNNING over committed data.
+    // (DEF-362: a run that also writes knowledge pages closes after them, so
+    // its callback only returns the write count — see runIntegration.)
     return closeInTx(tx as unknown as CloseDb, writes);
   }, { timeout: TX_TIMEOUT_MS, maxWait: TX_MAX_WAIT_MS });
 }
@@ -340,10 +399,14 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
 
   const counts: RunCounts = { ...ZERO_COUNTS };
   const anomalies: string[] = [];
+  let contextSummary: ContextRunSummary | undefined;
+  let readComplete: boolean | undefined;
   const close = (status: FinalStatus, extra: { error?: string; capVerdict?: CapVerdict } = {}) =>
     safeFinish(prisma, cn, id, runId, opts.dryRun, {
       status, counts, capVerdict: extra.capVerdict ?? { ...NO_CAP, cap: integ.changeCapPct },
       anomalies, ...(extra.error ? { error: extra.error } : {}),
+      ...(contextSummary ? { context: contextSummary } : {}),
+      ...(readComplete !== undefined ? { readComplete } : {}),
     }, integ);
   const fail = (error: string) => {
     log.warn('integration run failed', { clientNumber: cn, integrationId: id, runId, dryRun: opts.dryRun, error });
@@ -356,8 +419,12 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
         ? 'There is no mapping to try yet — suggest a mapping first.'
         : 'This integration has no approved mapping — turn it on first.');
     }
-    const cfg = readSourceConfig(integ.sourceConfig);
-    if (!cfg) return await fail('No Google Sheet is connected to this integration.');
+    // DEF-362: the source router dispatches gsheet | api; a half-set-up source
+    // fails here with what is missing, before any read.
+    const problem = sourceProblem(integ);
+    if (problem) {
+      return await fail(integ.sourceKind !== 'api' ? 'No Google Sheet is connected to this integration.' : problem.message);
+    }
     // "The tested connection is the one runs use" (spec §3): a live write never
     // reads a sheet that has not passed its test since it was last changed.
     if (!opts.dryRun && !isConnectionOk(integ)) {
@@ -365,17 +432,52 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
     }
 
     // Approved rows of THIS version only, computed now (never stored).
+    // DEF-362: KPI and Context rows both run; the filter row is applied below.
     const suggestionRows = await prisma.integrationSuggestion.findMany({
-      where: { clientNumber: cn, integrationId: id, mappingVersionId: versionId, status: 'APPROVED', targetKind: 'kpi' },
-      select: { id: true, sourceField: true, targetKey: true, transform: true },
-      orderBy: { createdAt: 'asc' },
+      where: { clientNumber: cn, integrationId: id, mappingVersionId: versionId, status: 'APPROVED', targetKind: { in: ['kpi', 'context', 'filter'] } },
+      select: { id: true, sourceField: true, targetKey: true, transform: true, targetKind: true },
+      // DEF-362 review: rows of one version are inserted by one createMany and
+      // share created_at, so createdAt alone is no order at all. Context page
+      // identity must not depend on it (contextWriter assigns keys by content,
+      // not position); the tie-breakers keep everything else deterministic too.
+      orderBy: [{ createdAt: 'asc' }, { sourceField: 'asc' }, { targetKey: 'asc' }, { id: 'asc' }],
     });
     counts.setAside = await prisma.integrationSuggestion.count({
       where: { clientNumber: cn, integrationId: id, mappingVersionId: versionId, status: 'SET_ASIDE' },
     });
-    if (suggestionRows.length === 0) return await fail('No field of this mapping version is approved, so there is nothing to run.');
+    const kpiSuggestions = suggestionRows.filter((s) => (s.targetKind ?? 'kpi') === 'kpi');
+    const contextSuggestions = suggestionRows.filter((s) => s.targetKind === 'context');
+    const filterSuggestion = suggestionRows.find((s) => s.targetKind === 'filter') ?? null;
+    if (kpiSuggestions.length === 0 && contextSuggestions.length === 0) {
+      return await fail('No field of this mapping version is approved, so there is nothing to run.');
+    }
+    const approvedContext: ApprovedContextRow[] = [];
+    for (const s of contextSuggestions) {
+      const transform = readContextTransform(s.transform);
+      if (!transform || (s.targetKey !== 'context:per_record' && s.targetKey !== 'context:table')
+          || (s.targetKey === 'context:per_record') !== (transform.mode === 'per_record')) {
+        return await fail(`The approved Context row "${s.sourceField}" has no usable layout (${s.targetKey}); propose the mapping again.`);
+      }
+      approvedContext.push({ suggestionId: s.id, targetKey: s.targetKey, transform });
+    }
+    // The filter: integration.approved_filter, written only by approving a
+    // filter row (vm §9 "approval is the only write permission"). A dry run
+    // previews its own version: ONLY that version's APPROVED filter row, and no
+    // filter when it has none — never integration.approved_filter, which is the
+    // RUNNING version's. Falling back to it (DEF-362 review) let a version that
+    // withdrew the filter be previewed filtered, then run live unfiltered after
+    // turn-on (activate writes approved_filter from the version's own row).
+    let filter: RecordFilter | null = null;
+    const rawFilter = opts.dryRun ? (filterSuggestion?.transform ?? null) : integ.approvedFilter;
+    if (rawFilter != null) {
+      try {
+        filter = validateRecordFilter(rawFilter);
+      } catch (err) {
+        return await fail(`The approved filter cannot be used: ${errText(err)} Propose the mapping again.`);
+      }
+    }
     const approved: ApprovedKpiRow[] = [];
-    for (const s of suggestionRows) {
+    for (const s of kpiSuggestions) {
       const transform = readTransform(s.transform);
       if (!transform || !s.targetKey.startsWith('kpi:')) {
         return await fail(`The approved field "${s.sourceField}" has no usable layout (${s.targetKey}); propose the mapping again.`);
@@ -386,17 +488,38 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
     // Step 3 — read, then the header check.
     let read;
     try {
-      read = await readGsheet(cn, cfg);
+      read = await readSource(cn, integ);
     } catch (err) {
-      return await fail(`The sheet could not be read: ${adminText(err, 'the read failed unexpectedly. Try again in a few minutes.', { clientNumber: cn, integrationId: id, runId })}`);
+      return await fail(`The ${integ.sourceKind === 'api' ? 'API' : 'sheet'} could not be read: ${adminText(err, 'the read failed unexpectedly. Try again in a few minutes.', { clientNumber: cn, integrationId: id, runId })}`);
     }
     counts.recordsRead = read.rowCount;
+    readComplete = !read.truncated;
     anomalies.push(...read.anomalies);
     if (read.truncated) anomalies.push(read.truncatedReason ?? 'Only part of the sheet was read.');
     const headers = new Set(read.headers);
     const missing = [...new Set(approved.flatMap((r) => fieldsRead(r.transform)))].filter((f) => !headers.has(f));
     if (missing.length) {
       return await fail(`The sheet no longer has the column(s) ${missing.map((m) => `"${m}"`).join(', ')} that the approved mapping reads.`);
+    }
+    // DEF-362: Context fields are read like KPI columns — gone ⇒ the run fails
+    // (an unconfigured target fails the run), never a page of blanks.
+    const missingCtx = [...new Set(approvedContext.flatMap((r) => contextFieldsRead(r.transform)))].filter((f) => !headers.has(f));
+    if (missingCtx.length) {
+      return await fail(`The data no longer has the field(s) ${missingCtx.map((m) => `"${m}"`).join(', ')} that the approved Context mapping reads.`);
+    }
+
+    // DEF-362: the APPROVED filter, BEFORE planning — filtered-out records
+    // never reach a KPI or a page, and are counted.
+    let records = read.records;
+    if (filter) {
+      const missingF = [...new Set(filter.conditions.map((c) => c.field))].filter((f) => !headers.has(f));
+      if (missingF.length) {
+        return await fail(`The data no longer has the field(s) ${missingF.map((m) => `"${m}"`).join(', ')} that the approved filter reads.`);
+      }
+      const fo = applyRecordFilter(records, filter);
+      if (fo.problems.length) return await fail(fo.problems.join(' '));
+      records = fo.kept;
+      counts.filteredOut = fo.filteredOut;
     }
     // Wide layout: the approved row reads a FIXED list of period columns. A
     // month column added since approval is not read — say so on every run, so
@@ -424,7 +547,7 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
     }
     const defs: PlannerKpiDef[] = defRows;
     const existing = await loadExisting(cn, kpiKeys);
-    const plan = planKpiReadings(read.records, approved, defs, existing, integ.blankPolicy as BlankPolicy);
+    const plan = planKpiReadings(records, approved, defs, existing, integ.blankPolicy as BlankPolicy);
     counts.skipped = plan.skipped;
     counts.blanks = plan.blanks;
     anomalies.push(...plan.anomalies);
@@ -438,13 +561,30 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
     // scheduled run of a young sheet the month a row was appended (vm ported
     // note: "a monthly measurement changes nothing: it adds this month's
     // reading"). Dry runs share this numerator.
-    const owned = await prisma.kpiReading.count({ where: { clientNumber: cn, integrationId: id } });
-    const rewrites = plan.readings.filter((r) => r.before !== null).length;
+    // DEF-362: Context pages are planned now, against what is stored, so the
+    // cap and the dry-run preview see them. Nothing is written here.
+    let ctxPlan: ContextPlanResult | null = null;
+    let ctxDiff: ContextDiff | null = null;
+    if (approvedContext.length) {
+      const storedPages = await loadStoredContextPages(cn, id);
+      ctxPlan = planContextPages({ id, name: integ.name }, records, approvedContext, apiIdField(integ.apiConfig), await maxContextPages(cn), bareKeyOwner(storedPages));
+      ctxDiff = diffContextPages(ctxPlan, storedPages, records.length, !read.truncated);
+      anomalies.push(...ctxPlan.anomalies, ...ctxDiff.anomalies);
+    }
+
+    // The cap's base is what the integration already holds: its readings AND
+    // its knowledge pages; rewriting or staling a page counts like rewriting a
+    // reading, a new page (like a new period) changes nothing already held.
+    const owned = await prisma.kpiReading.count({ where: { clientNumber: cn, integrationId: id } }) + (ctxDiff?.owned ?? 0);
+    const rewrites = plan.readings.filter((r) => r.before !== null).length + (ctxDiff ? contextRewrites(ctxDiff) : 0);
     const capVerdict = changeCapVerdict(rewrites, owned, integ.changeCapPct);
     const labelsByDef = new Map(defRows.map((d) => [d.kpiKey, d.label]));
     const labels = new Map(plan.readings.map((r) =>
       [readingKey(r.kpiKey, r.periodStart, r.dimensionKey), labelFor(r, labelsByDef.get(r.kpiKey))]));
-    const okStatus: FinalStatus = read.truncated ? 'PARTIAL' : 'SUCCESS';
+    // PARTIAL: part of the source was never seen, or the page cap stopped
+    // Context early (spec §2b "cap ⇒ run note + PARTIAL").
+    const okStatus: FinalStatus = read.truncated || ctxPlan?.truncated ? 'PARTIAL' : 'SUCCESS';
+    const ctxOps = ctxDiff?.ops.length ?? 0;
 
     // Step 6 — dry run: preview rows only. `writes` = what a live run would write.
     if (opts.dryRun) {
@@ -453,6 +593,17 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
         await prisma.integrationRunChange.createMany({ data: preview.slice(i, i + WRITE_CHUNK) });
       }
       counts.writes = plan.readings.length;
+      if (ctxDiff && ctxPlan) {
+        // Preview change rows only — applyContextDiff with dryRun touches no wiki page.
+        const pv = await applyContextDiff(cn, { id, name: integ.name }, ctxDiff,
+          { dryRun: true, runId, idField: apiIdField(integ.apiConfig), userId: integ.createdBy });
+        contextSummary = { created: pv.created, updated: pv.updated, unchanged: ctxDiff.unchanged, stale: pv.stale,
+          skipped: ctxPlan.skipped, failed: 0, truncated: ctxPlan.truncated };
+        const note = previewNote(ctxDiff);
+        if (note) anomalies.push(note);
+        counts.writes += ctxOps;
+        counts.subjectsAffected += ctxOps;
+      }
       log.info('integration dry run', { clientNumber: cn, integrationId: id, runId, wouldWrite: counts.writes, ms: Date.now() - t0 });
       return await close(okStatus, { capVerdict });
     }
@@ -468,6 +619,36 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
     // Step 7 — live: one transaction, readings + their change rows + the
     // run's close. Step 8 — distinct subjects: concurrent edits can make the DB
     // find fewer rows to change than planned; the counts follow what was written.
+    if (ctxDiff && ctxPlan) {
+      // DEF-362: readings first, in their ONE transaction (unchanged rule);
+      // the run is NOT closed inside it, because the pages come next and the
+      // run row must describe both. Pages cannot join that SQL transaction
+      // (shared knowledge helper, global client, embedding queue): each page's
+      // change row is recorded right after that page's own write. If the
+      // readings fail, no page is written.
+      let kpiWrites = 0;
+      if (plan.readings.length > 0) {
+        try {
+          kpiWrites = await writeReadings(cn, id, runId, plan.readings, labels, async (_tx, writes) => writes);
+        } catch (err) {
+          counts.writes = 0;
+          return await fail(`Nothing was written — saving the readings failed: ${adminText(err, 'the database did not accept them. Try again in a few minutes.', { clientNumber: cn, integrationId: id, runId })}`);
+        }
+      }
+      const applied = await applyContextDiff(cn, { id, name: integ.name }, ctxDiff,
+        { dryRun: false, runId, idField: apiIdField(integ.apiConfig), userId: integ.createdBy });
+      anomalies.push(...applied.anomalies);
+      const pageWrites = applied.created + applied.updated + applied.stale;
+      contextSummary = { created: applied.created, updated: applied.updated, unchanged: ctxDiff.unchanged + applied.unchangedRace,
+        stale: applied.stale, skipped: ctxPlan.skipped, failed: applied.failed, truncated: ctxPlan.truncated };
+      counts.writes = kpiWrites + pageWrites;
+      counts.subjectsAffected = Math.min(plan.subjectsAffected, kpiWrites) + pageWrites;
+      log.info('integration run', { clientNumber: cn, integrationId: id, runId, trigger: opts.trigger, writes: counts.writes, pageFailures: applied.failed, ms: Date.now() - t0 });
+      // Readings committed and some pages failed: never FAILED over committed
+      // data — PARTIAL, with the failures named in the anomalies.
+      return await close(applied.failed > 0 ? 'PARTIAL' : okStatus, { capVerdict });
+    }
+
     if (plan.readings.length > 0) {
       try {
         return await writeReadings(cn, id, runId, plan.readings, labels, (tx, writes) => {

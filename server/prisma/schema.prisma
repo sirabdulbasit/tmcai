@@ -1185,8 +1185,19 @@ model IntegrationSync {
   name                  String    @db.VarChar(200)
   purpose               String?   @db.Text
   adminBrief            String?   @map("admin_brief") @db.Text
-  sourceKind            String    @default("gsheet") @map("source_kind") @db.VarChar(20) // gsheet (Stage 1)
+  sourceKind            String    @default("gsheet") @map("source_kind") @db.VarChar(20) // gsheet (Stage 1) | api (Stage 1b, DEF-362)
   sourceConfig          Json      @default("{}") @map("source_config") // GsheetSourceConfig: {sheetId, gid, tabLabel?, link}
+  // DEF-362 (Stage 1b) — API source. secretEnc is ciphertext only ('v1:…', store/secretStore.ts) and is
+  // never returned by the API; approvedFilter is written only by approving a filter suggestion.
+  apiDocName            String?   @map("api_doc_name") @db.VarChar(255)
+  apiDocText            String?   @map("api_doc_text") @db.Text // extracted + credential-redacted before storage
+  apiDocReading         Json?     @map("api_doc_reading") // ApiDocReading: {draft, gaps, summary}
+  filterInstructions    String?   @map("filter_instructions") @db.Text // admin's filter, plain words
+  connectInstructions   String?   @map("connect_instructions") @db.Text // "how should this data be mapped?"
+  apiConfig             Json?     @map("api_config") // ApiConfig (no secret in it, ever)
+  secretEnc             String?   @map("secret_enc") @db.Text
+  secretSetAt           DateTime? @map("secret_set_at") @db.Timestamptz(6)
+  approvedFilter        Json?     @map("approved_filter") // RecordFilter, approval-written only
   status                String    @default("DRAFT") @db.VarChar(10) // DRAFT | ACTIVE | PAUSED
   frequency             String    @default("weekly") @db.VarChar(10) // daily | weekly | monthly | once
   runTime               String    @default("02:00") @map("run_time") @db.VarChar(5) // HH:MM, local to `timezone`
@@ -1247,15 +1258,16 @@ model IntegrationSuggestion {
   clientNumber     String    @map("client_number") @db.VarChar(20)
   integrationId    String    @map("integration_id")
   mappingVersionId String    @map("mapping_version_id")
-  targetKind       String    @default("kpi") @map("target_kind") @db.VarChar(12) // kpi (Stage 1)
+  targetKind       String    @default("kpi") @map("target_kind") @db.VarChar(12) // kpi (Stage 1) | context | filter (DEF-362)
   sourceField      String    @map("source_field") @db.VarChar(255)
-  targetKey        String    @map("target_key") @db.VarChar(200) // 'kpi:<key>' | 'kpi:new:<key>'
-  transform        Json? // KpiTransform
+  targetKey        String    @map("target_key") @db.VarChar(200) // 'kpi:<key>' | 'kpi:new:<key>' | 'context:per_record' | 'context:table' | 'filter'
+  transform        Json? // KpiTransform | ContextTransform | RecordFilter
   coverage         Json? // FieldCoverage
   samples          Json? // ≤3 real values
   newKpi           Json?     @map("new_kpi") // {kpiKey, label, unit?} when the proposer names a new KPI
   status           String    @default("PENDING") @db.VarChar(10) // PENDING | APPROVED | REJECTED | SET_ASIDE | BLANK
   reason           String?   @db.Text // blast radius / set-aside arithmetic
+  followed         String?   @db.Text // DEF-362: which remark / filter words / connect instruction this row followed
   carriedFromId    String?   @map("carried_from_id")
   decidedBy        Int?      @map("decided_by")
   decidedAt        DateTime? @map("decided_at") @db.Timestamptz(6)
@@ -1306,8 +1318,8 @@ model IntegrationRunChange {
   clientNumber  String   @map("client_number") @db.VarChar(20)
   integrationId String   @map("integration_id")
   runId         String   @map("run_id")
-  targetKind    String   @default("kpi") @map("target_kind") @db.VarChar(12)
-  op            String   @db.VarChar(8) // create | update
+  targetKind    String   @default("kpi") @map("target_kind") @db.VarChar(12) // kpi | context (DEF-362)
+  op            String   @db.VarChar(8) // create | update | stale (DEF-362: a context page whose record disappeared)
   subjectKey    String   @map("subject_key") @db.VarChar(255) // kpiKey|periodStart|dimensionKey
   subjectLabel  String?  @map("subject_label") @db.VarChar(255)
   targetKey     String   @map("target_key") @db.VarChar(200)
