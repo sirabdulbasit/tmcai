@@ -148,8 +148,18 @@ describe('C4 — the secret is a PUT and `verified` is read', () => {
 describe('C5 — Basics and Review wiring', () => {
   it('attach() saves first, like read()', () => {
     const basics = fs.readFileSync(path.join(CLIENT_DIR, 'StepBasics.jsx'), 'utf8');
-    const attach = basics.slice(basics.indexOf('async function attach()'), basics.indexOf('async function read()'));
+    const attach = basics.slice(basics.indexOf('async function attach('), basics.indexOf('async function read()'));
+    expect(attach.length).toBeGreaterThan(0);
     expect(attach).toMatch(/if \(saveFirst\) await saveFirst\(\);[\s\S]*uploadApiDocument/);
+  });
+
+  it('choosing a file uploads it and the AI reads it — no separate Attach click (owner 10-26: file "missed" on Save and continue)', () => {
+    const basics = fs.readFileSync(path.join(CLIENT_DIR, 'StepBasics.jsx'), 'utf8');
+    // The file input's onChange calls attach with the chosen file…
+    expect(basics).toMatch(/type="file"[\s\S]{0,400}onChange=\{\(e\) => \{[^}]*if \(f\) attach\(f\)/);
+    // …and a successful attach goes straight on to the AI reading.
+    const attach = basics.slice(basics.indexOf('async function attach('), basics.indexOf('async function read()'));
+    expect(attach).toMatch(/if \(attached\) await read\(\)/);
   });
 
   it('a "Not used" field is listed once: its notice is dropped when spec.notUsed carries it', () => {

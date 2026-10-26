@@ -266,27 +266,39 @@ function ApiDocument({ integ, setInteg, setMsg, setWorking, saveFirst }) {
   const tooBig = !!file && file.size > DOC_MAX_BYTES;
   const canAttach = !busy && (mode === 'file' ? !!file && !tooBig : pasted.trim().length > 0);
 
-  async function attach() {
+  /**
+   * Upload, then read with the AI — one action. Owner 10-26: "i am attaching file
+   * successfully, when click on Save and Continue the file missed": picking a file only
+   * selected it, the upload sat behind a separate Attach button, and Save and continue
+   * never sent it. Choosing a file now uploads it and starts the reading straight away.
+   */
+  async function attach(chosen) {
+    const source = chosen ?? (mode === 'file' ? file : null);
+    if (mode === 'file' && !source) return;
+    if (source && source.size > DOC_MAX_BYTES) { setFile(source); return; }
     setBusy(true);
     setError('');
+    let attached = false;
     try {
       // An unsaved switch to API (or unsaved remarks) is saved first: the server refuses a
       // document for an integration it still holds as a Google Sheet (DEF-362 review).
       if (saveFirst) await saveFirst();
       const res = mode === 'file'
-        ? await uploadApiDocument(integ.id, file)
+        ? await uploadApiDocument(integ.id, source)
         : await attachApiDocumentText(integ.id, pasted, pastedName);
       if (res.integration) setInteg(res.integration);
       const d = res.document;
-      setMsg(`Attached “${d?.name ?? 'the document'}”${d?.redactions ? ` — ${d.redactions} secret-looking value${d.redactions === 1 ? ' was' : 's were'} blanked out first` : ''}. Now press Read with AI.`);
+      setMsg(`Attached “${d?.name ?? 'the document'}”${d?.redactions ? ` — ${d.redactions} secret-looking value${d.redactions === 1 ? ' was' : 's were'} blanked out first` : ''}. The AI is reading it now.`);
       setFile(null);
       setPasted('');
       setPastedName('');
+      attached = true;
     } catch (e) {
       setError(errorText(e));
     } finally {
       setBusy(false);
     }
+    if (attached) await read();
   }
 
   async function read() {
@@ -316,8 +328,9 @@ function ApiDocument({ integ, setInteg, setMsg, setWorking, saveFirst }) {
     <div style={{ ...s.card, background: 'var(--bg-1)', marginTop: 14 }}>
       <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', fontWeight: 600 }}>API document</div>
       <p style={s.hint}>
-        PDF, Word (.docx), text, Markdown or JSON (OpenAPI), up to 5 MB. Anything that looks like a password, token or key is blanked out
-        before the document is stored or shown to the AI — you type the real secret in Connect.
+        PDF, Word (.docx), text, Markdown or JSON (OpenAPI), up to 5 MB. Choosing a file uploads it and the AI reads it straight away.
+        Anything that looks like a password, token or key is blanked out before the document is stored or shown to the AI — you type
+        the real secret in Connect.
       </p>
       {integ.apiDocName && (
         <p style={{ ...s.hint, color: 'var(--text)' }}>Attached: <strong>{integ.apiDocName}</strong>{reading?.readAt ? ` · read ${formatPkt(reading.readAt)}` : ' · not read yet'}</p>
@@ -333,7 +346,8 @@ function ApiDocument({ integ, setInteg, setMsg, setWorking, saveFirst }) {
           <input
             type="file"
             accept={DOC_ACCEPT}
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            disabled={busy}
+            onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ''; if (f) attach(f); }}
             style={{ color: 'var(--text)', fontSize: 'var(--fs-sm)' }}
           />
           {tooBig && <div style={s.error}>That file is {(file.size / 1024 / 1024).toFixed(1)} MB; the limit is 5 MB.</div>}
@@ -351,9 +365,12 @@ function ApiDocument({ integ, setInteg, setMsg, setWorking, saveFirst }) {
       )}
 
       <div style={{ ...s.row, marginTop: 8 }}>
-        <button style={btn('outline', { small: true, disabled: !canAttach })} disabled={!canAttach} onClick={attach}>
-          {busy ? 'Working…' : integ.apiDocName ? 'Replace the document' : 'Attach'}
-        </button>
+        {mode === 'paste' && (
+          <button style={btn('outline', { small: true, disabled: !canAttach })} disabled={!canAttach} onClick={() => attach()}>
+            {busy ? 'Working…' : 'Attach and read with AI'}
+          </button>
+        )}
+        {mode === 'file' && busy && <span style={s.hint}>Uploading and reading…</span>}
         <button style={btn('primary', { small: true, disabled: busy || !integ.apiDocName })} disabled={busy || !integ.apiDocName} onClick={read}>
           {reading ? 'Read with AI again' : 'Read with AI'}
         </button>
