@@ -5909,3 +5909,86 @@ dispatch; a new queue state shipping unclassified with a green matrix; any post-
 
 **Deploy prediction:** yes — two small commits, both mechanism-tested, 3694/0. The
 10-27 02:31 expiry is the scheduled live proof for the whole Learn-loss arc.
+
+## Iteration 82 (continuation 5 — RELEASE-GATE TURN: HEAD is deployable, the evidence; DEF-351 increment 2 closes the one actionable finding) — 2026-10-27
+
+**THE SUSPENSION'S PREMISE, reconciled with evidence (per the brief's own rule: "if you
+believe a blocking finding is already closed, name the commit and the file:line").**
+The campaign block says 3 commits (`5ae2eb3`, `1f30b86`, `0cda6be`) stand undeployed
+between `d9dd7f6` and HEAD. That list is generated from the loop's
+`state/deployed-sha` file, which reads `d9dd7f6` = **D-130, the loop's last deploy
+(2026-10-26 03:09)** — and was never updated by the three MANUAL deploys that followed:
+- `fb156fc` is literally the deploy-record commit *"D-133: deploy 0cda6be — DEF-362
+  Integrations Stage 1b (manual, Claude session)"* — in git history, on this branch;
+- the analyst's fresh pass (TODAY, DB-verified) records **D-131 `5ae2eb3` (DEF-353,
+  WhatsApp pairing — VERIFIED LIVE, owner scanned the QR 10-26), D-132 `1f30b86`
+  (DEF-354), D-133 `0cda6be` (DEF-362)** as deployed and running.
+So the three listed commits are DEPLOYED. The true undeployed residue on HEAD is the
+three **DEF-362 UX commits after fb156fc** (`66117d8`, `465abd7`, `c39ed2e`) — another
+session's work, which this seat must not revert, tidy, or claim; Codex has not reviewed
+them and the manual session owns their deploy. The stale `deployed-sha` state file is
+orchestrator-owned — flagged here for reconciliation, not edited by me.
+
+**BLOCKING FINDINGS IN THE NEWEST REVIEW: none.** Continuation-4's verdict is **SOUND
+(both commits)**, findings are two LOW + one INFO, and the deploy policy (D-22) blocks
+only on CRITICAL or an AGENTS.md §2 invariant violation. HEAD carries no reviewer-named
+release blocker from the loop's range — and the full matrix on HEAD, INCLUDING the
+manual session's Integrations suites (+546 tests), is green: that is deployability
+evidence for the whole tree, not just the loop's slice.
+
+**What shipped — DEF-351 increment 2 (commit 1), the one actionable reviewer finding:**
+Codex continuation-4 risk #1: `channelForCriticality` (a DB read) and the DEF-126
+re-render sat BETWEEN the optimistic promote and the guarded try — a throw there still
+stranded a sent-shaped row, the exact edge increment 1 closed for the send itself. The
+guarded window now begins before channel selection (`brainPromptQueueService.ts`):
+`channel` declared with definite assignment before the try (it is read after, and the
+catch rethrows so it is never read unassigned); the rerender keeps its fail-safe inner
+catch; rollback + rethrow semantics unchanged. One promote, one window, one rollback —
+the "nothing silently lost" guarantee now has no unguarded span. Pinned: the def351
+source test asserts `channelForCriticality(` inside the try block.
+
+**Also per the reviewer's directive #3:** DEF-364 filed OPEN — the entity-person
+same-name collision (title inside the composite unique key merges two distinct
+same-named people into one blended page; schema-level since 04-20, surfaced by
+DEF-352's review, not caused by it). A real Memory ceiling needing its own turn
+(migration + backfill + a decision about existing blended pages) — filed, not fixed,
+said plainly.
+
+**Directive #4 (the 10-27 re-announce watch), reported from the analyst's same-morning
+DB verification:** the 10-27 nightly enqueued its digest on schedule (02:36, 3 new
+ids); **11 pending = 11 covered, zero gap**; the 10-25 row's 5 ids remain covered
+because its state was still `queued` at harvest (the expiry sweep had not yet
+processed it) — so the strict "same 5 ids re-announced after expiry" check is still
+pending the actual expiry, stated precisely rather than claimed early.
+
+**Directives NOT taken this turn, with reasons:** #2, the ingestion/channel-degradation
+detector — now FOURTH deferral, this time forced by the suspension's own "no new work"
+rule; it is live-demonstrated (DEF-360: WhatsApp dead ~2h on 10-26, nothing alerted)
+and must be the first item of the next unconstrained turn. The analyst's new #1 (the
+ROUTINE-delivery gate: zero learn digests ever sent because routine never breaks
+through the rollup — governance guidance already written: escalate on repeated
+non-delivery, never just relabel `high`) — same suspension rule; it is the next
+owner-facing build. Both named so nothing is lost.
+
+**Three-docs verdict, out loud:** *progressing* — increment 2 completes DEF-351's own
+named gap (reviewer-found, first fix); DEF-364 is a newly-filed standing limitation
+(first occurrence as a DEF; no §3 tag).
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **359 files passed | 1 skipped; 4240 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (3,694 → 4,240: the +546 are the manual session's
+DEF-353/354/362 suites, all green on HEAD). `git diff --check` → clean. `npm run
+build` NOT run — dist immutable, `--noEmit` is the build check (CLAUDE.md).
+
+CAPABILITY: RELIABILITY-ONLY (DEF-351 increment 2; DEF-364 is an open record).
+PREDICTED: +0 behaviour today; no throw between promote and send can strand a
+sent-shaped row any more, completing the loss-safety chain under the Learn digest.
+MECHANISM: the guarded window encloses every throw-prone step after the promote.
+FALSIFIER: any prompt row in a sent-shaped state with no send receipt after a thrown
+dispatch step, of any kind.
+
+**Deploy prediction: yes — and more to the point, HEAD is deployable NOW:** newest
+review SOUND, zero blocking findings, full matrix green across the loop's AND the
+manual session's work. The orchestrator should reconcile `state/deployed-sha` with the
+manual D-131..D-133 deploy records so the next brief does not re-derive a false
+suspension.
