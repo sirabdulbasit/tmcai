@@ -829,7 +829,6 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
     throw err;
   }
 
-  const channel = await channelForCriticality(next.criticality as Criticality, userId);
   const urgency: Urgency = next.criticality === 'high' ? 'high' : 'normal';
 
   // Propagate the queue row's metadata (smoke flag, starCadence info,
@@ -837,26 +836,38 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
   // test-flagged rows even when they fire from the deferred dispatcher.
   const queueMeta = (next.metadata as Record<string, unknown> | null) ?? {};
 
-  // ── DEF-126 — say it in today's words, not the words it was queued in ──
-  //
-  // A question composed at 07:02 and delivered at 11:28 had already missed two
-  // wording fixes that went live in between. Rebuild from the stored facts so
-  // the newest phrasing reaches even the rows that were waiting.
-  //
-  // Failing to rebuild sends the stored text unchanged. A notice worded badly
-  // is a complaint; a notice that never arrives is a missed delegation.
-  let questionText = next.question;
-  try {
-    const { rerenderOwnerQuestion } = await import('../delegation/delegationCaptureService');
-    const fresh = rerenderOwnerQuestion(queueMeta);
-    if (fresh && fresh !== questionText) {
-      log.info('prompt re-rendered with current wording', { promptId: String(promoted.id) });
-      questionText = fresh;
-    }
-  } catch { /* stored text stands */ }
-
+  // DEF-351 increment 2 (Codex continuation-4 risk #1): EVERYTHING between
+  // the optimistic promote above and the send now lives inside ONE guarded
+  // window. `channelForCriticality` reads the DB and can throw; before this,
+  // a throw there stranded the row in its sent-shaped state exactly as a
+  // thrown send did before increment 1 — for a digest, `answered` = covering
+  // = its proposals covered-but-undelivered forever. One promote, one window,
+  // one rollback.
   let r: Awaited<ReturnType<typeof brainContactsUser>>;
+  let channel!: Awaited<ReturnType<typeof channelForCriticality>>;
   try {
+    channel = await channelForCriticality(next.criticality as Criticality, userId);
+
+    // ── DEF-126 — say it in today's words, not the words it was queued in ──
+    //
+    // A question composed at 07:02 and delivered at 11:28 had already missed
+    // two wording fixes that went live in between. Rebuild from the stored
+    // facts so the newest phrasing reaches even the rows that were waiting.
+    //
+    // Failing to rebuild sends the stored text unchanged. A notice worded
+    // badly is a complaint; a notice that never arrives is a missed
+    // delegation. The inner catch keeps the stored text on any rerender
+    // failure — it never reaches the rollback below.
+    let questionText = next.question;
+    try {
+      const { rerenderOwnerQuestion } = await import('../delegation/delegationCaptureService');
+      const fresh = rerenderOwnerQuestion(queueMeta);
+      if (fresh && fresh !== questionText) {
+        log.info('prompt re-rendered with current wording', { promptId: String(promoted.id) });
+        questionText = fresh;
+      }
+    } catch { /* stored text stands */ }
+
     r = await brainContactsUser({
       userId,
       clientNumber,

@@ -85,6 +85,10 @@ describe('DEF-351 — the loss edges under DEF-350 coverage', () => {
     // rethrows the original error
     const tryBlock = src.slice(src.indexOf('let r: Awaited<ReturnType<typeof brainContactsUser>>'), src.indexOf('// ── DEF-063'));
     expect(tryBlock).toContain('brainContactsUser({');
+    // increment 2 (Codex continuation-4 risk #1): the guarded window begins
+    // BEFORE channel selection — nothing throw-prone sits between the promote
+    // and the rollback any more
+    expect(tryBlock).toContain('channelForCriticality(');
     expect(tryBlock).toContain("state: 'queued'");
     expect(tryBlock).toContain('sentAt: null');
     expect(tryBlock).toContain('answeredAt: null'); // the notice promote set it; the rollback clears it
