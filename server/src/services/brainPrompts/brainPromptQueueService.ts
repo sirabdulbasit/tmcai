@@ -945,6 +945,13 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
       ...(r.sent ? {} : {
         state: 'queued',
         sentAt: null,
+        // DEF-365 — the notice promote stamped answeredAt; an undelivered send
+        // must not keep a fabricated answer receipt (no-claim-without-a-
+        // receipt). Measured 10-28: `last_owner_answer` read 02:34 off an
+        // UNSENT learn digest, poisoning every engagement read. Any row here
+        // was just promoted from 'queued', so answeredAt can only carry this
+        // promote's stamp or stale contamination — both must clear.
+        answeredAt: null,
         metadata: {
           ...((promoted.metadata as any) ?? {}),
           retryAfter: backoffUntil(r.reason).toISOString(),

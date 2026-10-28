@@ -95,4 +95,13 @@ describe('DEF-351 — the loss edges under DEF-350 coverage', () => {
     expect(tryBlock).toContain('throw sendErr');    // the original error still surfaces
     expect(tryBlock).toContain('.catch(() => undefined)'); // a failing rollback cannot mask it
   });
+
+  it('DEF-365: the GRACEFUL {sent:false} rollback also clears answeredAt — no fabricated answer receipt on an undelivered prompt', () => {
+    const src = fs.readFileSync(path.join(SRC_ROOT, 'services/brainPrompts/brainPromptQueueService.ts'), 'utf8');
+    const blockStart = src.indexOf('...(r.sent ? {} : {');
+    const gracefulBlock = src.slice(blockStart, src.indexOf('lastSuppressedReason', blockStart));
+    expect(gracefulBlock).toContain("state: 'queued'");
+    expect(gracefulBlock).toContain('sentAt: null');
+    expect(gracefulBlock).toContain('answeredAt: null'); // measured 10-28: last_owner_answer read off an UNSENT digest
+  });
 });

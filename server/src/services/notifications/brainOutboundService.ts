@@ -428,7 +428,21 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   // principle — "never more useful than the reminder they would displace" — and a nag is never
   // more useful than a message from a person. It was simply not in a tier.
   const HOUSEKEEPING_KINDS = new Set([
-    'open_item_draft_ask', 'brain_prompt', 'open_item_overdue',
+    'open_item_draft_ask', 'open_item_overdue',
+    // DEF-365 `covered-but-undelivered` — 'brain_prompt' REMOVED, 2026-10-28.
+    // That kind has exactly ONE producer: the queue dispatcher
+    // (brainPromptQueueService.sendNextPrompt), whose messages are already
+    // volume-governed by the queue itself — one dispatch per user per tick,
+    // the DEF-331 criticality/aging ladder, the conversational lock, a TTL.
+    // Listing it here put a SECOND volume governor on every routine queue
+    // prompt, whose only exit is the counts-only suppression digest — so the
+    // held content itself could never deliver. Measured 10-28: ZERO learn
+    // digests ever delivered, 0 of 37 routine queue prompts sent in 8 days,
+    // all expiring unseen while their rows read "covered". Two governors on
+    // one message is the `protection-with-two-implementations` shape, and the
+    // loser was everything the owner is owed at routine. DEF-327's own intent
+    // was the DIRECT callers that bypass the queue ("the LOUDEST producer
+    // calls brainContactsUser DIRECTLY") — those stay held above.
   ]);
 
   // ONE tier mechanism, two tiers. Copy-pasting the diagnostic block for housekeeping would

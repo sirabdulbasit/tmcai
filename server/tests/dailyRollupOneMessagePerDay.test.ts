@@ -141,12 +141,24 @@ describe('DEF-327 — the loud producer is held at the chokepoint, not sent', ()
   });
 
   it('every HOUSEKEEPING kind is held the same way — not just draft-asks', async () => {
-    for (const kind of ['open_item_draft_ask', 'brain_prompt', 'open_item_overdue']) {
+    // DEF-365: 'brain_prompt' deliberately REMOVED from this list — the queue
+    // dispatcher's messages are already volume-governed by the queue itself,
+    // and double-governing them starved every routine queue prompt (zero
+    // learn digests ever delivered). This test updated with the change, the
+    // governor-manifest way: knowingly, in the same commit.
+    for (const kind of ['open_item_draft_ask', 'open_item_overdue']) {
       state.created = [];
       const res = await contact({ kind });
       expect(res.sent, kind).toBe(false);
       expect(state.created.find((r) => r.kind === kind).metadata.suppressReason).toBe('daily_rollup');
     }
+  });
+
+  it('DEF-365 `covered-but-undelivered`: a QUEUE-dispatched prompt (brain_prompt) is governed ONCE — the rollup never holds it', async () => {
+    state.created = [];
+    const res = await contact({ kind: 'brain_prompt', body: 'learn digest marker' });
+    expect(res.sent).toBe(true); // flows to the tier/channel path like any non-held kind
+    expect(state.created.find((r) => r.kind === 'brain_prompt')?.metadata?.suppressReason).toBeUndefined();
   });
 });
 
