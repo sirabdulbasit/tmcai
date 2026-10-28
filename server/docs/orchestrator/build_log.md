@@ -5992,3 +5992,101 @@ review SOUND, zero blocking findings, full matrix green across the loop's AND th
 manual session's work. The orchestrator should reconcile `state/deployed-sha` with the
 manual D-131..D-133 deploy records so the next brief does not re-derive a false
 suspension.
+
+## Iteration 82 (continuation 6, DEF-365 — one volume governor per message: the owner can receive routine again) — 2026-10-28
+
+**ON PIN, AND ON EVERY RANKING AT ONCE.** The continuation pins Self-Pruning; Codex's
+release-gate directive #1 is the routine-delivery gate ("the highest-value Learn item by
+far — the entire DEF-349→351 surfacing line is inert"); the analyst's #1 is the same
+item with DB proof. All three are one mechanism, and it lives inside Self-Pruning's own
+rollup machinery. No divergence to declare — for once the seats agree.
+
+**The continuation question — "what was wrong about the last Self-Pruning attempt":**
+nothing was insufficient about what DEF-327 targeted; it OVER-REACHED. Its daily-rollup
+hold listed `'brain_prompt'` in `HOUSEKEEPING_KINDS` — but that kind has exactly ONE
+producer, the queue dispatcher, whose messages are already volume-governed by the queue
+itself (one dispatch per user per tick, the DEF-331 criticality/aging ladder, the
+conversational lock, a TTL). So every routine queue prompt was governed TWICE, and the
+second governor's only exit is the counts-only suppression digest — the held CONTENT
+could never deliver. Self-Pruning's own machinery was the thing eating the owner's
+messages. "Going deeper" here meant narrowing the hold to DEF-327's own stated intent
+(*"the LOUDEST producer calls brainContactsUser DIRECTLY"* — the 289/day draft-ask
+flood), which stays held.
+
+**The measured damage (analyst, DB, 10-28):** zero `learn_proposal_digest` rows ever
+carried `sent_at`; 0 of 37 routine owner prompts sent in 8 days; 9 of 104 total (all
+high) — with WhatsApp PAIRED since 10-26. And the graceful `{sent:false}` rollback left
+`answeredAt` stamped on undelivered notices, so `last_owner_answer` read 10-28 02:34
+off an UNSENT digest — a fabricated answer receipt in a column.
+
+**What shipped — DEF-365 (commit 1):**
+- `brainOutboundService.ts` — `'brain_prompt'` removed from `HOUSEKEEPING_KINDS`, with
+  the double-governance rationale in place. The direct callers DEF-327 actually
+  targeted (`open_item_draft_ask`, `open_item_overdue`) stay held: CL-057's
+  one-digest-per-day contract is untouched for the real flood. Volume safety argued
+  from measurement, not hope: queue arrivals are ~5 routine/day (37 in 8 days), paced
+  one-per-tick, quiet hours and the conversational lock still apply at their layers.
+- `brainPromptQueueService.ts` — the graceful rollback now clears `answeredAt` (any row
+  there was just promoted from `queued`, so the stamp is the promote's or stale
+  contamination; both must clear). No claim without a receipt.
+- `dailyRollupOneMessagePerDay.test.ts` — updated DELIBERATELY in the same commit (the
+  governor-manifest way): `brain_prompt` removed from the held-kinds loop, plus a new
+  functional test through the real harness: *"a QUEUE-dispatched prompt is governed
+  ONCE — the rollup never holds it"* (flag ON, flows). `def351` suite +1: the graceful
+  rollback block contains `answeredAt: null`.
+
+**Governance check, explicit:** this REMOVES a blocker — the measured 42% class (code
+blocking a good answer) — and relabels nothing `high` (the forbidden instance fix). The
+guardrail enforced is no-claim-without-a-receipt, twice: held content can now actually
+deliver through its own governor, and an undelivered prompt no longer carries an answer
+receipt.
+
+**Three-docs verdict, out loud:** the root cause is the §3 champion shape
+(`protection-with-two-implementations`, count 10) applied to volume governance — and
+per rule 5 the fix is the structural response: the duplicate governor is REMOVED, not
+synchronized, not patched around. *Progressing on the class.*
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **359 files passed | 1 skipped; 4242 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (4,240 → 4,242 net: the updated rollup suite and the new
+pin). `git diff --check` → clean. `npm run build` NOT run — dist immutable, `--noEmit`
+is the build check (CLAUDE.md).
+
+**What I did NOT do, and open questions:**
+- The escalate-on-repeated-non-delivery valve (the governance note's broader class fix)
+  — deliberately NOT built yet: with the double governor removed, routine prompts
+  deliver through the queue's designed pacing, so the valve may be unnecessary
+  machinery (and "a new guard is more likely to be the next defect"). If the next pack
+  still shows routine starving, the valve is the named follow-up with its trigger
+  already specified.
+- The DEF-360 silent-death detector — deferred AGAIN (fifth), this time because Codex's
+  own ranking put the routine gate above it. It is the first item of the next turn,
+  said plainly.
+- DEF-364 (same-name collision, its own Memory turn), DEF-149 (live classify path,
+  Thinking), the variance gauge + scoreboard governance (harness), the ~4,974 stranded
+  backlog disposition — all standing, named.
+- Noted edge, not fixed: the suppression digest's sample summaries clip `req.summary`
+  verbatim — for queue prompts that was raw marker text; with queue prompts no longer
+  held this path goes quiet, but a future held kind with marker summaries would leak
+  JSON into the digest facts. Named for the record.
+- Unsure: whether the sweep cadence delivers the queue's routine backlog gracefully or
+  in a burst once deployed — the queue sends ONE per tick per user, so a burst is
+  structurally impossible, but the first days will drain 19 queued routine rows at
+  tick cadence; stated so the next analyst pass reads the drip as the designed
+  behavior, not a regression of CL-057.
+
+CAPABILITY: Self-Pruning (ON PIN) — the capability's own hold now governs exactly what
+it was built for; its receipts stop eating the owner's governed messages.
+PREDICTED: the first `learn_proposal_digest` row EVER to carry a non-null `sent_at`, at
+the next nightly learn phase (WhatsApp paired); `daily_rollup_hold` lines for kind
+`brain_prompt` drop to zero; the direct-caller flood stays held. No score points
+claimed.
+MECHANISM: one volume governor per message — queue prompts answer to the queue, the
+outbound hold to direct callers; and no fabricated answer receipts on unsent rows.
+FALSIFIER: a learn digest still `sent_at` NULL three nightlies post-deploy with
+WhatsApp up; the `open_item_draft_ask` flood returning; or `answeredAt` appearing again
+on an unsent row.
+
+**Deploy prediction: yes** — two one-line-class src changes plus deliberate test
+updates, 4242/0, and the live check is the sharpest this campaign has had: one DB
+column on one row, within a day.
