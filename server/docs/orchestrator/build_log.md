@@ -6090,3 +6090,87 @@ on an unsent row.
 **Deploy prediction: yes** — two one-line-class src changes plus deliberate test
 updates, 4242/0, and the live check is the sharpest this campaign has had: one DB
 column on one row, within a day.
+
+## Iteration 82 (continuation 7, DEF-149 — the live path learns the boundary: an instruction to ACT is never a note to file) — 2026-10-29
+
+**ON PIN (Thinking), on the analysis's top Thinking item, and it is the owner's own
+sentence.** "Chase her again" → "I've made a note of that." — twice, 2026-08-12, OPEN
+ever since. The continuation asks what was wrong with the last Thinking attempt: there
+was none on this defect's LIVE path. DEF-348 taught the lesson to the nightly
+distiller's prompt (the mining half); the live compose path — where he actually hit it —
+was untouched by every turn since 08-12. "Go deeper" here meant carrying the boundary to
+the place he hit it.
+
+**What shipped — DEF-149 live-path fix (commit 1), model-governed by construction:**
+Per the 2026-08-19 governance ruling and the DEF-333 rule-1a precedent (thrice reviewed
+SOUND), the fix is judgment text at the TWO places the model DECIDES — no code guard:
+- **Core rule 1b** in `CORE_CONVERSATIONAL_RULES` (`brainComposer.ts`, always-on, every
+  surface): an instruction to act is a COMMAND — do it this turn by emitting the
+  matching action, or ask for exactly the one missing piece, or say plainly why you
+  cannot; never store it with `record_preference`, never send a filing receipt ("a note
+  means it will never happen"). The boundary is drawn by DURABILITY, not a verb list:
+  "a verb aimed at the world is an instruction; a statement about his lasting
+  preferences is a memory" — the same framing the gated nightly path uses, so the two
+  classifiers cannot drift apart in principle.
+- **Must-NOT-fire examples** in the `record_preference` action guidance at the selection
+  point (the block that previously carried only fire-examples), including the verbatim
+  "chase her again".
+- **The executor is untouched.** A genuinely explicit "remember I sign off as Best
+  regards" still stores unimpeded — a code filter over imperative verbs would be
+  `detector-is-a-list-of-sentences` and the measured 42% class (code blocking a good
+  answer). Pinned in the test: positives not weakened, executor reachable.
+- Tests: `def149InstructionIsNotAPreference.test.ts` 5/5, the def333 pin pattern (the
+  rules are template literals — source assertions pin exactly what the model receives).
+
+**Codex's ranked directives, disposed:**
+1. *Watch the live falsifier* — DONE and REPORTED: the analyst's same-morning DB pass
+   passed DEF-365's primary falsifier in production — **the first two
+   `learn_proposal_digest` rows ever to carry `sent_at`** (10-28 04:05 and 04:25, text,
+   user 2, ~1h post-deploy), routine 0→7/day (drip-paced, not a flood), zero new
+   `answered_at` contamination. Recorded in the DEF-365 row as VERIFIED (LIVE). The
+   cadence-watch (CL-057) continues — no owner complaint observed yet.
+2. *Content-aware rollup exit* — NOT taken: Self-Pruning (off this turn's pin), and its
+   own trigger ("if he flags noise again") has not fired. The design is already written
+   in the directive; it is the queued Self-Pruning increment.
+3. *DEF-360 silent-death detector* — **deferred AGAIN (sixth), said as loudly as
+   possible:** it keeps losing to pins and higher-ranked directives while being the
+   analyst's #1 open item. Recommendation to the orchestrator: pin Self-Healing for the
+   next rotation turn so this finally lands — it will otherwise keep starving.
+4. *DEF-364 Memory turn* — standing, unchanged.
+5. *B04 partial-answer (compose)* — considered as this turn's alternative Thinking work
+   and NOT chosen: DEF-149 is an owner-verbatim reported defect; B04 is a benchmark-case
+   residual behind the single-run-noise caveat and the campaign cap's prohibition on
+   benchmark-aimed conversational chasing. Named, not silently dropped.
+
+**Three-docs verdict, out loud:** *progressing* — DEF-149's own row records that no
+existing tag covers instruction→preference misclassification; this is the first fix on
+the path the owner hit, and it generalizes by framing (durability vs world-directed
+verbs), not by enumerating the reported sentence.
+
+**Verification (run AFTER the last edit):** `npx tsc --noEmit` → clean (exit 0).
+`npx vitest run` → **360 files passed | 1 skipped; 4247 passed | 0 failed | 7 expected
+fail | 21 skipped | 1 todo** (4,242 → 4,247 = the DEF-149 suite). `git diff --check` →
+clean. `npm run build` NOT run — dist immutable, `--noEmit` is the build check.
+
+**What I did NOT do, and open items:** the `## Chat N` archive entry + paired `chatN`
+scenario for R-1's exchange — owed by the regression-pairing discipline, never created
+when R-1 was reported in August; named in the DEF row so it cannot be lost (adding one
+without the other turns the suite red, so the pair should be added together by a turn
+with budget for the battery format). The 5 stale pre-deploy `answered_at` rows need a
+one-time backfill decision (deploy-phase/data, not code). DEF-360 (above, loudly).
+Unsure about: whether rule 1b's always-on presence shifts any benchmark case's register
+— it is additive instruction text on a path the gauge measures noisily; the next pack's
+single run proves nothing either way (the standing variance caveat).
+
+CAPABILITY: Thinking (ON PIN).
+PREDICTED: a live imperative ("chase her again") produces the matching action or the one
+missing question — never a filing receipt; explicit preferences store exactly as before.
+No score points claimed (single-run gauge noise, standing).
+MECHANISM: the boundary now exists at both points where the model decides — the
+always-on core rules and the action's selection-time guidance — with the executor
+untouched so good answers cannot be blocked.
+FALSIFIER: any live reply filing a command as a preference after this deploys; or an
+explicit "remember X" failing to store.
+
+**Deploy prediction: yes** — one prompt-rules commit with pins, 4247/0, on the exact
+precedent shape (DEF-333) this reviewer has ruled SOUND three times.
