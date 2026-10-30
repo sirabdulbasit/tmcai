@@ -42,11 +42,15 @@ describe('DEF-249 — the sanity window applies to the value, not to one parser'
     expect(saneDueDate(new Date('2024-03-29'))).toBeNull();
   });
 
-  it('accepts the date he actually meant', () => {
-    // "28th October" in 2026 — the year the model should have supplied.
-    const d = saneDueDate(new Date('2026-10-28'));
+  it('accepts the date he actually meant — a real future date inside the window', () => {
+    // "28th October", said on 2026-08-27 — two months ahead. The original pin
+    // hardcoded 2026-10-28 and went red the day the calendar passed it (caught
+    // 2026-10-30, failing on every branch): a sanity WINDOW is relative to
+    // now, so its acceptance pin must be too. Same two-months-ahead shape.
+    const meant = daysFromNow(62);
+    const d = saneDueDate(meant);
     expect(d).not.toBeNull();
-    expect(d?.toISOString().slice(0, 10)).toBe('2026-10-28');
+    expect(d?.toISOString().slice(0, 10)).toBe(meant.toISOString().slice(0, 10));
   });
 
   it('accepts today and tomorrow — a same-day deadline is ordinary', () => {
