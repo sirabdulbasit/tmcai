@@ -35,6 +35,15 @@ dead names; internal `brain_*` table and route names are kept deliberately for s
   siblings), with prompts assembled in `server/src/services/knowledge/brainComposer.ts` —
   the central reasoning/compose path.
 - **Channels:** WhatsApp is the most complex and most fragile — see its own section.
+- **Suzi desktop (DEF-370):** Suzi is the voice assistant on a user's own Mac/Windows computer.
+  Its server half is a separate service, `jarvis-gateway` (/var/www/jarvis-gateway, PM2
+  `jarvis-gateway`, 127.0.0.1:4010 + loopback admin 127.0.0.1:4012, own `jarvis` database).
+  Nexeo's only part is **Settings → Suzi desktop**: `POST/GET/DELETE /api/v1/suzi/*`
+  (`routes/suziRoutes.ts` → `services/suzi/gatewayAdminClient.ts`). These mint a single-use
+  connection key and show it with the gateway's **server URL**, list the person's computers and
+  disconnect one. The person and the tenant come from `req.user` only, agent tokens are refused, and
+  the gateway's admin secret is a file it owns (`/var/www/jarvis-gateway/secrets/nexeo-admin.secret`).
+  Nexeo never touches the gateway's DB, and the gateway never touches Nexeo's.
 
 ### Tenancy / auth model (reviewers should attack this first)
 
