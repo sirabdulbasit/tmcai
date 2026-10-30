@@ -1442,6 +1442,34 @@ the record.
 9. **A quoted message is a referent, never the question.** When the turn carries \`[replying to: "..."]\`, the words BEFORE it are the user's message and the only thing you are answering. The quoted block is what he is POINTING AT — usually something YOU sent him — so it grounds his pronouns ("this", "it", "that task") and nothing more. **If the quoted text contains a question, that question was YOURS to HIM. Answering it instead of his message is the failure**, and it is the one this rule exists for: he quoted a reminder that ended "Shall I mark it as done, chase the delegatee, or push the date forward?" and asked "from where you get it?", and the reply came back about whether the task had been actioned — twice in two days. "From where you get it?" about a quoted item asks for its PROVENANCE: which feed, message or event that item came from, which the open-items block records. Answer the question he asked, about the thing he quoted.
 10. **The message that just arrived is the question. Any other question in your context is not.** This is the same failure as rule 9 arriving by a second route: a question of yours can also be sitting in the prompt queue awaiting his reply, or in the history as your last message. Those are context, not prompts for you. On the same day as the quoted case above, "Hi" was answered with "I haven't done anything yet, but if you want me to check for previous results first, just say go ahead" — an answer to a question he had not asked. **A greeting gets a greeting.** If an outstanding question of yours is still worth asking, ask it AFTER answering what he actually said, and only if it still fits.`;
 
+/**
+ * DEF-366 — ONE rule source, BOTH paths (`protection-with-two-implementations`,
+ * §3 count 10; the DEF-222/223/248/149 recurrence closed at the class).
+ *
+ * Four times a rule was written into CORE_CONVERSATIONAL_RULES above and the
+ * owner never met it, because the constant feeds `assembleSystemPrompt` — the
+ * LEGACY path, which runs only when BRAIN_USE_REASONING='never' (unset in the
+ * running process; reasoning is the default and the live path). DEF-222 hit it
+ * (rule 8), DEF-248 hit it (tenant rules), DEF-149 hit it last — rule 1b placed
+ * in the constant and reviewed WEAK because the prompt the owner's turns reach
+ * never read it. Each prior fix wired ONE rule across by hand; the next rule
+ * missed again.
+ *
+ * This is the construction fix: the live reasoning system prompt is built HERE,
+ * from the SAME constant the legacy path reads at `ruleBlock(...)` and
+ * `buildCasualPrompt`, so a rule added above reaches both paths without anyone
+ * remembering to wire it. No authority moves to code — the rules are judgment
+ * text the model applies.
+ *
+ * Exported so the reachability suite asserts on the REAL assembled prompt (the
+ * def248 lesson: a pin on the constant passes while the live path drops it).
+ */
+export function buildReasoningSystemPrompt(personaPreamble: string, tenantRulesBlock: string): string {
+  return [personaPreamble, CORE_CONVERSATIONAL_RULES, tenantRulesBlock]
+    .filter((part) => Boolean(part && part.trim()))
+    .join('\n\n');
+}
+
 /** Output shape rules — sent on every turn (the LLM must always emit
  *  valid JSON). Channel-aware: markdown is fine for web; on WhatsApp,
  *  plain text only. */
@@ -2773,9 +2801,14 @@ export async function compose(
       const reasoningInstructions = await getActiveInstructions(clientNumber, userId, 30)
         .catch(() => [] as any[]);
       const reasoningRulesBlock = renderInstructionsBlock(reasoningInstructions as any);
-      const reasoningSystemPrompt = reasoningRulesBlock
-        ? `${personaForReasoning.systemPreamble}\n\n${reasoningRulesBlock}`
-        : personaForReasoning.systemPreamble;
+      // DEF-366 — the core rules ride the SAME constant the legacy path reads
+      // (one definition, both paths). Before this line the live prompt was
+      // persona + tenant rules alone, and every core rule — 1a (DEF-333),
+      // 1b (DEF-149), 9/10 (DEF-288) — silently missed the path that writes
+      // the owner's reply.
+      const reasoningSystemPrompt = buildReasoningSystemPrompt(
+        personaForReasoning.systemPreamble, reasoningRulesBlock,
+      );
       // Scoped dataBlocks for reasoning. Started with open_items only
       // (commit 2026-05-22) — every action that needs real context to
       // avoid hallucination gets its own slice added as we audit it.
