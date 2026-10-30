@@ -80,7 +80,8 @@ export async function deleteIntegration(id) {
  *  connection_tested_at + fingerprint, so the refreshed DTO is what unlocks step 3. */
 export async function checkConnection(id) {
   const { data } = await api.get(`${BASE}/${encodeURIComponent(id)}/connection-check`);
-  return { result: data?.result ?? null, integration: data?.integration ?? null };
+  // `note`: DEF-367 — set when a key printed in the API document was tested and kept.
+  return { result: data?.result ?? null, integration: data?.integration ?? null, note: data?.note ?? null };
 }
 
 // ── API document and secret (DEF-362, spec §2b) ──────────────────────────

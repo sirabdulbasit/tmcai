@@ -200,6 +200,19 @@ people; blank-alert recipients; per-integration Google consent — Nexeo uses th
 The main Basics button sends pasted document text and reads it before continuing; a failed reading
 still continues to Connect. A token typed in Connect is stored before the test runs with it.
 
+**Keys in the document, as Vision Metric does (DEF-367, owner 10-30: "see how vision metric
+work").** vm reads the key out of the API document and TESTS it before storing it
+(`integrationDocReader.pickWorkingSecret`) — vm's own ESS document prints two different keys. Nexeo
+gets the same result without letting the model see a key: when a document is attached, the values
+redaction removes are kept as ciphertext (`api_doc_keys_enc`, same `v1:` envelope as the secret, a
+DB CHECK refuses anything else). When **Test the connection** fails or no key is stored, the Connect
+test tries the printed keys in document order and stores the first that returns records through
+the normal secret path; a working stored key is never replaced; nothing is tried on an ACTIVE
+integration. **Example addresses** in documents (`your-domain.com`, `*.example.com`, …) are named as a
+gap in the AI's reading and refused by the test and the run with a plain message — documents are
+written for every customer; the real address is the one the system's admin gives (vm's ESS:
+`https://erp.tmcltd.com:5004`).
+
 ## 2c. Shared framework `@tmc/ai-integration` (DEF-365)
 
 Owner, 2026-10-30: *"adopt in Nexeo under integration — only adopt till mapping (further mapping

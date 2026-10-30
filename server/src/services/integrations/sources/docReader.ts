@@ -33,7 +33,8 @@ import createLogger from '../../../utils/logger';
 import prisma from '../../../db/prisma';
 import { callLLM } from '../../llmRouter';
 import { getBehaviorValue } from '../../behaviorConfig';
-import { readPagination } from './apiReader';
+import { placeholderHost, readPagination } from './apiReader';
+import { encryptSecret } from '../store/secretStore';
 import { extractFile } from '../../../vendor/ai-integration/sources/fileExtractor';
 import {
   API_METHODS,
@@ -270,13 +271,62 @@ const NOT_A_VALUE = /^(?:string|integer|number|boolean|object|array|true|false|n
  * rotation. Idempotent: '[redacted]' never matches again.
  */
 export const redactSecrets: DocReaderModule['redactSecrets'] = (input) => {
+  const { text, redactions } = redactCore(input, null);
+  return { text, redactions };
+};
+
+/** Shortest value worth testing as a credential; anything shorter is a word. */
+const MIN_KEY_CHARS = 8;
+/** A document prints a handful of keys at most (vm saw two); more is noise. */
+const MAX_KEY_CANDIDATES = 10;
+
+/**
+ * DEF-367 — the credentials the document prints, as vm reads them.
+ *
+ * vm's extractor hands the raw document to the model and takes the key it
+ * copies out (vm integrationDocReader "secret"), then TESTS it before storing
+ * (pickWorkingSecret). Nexeo keeps the stricter half — the model never sees a
+ * key — and gets the same result in code: exactly the values `redactSecrets`
+ * removes, collected by the SAME pass, so what is redacted and what is tried
+ * can never drift apart. Placeholders were never redacted, so they are never
+ * candidates. Order is the document's order (the first printed key is tried
+ * first). Callers store the result encrypted only (attachApiDocument).
+ */
+export function extractKeyCandidates(raw: string): string[] {
+  const removed: string[] = [];
+  redactCore(raw, removed);
+  const out: string[] = [];
+  for (const v of removed) {
+    const k = v.trim().replace(/^["']|["']$/g, '');
+    if (k.length < MIN_KEY_CHARS || k.includes(R) || NOT_A_VALUE.test(k) || out.includes(k)) continue;
+    out.push(k);
+    if (out.length >= MAX_KEY_CANDIDATES) break;
+  }
+  return out;
+}
+
+/** The value a replacement took out: what lies between the longest common
+ *  prefix and suffix of the match and its replacement. Every rule replaces one
+ *  value with '[redacted]' and keeps the text around it, so this is exact. */
+function removedPart(before: string, after: string): string {
+  let p = 0;
+  while (p < before.length && p < after.length && before[p] === after[p]) p++;
+  let s = 0;
+  while (s < before.length - p && s < after.length - p && before[before.length - 1 - s] === after[after.length - 1 - s]) s++;
+  return before.slice(p, before.length - s);
+}
+
+function redactCore(input: unknown, collect: string[] | null): { text: string; redactions: number } {
   let n = 0;
   let t = String(input ?? '');
   const sub = (re: RegExp, fn: (...m: string[]) => string) => {
     t = t.replace(re, (...args: unknown[]) => {
       const m = args.slice(0, -2) as string[]; // drop offset + whole string
       const out = fn(...m);
-      if (out !== m[0]) n++;
+      if (out !== m[0]) {
+        n++;
+        if (collect) collect.push(removedPart(m[0], out));
+      }
       return out;
     });
   };
@@ -363,6 +413,8 @@ export interface AttachDocResult {
   name: string;
   chars: number;
   redactions: number;
+  /** DEF-367: how many keys the document printed, kept encrypted for the Connect test. */
+  keysKept: number;
 }
 
 /**
@@ -387,13 +439,29 @@ export async function attachApiDocument(cn: string, integrationId: string, input
   }
   // Redacted BEFORE storage: the plaintext credential never reaches the DB.
   const { text, redactions } = redactSecrets(raw);
+  // DEF-367: the keys the document prints, kept ONLY as ciphertext so the
+  // Connect test can try them (vm pickWorkingSecret). Without a usable server
+  // key nothing is kept — the admin types the key, as before; a plaintext copy
+  // is never the fallback.
+  const keys = extractKeyCandidates(raw);
+  let keysEnc: string | null = null;
+  if (keys.length) {
+    try {
+      keysEnc = encryptSecret(JSON.stringify(keys));
+    } catch (err) {
+      log.warn('api document keys not kept: encryption unavailable', {
+        clientNumber: cn, integrationId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   const res = await prisma.integrationSync.updateMany({
     where: { id: integrationId, clientNumber: cn },
-    data: { apiDocText: text, apiDocName: name, apiDocReading: Prisma.DbNull },
+    data: { apiDocText: text, apiDocName: name, apiDocReading: Prisma.DbNull, apiDocKeysEnc: keysEnc },
   });
   if (res.count === 0) throw new IntegrationNotFoundError(integrationId);
-  log.info('api document attached', { clientNumber: cn, integrationId, chars: text.length, redactions });
-  return { name, chars: text.length, redactions };
+  const keysKept = keysEnc ? keys.length : 0;
+  log.info('api document attached', { clientNumber: cn, integrationId, chars: text.length, redactions, keysKept });
+  return { name, chars: text.length, redactions, keysKept };
 }
 
 // ── The AI reading ────────────────────────────────────────────────────────
@@ -507,6 +575,11 @@ export function sanitiseDraft(raw: unknown): { draft: Partial<ApiConfig>; gaps: 
       } else {
         if (u.username || u.password) gaps.push('The address in the document carried a user name or password; it was removed — enter the credential in the secret field.');
         draft.baseUrl = `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+        // DEF-367: documents are written for every customer, so their address is
+        // often an example ("your-domain.com"). Kept in the draft (its path part
+        // is usually right) but named, so nobody tests a host that does not exist.
+        const ph = placeholderHost(draft.baseUrl);
+        if (ph) gaps.push(`The address in the document (${ph}) is an example — replace it with your system's real web address (keep the path after it).`);
       }
     } catch {
       gaps.push('The base address in the document is not a valid web address.');

@@ -1197,6 +1197,9 @@ model IntegrationSync {
   apiConfig             Json?     @map("api_config") // ApiConfig (no secret in it, ever)
   secretEnc             String?   @map("secret_enc") @db.Text
   secretSetAt           DateTime? @map("secret_set_at") @db.Timestamptz(6)
+  // DEF-367 — the keys the API document printed, as ciphertext only ('v1:…' of a JSON
+  // array); tried by the Connect test (sources/docKeys.ts), never returned or sent to a model.
+  apiDocKeysEnc         String?   @map("api_doc_keys_enc") @db.Text
   approvedFilter        Json?     @map("approved_filter") // RecordFilter, approval-written only
   status                String    @default("DRAFT") @db.VarChar(10) // DRAFT | ACTIVE | PAUSED
   frequency             String    @default("weekly") @db.VarChar(10) // daily | weekly | monthly | once

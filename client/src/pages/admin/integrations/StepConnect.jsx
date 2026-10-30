@@ -148,8 +148,8 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
           return;
         }
       } else if (dirty) await saveConnection();
-      const { result: r, integration } = await checkConnection(integ.id);
-      setResult(r);
+      const { result: r, integration, note } = await checkConnection(integ.id);
+      setResult(r ? { ...r, note: note ?? null } : r);
       if (integration) setInteg(integration);
     } catch (e) {
       setError(errorText(e));
@@ -272,6 +272,7 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
             {isApi
               ? pageCountText(result)
               : `Read ${result.rows} ${result.rows === 1 ? 'row' : 'rows'}, ${result.columns.length} ${result.columns.length === 1 ? 'column' : 'columns'}.`}
+            {result.note && <div style={{ marginTop: 6 }}>{result.note}</div>}
             {result.sampleRow && (
               <div style={{ marginTop: 10, color: 'var(--text)' }}>
                 <div style={{ fontWeight: 600, marginBottom: 4 }}>
@@ -488,6 +489,13 @@ function SecretField({ integ, authScheme, secret, setSecret, outcome, busy, canS
       <p style={s.hint}>Stored encrypted, never shown again. It is sent only to the web address above, and only kept if the API accepts it.</p>
       <p style={s.hint}>Test the connection above uses what you type here: it is stored first, then the test runs with it.</p>
       {integ?.hasSecret && <p style={{ ...s.hint, color: C.ok }}>A secret is stored.</p>}
+      {/* DEF-367 — as Vision Metric does: the keys printed in the document are tried for you. */}
+      {integ?.docHasKeys && !integ?.hasSecret && (
+        <p style={{ ...s.hint, color: 'var(--text)' }}>
+          Your document contains a key. Leave this empty and press <strong>Test the connection</strong> — Nexeo tries the
+          keys printed in the document and keeps the one that works. Or paste the key here yourself.
+        </p>
+      )}
       {outcome && <div style={outcome.ok ? s.success : s.error}>{outcome.text}</div>}
     </div>
   );

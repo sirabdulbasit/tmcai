@@ -373,7 +373,9 @@ function ApiDocument({ integ, setInteg, setMsg, setWorking, saveFirst, pasted, s
         : await attachApiDocumentText(integ.id, pasted, pastedName);
       if (res.integration) setInteg(res.integration);
       const d = res.document;
-      setMsg(`Attached “${d?.name ?? 'the document'}”${d?.redactions ? ` — ${d.redactions} secret-looking value${d.redactions === 1 ? ' was' : 's were'} blanked out first` : ''}. The AI is reading it now.`);
+      // DEF-367: keys the document printed are kept encrypted and tried by the Connect test.
+      const keysNote = d?.keysKept ? ` The key${d.keysKept === 1 ? '' : 's'} it prints ${d.keysKept === 1 ? 'is' : 'are'} kept encrypted — Test the connection tries ${d.keysKept === 1 ? 'it' : 'them'} for you.` : '';
+      setMsg(`Attached “${d?.name ?? 'the document'}”${d?.redactions ? ` — ${d.redactions} secret-looking value${d.redactions === 1 ? ' was' : 's were'} blanked out before the AI reads it` : ''}.${keysNote} The AI is reading it now.`);
       if (!source) { setPasted(''); setPastedName(''); }
       attached = true;
     } catch (e) {

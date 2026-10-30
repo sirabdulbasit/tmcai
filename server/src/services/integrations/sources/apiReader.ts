@@ -38,6 +38,7 @@ import {
   AUTH_SCHEMES,
   CredentialUnreadableError,
   FetchGuardError,
+  IntegrationInputError,
   type ApiConfig,
   type ApiReaderModule,
   type ApiSourceRef,
@@ -377,8 +378,31 @@ const adminReason = (err: unknown): string => {
  * testFirst calls, so a credential is proven before it replaces a working one.
  * Never throws for a bad connection.
  */
+/**
+ * DEF-367 — the host of an address that is a documentation example, or null.
+ * API documents are written for every customer ("https://your-domain.com/api",
+ * "api.example.com"); the owner's employee-directory PDF reached Connect with
+ * exactly that, and the only symptom would have been a DNS failure. The list is
+ * the forms vendor documents actually print: RFC 2606's example.com/.org/.net
+ * and the "your-…" / "my-domain…" family. Reserved TLDs (.test, .invalid,
+ * .example) are deliberately NOT matched — they never appear in a vendor's
+ * public document, and test fixtures use them as stand-ins for real hosts.
+ */
+export function placeholderHost(baseUrl: string): string | null {
+  let host: string;
+  try { host = new URL(baseUrl).hostname.toLowerCase(); } catch { return null; }
+  const reserved = /(?:^|\.)example\.(?:com|org|net)$/;
+  const vendorExample = /(?:^|\.)(?:your[-_]?[a-z0-9]*|my[-_]?(?:domain|company|server|host|api|site)|domain|company|sample|placeholder)\.(?:com|org|net|io|co|app|local)$/;
+  return reserved.test(host) || vendorExample.test(host) ? host : null;
+}
+
+const placeholderReason = (host: string): string =>
+  `The web address is still the document's example (${host}). Enter your system's real address, then test again.`;
+
 export async function testApiWith(cn: string, cfg: ApiConfig, secret: string | null): Promise<TestResult> {
   try {
+    const ph = placeholderHost(cfg.baseUrl);
+    if (ph) return { ok: false, rows: 0, columns: [], sampleRow: null, reason: placeholderReason(ph) };
     if (cfg.authScheme !== 'NONE' && !secret) {
       return { ok: false, rows: 0, columns: [], sampleRow: null, reason: `This API uses ${cfg.authScheme} sign-in — enter the credential first.` };
     }
@@ -429,6 +453,8 @@ const pageSignature = (records: unknown[]): string => {
 
 export const readApi: ApiReaderModule['readApi'] = async (cn, integ) => {
   const cfg = integ.apiConfig;
+  const ph = placeholderHost(cfg.baseUrl);
+  if (ph) throw new IntegrationInputError(placeholderReason(ph), 'apiConfig');
   const secret = await loadSecret(cn, integ);
   const auth = buildAuth(cfg, secret);
   const [limits, maxRows] = await Promise.all([

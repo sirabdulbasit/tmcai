@@ -800,6 +800,8 @@ export interface IntegrationDTO {
   // DEF-362 (Stage 1b). Null / false on a Google Sheet integration.
   /** A secret is stored. The secret itself is NEVER returned. */
   hasSecret: boolean;
+  /** DEF-367: the attached document printed keys the Connect test will try. The keys are NEVER returned. */
+  docHasKeys: boolean;
   apiDocName: string | null;
   apiDocReading: ApiDocReading | null;
   filterInstructions: string | null;

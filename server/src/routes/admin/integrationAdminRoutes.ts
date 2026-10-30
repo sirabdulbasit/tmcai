@@ -60,6 +60,7 @@ import {
 import { sourceProblem, testSource } from '../../services/integrations/sources';
 import { readApiConfig, testApiWith } from '../../services/integrations/sources/apiReader';
 import { attachApiDocument, readApiDocument } from '../../services/integrations/sources/docReader';
+import { tryDocumentKeys } from '../../services/integrations/sources/docKeys';
 import { setSecret } from '../../services/integrations/store/secretStore';
 import { startProposalJob, getProposalJob } from '../../services/integrations/mapping/proposalJobs';
 import {
@@ -353,19 +354,44 @@ router.get('/:id/connection-check', handle('GET /:id/connection-check', async (r
   if (problem) throw new HttpError(400, problem.message, { field: problem.field });
   // Taken BEFORE the (remote, slow) test: a config or credential changed while
   // it runs must not inherit its pass (integrationStore.RecordTestOptions).
-  const testStartedAt = new Date();
-  let result: TestResult;
-  try {
-    result = await testSource(cn, integ);
-  } catch (err) {
-    if ((err as { code?: unknown })?.code !== 'CREDENTIAL_UNREADABLE') throw err;
-    result = { ok: false, rows: 0, columns: [], sampleRow: null, reason: (err as Error).message };
+  let testStartedAt = new Date();
+  const runTest = async (row: typeof integ): Promise<TestResult> => {
+    try {
+      return await testSource(cn, row);
+    } catch (err) {
+      if ((err as { code?: unknown })?.code !== 'CREDENTIAL_UNREADABLE') throw err;
+      return { ok: false, rows: 0, columns: [], sampleRow: null, reason: (err as Error).message };
+    }
+  };
+  let tested = integ;
+  let result = await runTest(integ);
+  // DEF-367 (vm pickWorkingSecret): the connection's own credential failed or
+  // is missing — try the keys the API document printed, keep the first that
+  // returns records, then test AGAIN with what is now stored, so the recorded
+  // pass is of the stored credential and a fresh testStartedAt.
+  let note: string | null = null;
+  if (!result.ok && integ.sourceKind === 'api') {
+    const keys = await tryDocumentKeys(cn, integ);
+    if (keys.adopted) {
+      tested = await requireIntegration(cn, id);
+      testStartedAt = new Date();
+      result = await runTest(tested);
+      note = keys.tried === 1
+        ? 'The key in your document was tested and works — it is now stored, encrypted.'
+        : `Your document printed ${keys.tried > 1 ? 'several keys' : 'a key'}; Nexeo tried them in order and kept the one that works (key ${keys.tried}). It is stored, encrypted.`;
+    } else if (keys.tried > 0) {
+      const tail = `Nexeo also tried the ${keys.tried === 1 ? 'key' : `${keys.tried} keys`} printed in your document; none worked${keys.lastReason ? ` (last answer: ${keys.lastReason})` : ''}. Paste the right key below.`;
+      result = { ...result, reason: [result.reason, tail].filter(Boolean).join(' ') };
+    } else if (keys.skipped) {
+      result = { ...result, reason: [result.reason, keys.skipped].filter(Boolean).join(' ') };
+    }
   }
   const integration = await recordConnectionTest(cn, id, result, {
-    tested: { sourceKind: integ.sourceKind, sourceConfig: integ.sourceConfig, apiConfig: integ.apiConfig },
+    tested: { sourceKind: tested.sourceKind, sourceConfig: tested.sourceConfig, apiConfig: tested.apiConfig },
     testStartedAt,
   });
   res.json({
+    note,
     // DEF-362 Connect view (spec §2b): exactly ONE record, plus the page count
     // and the total the system declares.
     ok: result.ok,

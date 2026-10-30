@@ -473,6 +473,8 @@ function toDTO(r: SyncRow, facts: StageFacts): IntegrationDTO {
     // DEF-362. secret_enc and api_doc_text are deliberately NOT mapped: the
     // credential never leaves the server, and the document is only named.
     hasSecret: !!r.secretEnc,
+    // DEF-367: only WHETHER the document printed keys — never them, never how many.
+    docHasKeys: !!r.apiDocKeysEnc,
     apiDocName: r.apiDocName ?? null,
     apiDocReading: (r.apiDocReading as ApiDocReading | null) ?? null,
     filterInstructions: r.filterInstructions ?? null,
