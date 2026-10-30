@@ -213,6 +213,20 @@ gap in the AI's reading and refused by the test and the run with a plain message
 written for every customer; the real address is the one the system's admin gives (vm's ESS:
 `https://erp.tmcltd.com:5004`).
 
+**Third source: Excel or CSV file (DEF-368, owner 10-31: "there should be integration source that can
+be Googlesheet / API documentation file / Excel file with data").** Basics offers Google Sheet · API
+(with its document) · Excel or CSV file. A file is uploaded in Connect (choosing it uploads it), kept
+in `integration_source_files` (one per integration, replaced on re-upload, cascade on delete), and
+every run reads that stored copy — vm's rule. Type is decided by magic bytes, not the browser's
+mime. CSV goes through `csv.ts`. `.xlsx`/`.xls` go through the installed `xlsx@0.18.5` **only inside a
+worker thread** (`sources/xlsxWorker.ts`, the one file allowed to import it — test-pinned): V8 heap
+limit, hard timeout, at most 2 at once, plain string rows out. Before any worker, `zipSize.xlsxInflateBudget`
+walks the zip the way xlsx does and inflates each part with Node zlib capped at the remaining budget
+(60 MB), so a lying header (zip bomb) is refused before xlsx ever inflates it — verified with a
+200 MB bomb: refused in 0.6 s, ~60 MB transient. The tab is chosen by name; a missing chosen tab fails
+loudly. The connection fingerprint covers the file's sha256 + tab, so a new upload or tab needs a new
+test; uploads and tab changes are refused on an ACTIVE integration (pause first).
+
 ## 2c. Shared framework `@tmc/ai-integration` (DEF-365)
 
 Owner, 2026-10-30: *"adopt in Nexeo under integration — only adopt till mapping (further mapping

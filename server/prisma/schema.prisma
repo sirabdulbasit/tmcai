@@ -1185,7 +1185,7 @@ model IntegrationSync {
   name                  String    @db.VarChar(200)
   purpose               String?   @db.Text
   adminBrief            String?   @map("admin_brief") @db.Text
-  sourceKind            String    @default("gsheet") @map("source_kind") @db.VarChar(20) // gsheet (Stage 1) | api (Stage 1b, DEF-362)
+  sourceKind            String    @default("gsheet") @map("source_kind") @db.VarChar(20) // gsheet (Stage 1) | api (Stage 1b, DEF-362) | file (DEF-368)
   sourceConfig          Json      @default("{}") @map("source_config") // GsheetSourceConfig: {sheetId, gid, tabLabel?, link}
   // DEF-362 (Stage 1b) — API source. secretEnc is ciphertext only ('v1:…', store/secretStore.ts) and is
   // never returned by the API; approvedFilter is written only by approving a filter suggestion.
@@ -1226,10 +1226,31 @@ model IntegrationSync {
   suggestions     IntegrationSuggestion[]
   runs            IntegrationRun[]
   kpiDefinitions  KpiDefinition[]
+  sourceFile      IntegrationSourceFile?
 
   @@unique([clientNumber, name], map: "integration_syncs_tenant_name_key")
   @@index([clientNumber, status], map: "integration_syncs_tenant_status_idx")
   @@map("integration_syncs")
+}
+
+/// DEF-368 — the uploaded Excel (.xlsx, .xls) or CSV file of a 'file' integration: THE stored
+/// copy every run reads, one per integration (a newer upload replaces it). source_config
+/// {fileName, sheetName?, sha256} names it; the bytes are never returned by the API.
+model IntegrationSourceFile {
+  integrationId String   @id @map("integration_id")
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  filename      String?  @db.VarChar(255)
+  mime          String?  @db.VarChar(120)
+  bytes         Bytes
+  sizeBytes     Int?     @map("size_bytes")
+  sha256        String?  @db.Char(64)
+  uploadedBy    Int?     @map("uploaded_by")
+  uploadedAt    DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+
+  integration IntegrationSync @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber], map: "integration_source_files_tenant_idx")
+  @@map("integration_source_files")
 }
 
 model IntegrationMappingVersion {

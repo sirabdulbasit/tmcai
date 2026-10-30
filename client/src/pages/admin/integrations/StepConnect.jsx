@@ -26,10 +26,17 @@
  * records/identity), then the test panel under a divider — the verdict, the first
  * record as read — "What your document didn't say", the token box, the
  * "How should this be mapped?" box, and Back · ✨ Suggest the mapping.
+ *
+ * DEF-368 — or, for an Excel / CSV file: vm's upload box. Choosing a file uploads it at once
+ * (same pattern as the API document — never a separate Attach click); the stored copy's
+ * name, size and date are shown with "Upload a newer version"; a workbook with several tabs
+ * gets a tab picker (saved with the test, like the link). Then the same test, one-row view,
+ * instructions box and Suggest. A new upload or another tab clears the test on the server.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   updateIntegration, checkConnection, proposeAndWait, setIntegrationSecret, errorText,
+  uploadSourceFile, getSourceFile, FILE_MAX_BYTES, FILE_ACCEPT,
 } from '../../../services/integrationsApi';
 import { proposalStageText } from './WorkingOverlay';
 import { C, s, vm, btn, pill, formatPkt, stageHasMapping, OneRecord } from './integrationUi';
@@ -43,6 +50,9 @@ const PAGE_LABELS = { none: 'One page only', page: 'Page numbers', offset: 'Offs
 
 export default function StepConnect({ integ, setInteg, setMsg, signal, setWorking, onProposed, onBackToBasics }) {
   const isApi = integ?.sourceKind === 'api';
+  const isFile = integ?.sourceKind === 'file';
+  const sourceFile = isFile ? (integ?.sourceFile ?? null) : null;
+  const savedSheet = isFile ? (integ?.sourceConfig?.sheetName ?? '') : '';
   const savedLink = integ?.sourceConfig?.link ?? '';
   const savedTab = integ?.sourceConfig?.tabLabel ?? '';
   const savedInstr = integ?.connectInstructions ?? '';
@@ -58,15 +68,29 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
   // the draft it saves). Never pre-filled, never echoed, cleared from memory once sent.
   const [secret, setSecret] = useState('');
   const [secretOutcome, setSecretOutcome] = useState(null); // {ok, text}
+  // DEF-368: the stored workbook's tabs (from the upload answer, else asked once), the
+  // tab chosen here (saved with the test), and a file refused before upload for its size.
+  const [tabs, setTabs] = useState(null);
+  const [sheetName, setSheetName] = useState(savedSheet);
+  const [tooBigFile, setTooBigFile] = useState(null);
+
+  useEffect(() => {
+    if (!isFile || !sourceFile || tabs !== null || !integ?.id) return;
+    let live = true;
+    getSourceFile(integ.id).then((f) => { if (live) setTabs(f?.tabs ?? []); }).catch(() => { if (live) setTabs([]); });
+    return () => { live = false; };
+  }, [isFile, sourceFile, tabs, integ?.id]);
 
   const built = useMemo(() => (isApi ? configFromForm(form) : null), [isApi, form]);
   const dirty = isApi
     ? isConfigDirty(form, integ?.apiConfig)
-    : link.trim() !== savedLink || tabLabel.trim() !== savedTab;
+    : isFile
+      ? sheetName !== savedSheet
+      : link.trim() !== savedLink || tabLabel.trim() !== savedTab;
   const instrDirty = instructions.trim() !== savedInstr.trim();
   const tested = !!integ?.connectionOk && !dirty;
   const hasMapping = stageHasMapping(integ?.stage);
-  const canTest = !busy && (isApi ? !!built?.config : !!link.trim());
+  const canTest = !busy && (isApi ? !!built?.config : isFile ? !!sourceFile : !!link.trim());
   const secretTyped = isApi && needsSecret(form.authScheme) && secret.length > 0;
 
   function setField(k, v) {
@@ -79,7 +103,9 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
   async function saveConnection() {
     const patch = isApi
       ? { apiConfig: built.config }
-      : { link: link.trim(), tabLabel: tabLabel.trim() || null };
+      : isFile
+        ? { sheetName: sheetName || null }
+        : { link: link.trim(), tabLabel: tabLabel.trim() || null };
     if (instrDirty) patch.connectInstructions = instructions.trim() || null;
     const saved = await updateIntegration(integ.id, patch);
     setInteg(saved);
@@ -158,6 +184,29 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
     }
   }
 
+  /** DEF-368: choosing a file uploads it straight away (owner 10-26 lesson: a picked file
+   *  that only sat in the chooser was "missed" on continue). */
+  async function uploadFile(chosen) {
+    if (!chosen) return;
+    if (chosen.size > FILE_MAX_BYTES) { setTooBigFile(chosen); return; }
+    setTooBigFile(null);
+    setBusy(true);
+    setError('');
+    setResult(null);
+    try {
+      const res = await uploadSourceFile(integ.id, chosen);
+      if (res.integration) setInteg(res.integration);
+      setTabs(res.file?.tabs ?? []);
+      setSheetName(res.integration?.sourceConfig?.sheetName ?? '');
+      const n = res.file?.tabs?.length ?? 0;
+      setMsg(`Uploaded “${res.file?.fileName ?? chosen.name}”${n > 1 ? ` — ${n} tabs; choose the one with the data` : ''}. Now test the connection.`);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function suggest() {
     const startedAt = new Date().toISOString();
     setWorking({ title: 'The AI is suggesting the mapping', stage: proposalStageText(null), startedAt });
@@ -186,14 +235,17 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
         <strong style={{ flex: 1, color: 'var(--text)' }}>Connection</strong>
         {isApi && reading && integ?.apiDocName && <span style={pill('acc')}>filled from {integ.apiDocName}</span>}
-        {!isApi && <span style={pill('acc')}>Google Sheet</span>}
+        {isFile && <span style={pill('acc')}>Excel or CSV file</span>}
+        {!isApi && !isFile && <span style={pill('acc')}>Google Sheet</span>}
       </div>
       <p style={{ ...s.hint, marginTop: 0 }}>
         {isApi
           ? (reading
             ? 'Filled in from your document where it said enough. Correct anything that is wrong, then test it — a document can be out of date or describe a different deployment.'
             : 'Fill in the connection, then test it. Attaching the API document in Basics and pressing Read with AI fills most of this for you.')
-          : 'Paste the link to the Google Sheet tab that holds the data, then test it — the test reads the sheet for real.'}
+          : isFile
+            ? 'Upload the spreadsheet that holds the data, then test it — the test reads the uploaded copy for real.'
+            : 'Paste the link to the Google Sheet tab that holds the data, then test it — the test reads the sheet for real.'}
       </p>
 
       {/* DEF-362 (owner 10-26, "it stuck here"): Basics' "Save and continue" skips past the
@@ -225,6 +277,17 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
           resetToDraft={() => { setForm(formFromConfig(integ.apiDocReading?.draft ?? null)); setResult(null); }}
           errors={built?.errors ?? []}
         />
+      ) : isFile ? (
+        <FileUpload
+          sourceFile={sourceFile}
+          tabs={tabs}
+          sheetName={sheetName}
+          savedSheet={savedSheet}
+          setSheetName={(v) => { setSheetName(v); setResult(null); }}
+          busy={busy}
+          tooBigFile={tooBigFile}
+          onChoose={uploadFile}
+        />
       ) : (
         <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
           <div>
@@ -255,11 +318,11 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
       <div style={vm.divider}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <button type="button" style={btn(tested || result?.ok ? 'outline' : 'primary', { disabled: !canTest })} disabled={!canTest} onClick={test}>
-            {busy ? (isApi ? 'Calling the API…' : 'Reading the sheet…') : 'Test the connection'}
+            {busy ? (isApi ? 'Calling the API…' : isFile ? 'Reading the file…' : 'Reading the sheet…') : 'Test the connection'}
           </button>
           <span style={{ ...s.hint, marginTop: 0 }}>
-            {dirty && (isApi ? !!integ?.apiConfig : !!savedLink)
-              ? <span style={{ color: C.warn }}>The {isApi ? 'connection' : 'link'} changed — test it again before the mapping.</span>
+            {dirty && (isApi ? !!integ?.apiConfig : isFile ? !!sourceFile : !!savedLink)
+              ? <span style={{ color: C.warn }}>The {isApi ? 'connection' : isFile ? 'tab' : 'link'} changed — test it again before the mapping.</span>
               : result || tested ? 'Re-test after any change above.' : 'Nothing has been called yet.'}
           </span>
         </div>
@@ -285,7 +348,7 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
           </div>
         )}
         {result && !result.ok && (
-          <div style={vm.bad}><strong>Not working.</strong> {result.reason || (isApi ? 'The API could not be read.' : 'The sheet could not be read.')}</div>
+          <div style={vm.bad}><strong>Not working.</strong> {result.reason || (isApi ? 'The API could not be read.' : isFile ? 'The file could not be read.' : 'The sheet could not be read.')}</div>
         )}
         {!result && tested && (
           <div style={vm.ok}><strong>Working</strong> — last tested {formatPkt(integ.connectionTestedAt)}.</div>
@@ -362,6 +425,64 @@ export default function StepConnect({ integ, setInteg, setMsg, signal, setWorkin
           {hasMapping ? '✨ Suggest the mapping again' : '✨ Suggest the mapping'}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * DEF-368 — vm's upload box for a spreadsheet source. Choosing a file uploads it at once;
+ * the stored copy is named with its size and date, and "Upload a newer version" replaces it.
+ * Several tabs ⇒ a picker; a tab kept from an older upload that this file lacks is shown
+ * as a problem (the server never silently reads another tab) — and the picker is shown
+ * then too, even for a one-tab file, so the admin can clear it ("The first tab").
+ */
+function FileUpload({ sourceFile, tabs, sheetName, savedSheet, setSheetName, busy, tooBigFile, onChoose }) {
+  const size = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.ceil(n / 1024))} KB`);
+  const list = Array.isArray(tabs) ? tabs : [];
+  const missing = !!savedSheet && list.length > 0 && !list.includes(savedSheet);
+  return (
+    <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+      <div>
+        <label style={{ ...s.label, marginTop: 0 }} htmlFor="integ-file">
+          {sourceFile ? 'Upload a newer version' : 'Upload the spreadsheet'}
+        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <input
+            id="integ-file"
+            type="file"
+            accept={FILE_ACCEPT}
+            disabled={busy}
+            onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ''; if (f) onChoose(f); }}
+            style={{ color: 'var(--text)', fontSize: 'var(--fs-sm)' }}
+          />
+          {busy && <span style={{ ...s.hint, marginTop: 0 }}>Uploading…</span>}
+        </div>
+        <div style={s.hint}>
+          Upload the spreadsheet — .xlsx, .xls or .csv, up to 10 MB; every run reads this copy until you upload a newer one.
+        </div>
+        {tooBigFile && (
+          <div style={s.error}>That file is {(tooBigFile.size / 1024 / 1024).toFixed(1)} MB; the limit is 10 MB. Save a copy with only the tab that holds the data.</div>
+        )}
+      </div>
+      {sourceFile && (
+        <div>
+          <span style={pill('ok')}>{sourceFile.fileName} · {size(sourceFile.sizeBytes)} · uploaded {formatPkt(sourceFile.uploadedAt)}</span>
+        </div>
+      )}
+      {sourceFile && (list.length > 1 || missing) && (
+        <div>
+          <label style={{ ...s.label, marginTop: 0 }} htmlFor="integ-sheet">Which tab holds the data?</label>
+          <select id="integ-sheet" style={{ ...s.input, maxWidth: 360 }} value={sheetName} disabled={busy} onChange={(e) => setSheetName(e.target.value)}>
+            <option value="">The first tab ({list[0]})</option>
+            {missing && <option value={savedSheet}>{savedSheet} — not in this file</option>}
+            {list.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <div style={s.hint}>Saved when you test the connection. Choosing another tab means testing again.</div>
+        </div>
+      )}
+      {missing && sheetName === savedSheet && (
+        <div style={s.warnBox}>The tab “{savedSheet}” chosen before is not in this file. Choose one of its tabs above, then test.</div>
+      )}
     </div>
   );
 }

@@ -119,6 +119,23 @@ export function csvToRecords(text: string, opts: CsvRecordOptions = {}): CsvReco
   } else if (unterminated) {
     anomalies.push('The last row has an opening quote that is never closed; the rest of the sheet was read as one cell.');
   }
+  return rowsToRecords(rows, { maxRows: opts.maxRows, truncated, truncatedReason, anomalies });
+}
+
+/**
+ * DEF-368: rows of cells (from the CSV parser, or the worksheet rows the xlsx
+ * worker returns) ⇒ header-keyed records, with the same header, blank-row,
+ * extra-cell and row-cap rules as csvToRecords — one rule set for every
+ * tabular source. `truncated` / `anomalies` carry what the caller already found.
+ */
+export function rowsToRecords(
+  rows: string[][],
+  init: { maxRows?: number; truncated?: boolean; truncatedReason?: string; anomalies?: string[] } = {},
+): CsvRecords {
+  const opts = { maxRows: init.maxRows };
+  const anomalies: string[] = [...(init.anomalies ?? [])];
+  let truncated = !!init.truncated;
+  let truncatedReason: string | undefined = init.truncatedReason;
 
   const headerIdx = rows.findIndex((r) => !isBlankRow(r));
   if (headerIdx < 0) {

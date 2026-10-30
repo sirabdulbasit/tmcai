@@ -18,6 +18,10 @@
  * "Why are we connecting it?", then sections in vm's order — which records, blanks,
  * the safety limit with "Run now is never limited", the brief in the admin's own words,
  * and the document box (file + paste together). Wired only to Nexeo's API.
+ *
+ * DEF-368 (owner 10-31, "how can i add file?") — a third source: an Excel (.xlsx, .xls) or
+ * CSV file. It is uploaded in Connect (vm: "a spreadsheet attached is uploaded and kept;
+ * every run reads the stored copy, so a newer version is uploaded the same way").
  */
 import { useState } from 'react';
 import {
@@ -28,7 +32,8 @@ import { C, s, vm, btn, pill, choiceCard, formatPkt, stageHasMapping } from './i
 
 const SOURCE_CHOICES = [
   { kind: 'gsheet', label: 'Google Sheet', hint: 'A shared or private sheet. Every run reads it as it is at that moment.' },
-  { kind: 'api', label: 'API', hint: 'A system with a REST API. Attach its API document and the AI works out how to connect.' },
+  { kind: 'api', label: 'API (with its document)', hint: 'A system with a REST API. Attach its API document and the AI works out how to connect.' },
+  { kind: 'file', label: 'Excel or CSV file', hint: 'A spreadsheet you upload (.xlsx, .xls or .csv). Every run reads the uploaded copy until you upload a newer one.' },
 ];
 
 const BLANK_CHOICES = [
@@ -96,6 +101,7 @@ export default function StepBasics({ integ, setInteg, setMsg, setWorking, onNext
   // source, so switching would leave approvals pointing at fields that do not exist.
   const kindLocked = !!integ && (integ.status !== 'DRAFT' || stageHasMapping(integ.stage));
   const isApi = sourceKind === 'api';
+  const isFile = sourceKind === 'file';
   // vm's "Read the document & continue": pasted text, or an attached document nobody has
   // read yet, is read on the way to Connect, so the Connect form arrives filled in.
   const hasPaste = isApi && !!integ && pasted.trim().length > 0;
@@ -184,7 +190,7 @@ export default function StepBasics({ integ, setInteg, setMsg, setWorking, onNext
       <div style={vm.grid2}>
         <div>
           <label style={{ ...s.label, marginTop: 0 }} htmlFor="integ-name">What is this system called?</label>
-          <input id="integ-name" style={s.input} value={name} maxLength={120} onChange={(e) => setName(e.target.value)} placeholder={isApi ? 'e.g. CRM customers' : 'e.g. Monthly sales sheet'} />
+          <input id="integ-name" style={s.input} value={name} maxLength={120} onChange={(e) => setName(e.target.value)} placeholder={isApi ? 'e.g. CRM customers' : isFile ? 'e.g. Monthly sales workbook' : 'e.g. Monthly sales sheet'} />
         </div>
         <div>
           <label style={{ ...s.label, marginTop: 0 }} htmlFor="integ-kind">Where does the data come from?</label>
@@ -285,6 +291,15 @@ export default function StepBasics({ integ, setInteg, setMsg, setWorking, onNext
           pastedName={pastedName}
           setPastedName={setPastedName}
         />
+      ) : isFile ? (
+        <>
+          <h4 style={vm.section}>The spreadsheet</h4>
+          <p style={vm.sectionHint}>
+            You upload it in <strong>Connect</strong> — an Excel workbook (.xlsx or .xls) or a CSV file, up to 10 MB.
+            Nexeo keeps that copy, and every run reads it until you upload a newer version the same way.
+            If the workbook has several tabs, you choose the one with the data there.
+          </p>
+        </>
       ) : (
         <>
           <h4 style={vm.section}>The Google Sheet</h4>

@@ -567,11 +567,13 @@ export const activate: MappingStoreModule['activate'] = async (cn, id, versionId
     // is a new connection).
     const isApi = row.sourceKind === 'api';
     const fp = currentFingerprint(row);
-    if (!fp) reasons.push(isApi ? 'Set up the API connection first.' : 'Connect a Google Sheet first.');
+    if (!fp) reasons.push(isApi ? 'Set up the API connection first.' : row.sourceKind === 'file' ? 'Upload the spreadsheet first.' : 'Connect a Google Sheet first.');
     else if (!row.connectionTestedAt || row.connectionFingerprint !== fp) {
       reasons.push(isApi
         ? 'The API connection or its credential changed since its connection test. Test the connection again.'
-        : 'The sheet changed since its connection test. Test the connection again.');
+        : row.sourceKind === 'file'
+          ? 'The file or its tab changed since its connection test. Test the connection again.'
+          : 'The sheet changed since its connection test. Test the connection again.');
     }
 
     if (fp) {

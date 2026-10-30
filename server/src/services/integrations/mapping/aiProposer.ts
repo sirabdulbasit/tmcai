@@ -825,7 +825,7 @@ export async function runProposal(
   const problem = sourceProblem(integ);
   if (problem) {
     throw new IntegrationInputError(
-      integ.sourceKind !== 'api' ? 'Connect a Google Sheet before asking for a mapping.' : problem.message, problem.field);
+      integ.sourceKind !== 'api' && integ.sourceKind !== 'file' ? 'Connect a Google Sheet before asking for a mapping.' : problem.message, problem.field);
   }
 
   const isApi = integ.sourceKind === 'api';

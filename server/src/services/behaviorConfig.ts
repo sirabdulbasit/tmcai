@@ -315,6 +315,10 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'integrations.doc_max_bytes', unit: 'bytes', def: 5 * 1024 * 1024, min: 64 * 1024, max: 20 * 1024 * 1024, scope: 'tenant',
     description: 'DEF-362. Largest API document (PDF / DOCX / TXT / MD / JSON) an admin may attach for the AI to read.',
   },
+  'integrations.file_max_bytes': {
+    key: 'integrations.file_max_bytes', unit: 'bytes', def: 10 * 1024 * 1024, min: 64 * 1024, max: 25 * 1024 * 1024, scope: 'tenant',
+    description: 'DEF-368. Largest Excel (.xlsx, .xls) or CSV file an admin may upload as an integration source. Every run reads the stored copy.',
+  },
 };
 
 /** Pure resolution: first PRESENT and VALID (numeric) candidate wins,

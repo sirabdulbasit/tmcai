@@ -4,13 +4,14 @@
  * The run engine, the proposer and the Connect step read "this integration's
  * source" without knowing what kind it is: readSource / testSource dispatch on
  * source_kind to the Google Sheet reader (Stage 1, unchanged) or the API
- * reader (Stage 1b). One dispatch point, so a new kind (Stage 4: Qlik, Odoo)
+ * reader (Stage 1b), or the uploaded-file reader (DEF-368). One dispatch point, so a new kind (Stage 4: Qlik, Odoo)
  * is added here and nowhere else, and no caller can pick the wrong reader.
  *
  * Model-free (the engine imports it).
  */
 import { readGsheet, testGsheet } from './gsheetReader';
 import { readApi, readApiConfig, testApi } from './apiReader';
+import { readFile, readFileConfig, testFile } from './fileReader';
 import { IntegrationInputError, type GsheetSourceConfig, type ReadResult, type TestResult } from '../types';
 
 /** The columns of an integration row (or its DTO) a reader needs. */
@@ -23,7 +24,7 @@ export interface SourceRow {
 }
 
 /** Which input field the admin must fill in when the source is not set up. */
-export type SourceField = 'link' | 'apiConfig' | 'sourceKind';
+export type SourceField = 'link' | 'apiConfig' | 'sourceKind' | 'file';
 
 /** The stored sheet config, or null. Same rule as integrationStore.readSourceConfig
  *  (sheetId + explicit gid); kept here so the router depends on the readers
@@ -56,6 +57,11 @@ export function sourceProblem(row: SourceRow): { message: string; field: SourceF
       ? null
       : { message: 'Set up the API connection (an https base URL, endpoint and records path) first.', field: 'apiConfig' };
   }
+  if (kind === 'file') {
+    return readFileConfig(row.sourceConfig)
+      ? null
+      : { message: 'Upload the spreadsheet (.xlsx, .xls or .csv) first.', field: 'file' };
+  }
   return { message: `Unknown source kind "${kind}".`, field: 'sourceKind' };
 }
 
@@ -71,6 +77,7 @@ export async function readSource(cn: string, row: SourceRow): Promise<ReadResult
   if (kindOf(row) === 'api') {
     return readApi(cn, { id: row.id, sourceKind: 'api', apiConfig: readApiConfig(row.apiConfig)! });
   }
+  if (kindOf(row) === 'file') return readFile(cn, { id: row.id, sourceConfig: readFileConfig(row.sourceConfig)! });
   return readGsheet(cn, sheetConfigOf(row.sourceConfig)!);
 }
 
@@ -81,5 +88,6 @@ export async function testSource(cn: string, row: SourceRow): Promise<TestResult
   if (kindOf(row) === 'api') {
     return testApi(cn, { id: row.id, sourceKind: 'api', apiConfig: readApiConfig(row.apiConfig)! });
   }
+  if (kindOf(row) === 'file') return testFile(cn, { id: row.id, sourceConfig: readFileConfig(row.sourceConfig)! });
   return testGsheet(cn, sheetConfigOf(row.sourceConfig)!);
 }

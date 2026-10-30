@@ -41,6 +41,15 @@
  *   - GET /:id/connection-check also answers {ok, sampleRecord (ONE record),
  *     pageRecords, declaredTotal, columns, reason} beside {result, integration}.
  * approved_filter has no endpoint: approving a filter row is its only writer.
+ *
+ * DEF-368 adds, for a file integration (sourceKind 'file'):
+ *   - POST /:id/source-file — multipart `file` (multer, in memory), an Excel
+ *     (.xlsx, .xls) or CSV file, capped at behavior integrations.file_max_bytes
+ *     (default 10 MB; 413 over it). Typed by its bytes, opened in the isolated
+ *     worker, then stored as THE copy every run reads (sourceFileStore). Answers
+ *     {file: {fileName, sizeBytes, uploadedAt, tabs}, integration} — never the bytes.
+ *   - GET /:id/source-file — the stored file's name, size, date and tabs.
+ *   - the tab is chosen through PUT /:id {sheetName} (closed whitelist).
  */
 
 import crypto from 'crypto';
@@ -61,6 +70,7 @@ import { sourceProblem, testSource } from '../../services/integrations/sources';
 import { readApiConfig, testApiWith } from '../../services/integrations/sources/apiReader';
 import { attachApiDocument, readApiDocument } from '../../services/integrations/sources/docReader';
 import { tryDocumentKeys } from '../../services/integrations/sources/docKeys';
+import { sourceFileInfo, storeSourceFile } from '../../services/integrations/store/sourceFileStore';
 import { setSecret } from '../../services/integrations/store/secretStore';
 import { startProposalJob, getProposalJob } from '../../services/integrations/mapping/proposalJobs';
 import {
@@ -437,7 +447,9 @@ const mb = (n: number): string => `${Math.round((n / (1024 * 1024)) * 10) / 10} 
 async function requireApiIntegration(cn: string, id: string) {
   const integ = await requireIntegration(cn, id);
   if (integ.sourceKind !== 'api') {
-    throw new HttpError(400, 'This integration reads a Google Sheet; an API document or credential does not apply.', { field: 'sourceKind' });
+    throw new HttpError(400, integ.sourceKind === 'file'
+      ? 'This integration reads an uploaded file; an API document or credential does not apply.'
+      : 'This integration reads a Google Sheet; an API document or credential does not apply.', { field: 'sourceKind' });
   }
   return integ;
 }
@@ -487,6 +499,63 @@ router.post('/:id/api-document', handle('POST /:id/api-document', async (req, re
   // {name, chars, redactions} — never the text back (it may be large, and the
   // AI reading is what the admin reviews).
   res.status(201).json({ document: result, integration: await requireIntegration(cn, id) });
+}));
+
+// ── DEF-368: the uploaded spreadsheet (Connect, sourceKind 'file') ─────────
+
+/** Hard ceiling for the in-memory upload = the largest file_max_bytes a
+ *  tenant may configure; the tenant's own cap is checked in the handler. */
+const FILE_UPLOAD_CEILING = BEHAVIOR_SPECS['integrations.file_max_bytes']?.max ?? 25 * 1024 * 1024;
+const FILE_DEFAULT_MAX = 10 * 1024 * 1024;
+/** "820 KB" / "10 MB" — a small file never reads as "0 MB". */
+const sizeText = (n: number): string => (n < 1024 * 1024 ? `${Math.max(1, Math.ceil(n / 1024))} KB` : mb(n));
+
+const fileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: FILE_UPLOAD_CEILING, files: 1, fields: 10 },
+});
+
+function runFileUpload(req: Request, res: Response): Promise<void> {
+  return new Promise((resolve, reject) => {
+    fileUpload.single('file')(req, res, (err: unknown) => {
+      if (!err) { resolve(); return; }
+      if ((err as { code?: string })?.code === 'LIMIT_FILE_SIZE') {
+        reject(new HttpError(413, `The file is too large; the limit is ${sizeText(FILE_UPLOAD_CEILING)}.`, { field: 'file' }));
+        return;
+      }
+      reject(new HttpError(400, 'The upload could not be read. Upload one spreadsheet as "file".', { field: 'file' }));
+    });
+  });
+}
+
+async function requireFileIntegration(cn: string, id: string) {
+  const integ = await requireIntegration(cn, id);
+  if (integ.sourceKind !== 'file') {
+    throw new HttpError(400, 'This integration does not read an uploaded file; choose "Excel or CSV file" as the source in Basics first.', { field: 'sourceKind' });
+  }
+  return integ;
+}
+
+router.post('/:id/source-file', handle('POST /:id/source-file', async (req, res) => {
+  await runFileUpload(req, res);
+  const cn = tenantOf(req);
+  const id = idParam(req);
+  await requireFileIntegration(cn, id);
+  const maxBytes = await getBehaviorValue('integrations.file_max_bytes', { clientNumber: cn }).catch(() => FILE_DEFAULT_MAX);
+  const file = (req as Request & { file?: { buffer: Buffer; originalname: string; mimetype: string; size: number } }).file;
+  if (!file) throw new HttpError(400, 'Upload the spreadsheet as "file" (.xlsx, .xls or .csv).', { field: 'file' });
+  if (file.size > maxBytes || file.buffer.length > maxBytes) {
+    throw new HttpError(413, `The file is ${sizeText(file.buffer.length)}; the limit is ${sizeText(maxBytes)}. Save a copy with only the tab that holds the data and upload that.`, { field: 'file' });
+  }
+  const out = await storeSourceFile(cn, id, { buffer: file.buffer, filename: file.originalname, mime: file.mimetype }, actorOf(req));
+  res.status(201).json(out);
+}));
+
+router.get('/:id/source-file', handle('GET /:id/source-file', async (req, res) => {
+  const cn = tenantOf(req);
+  const id = idParam(req);
+  await requireFileIntegration(cn, id);
+  res.json({ file: await sourceFileInfo(cn, id) });
 }));
 
 /** In-memory AI-reading jobs, one per integration (same shape as the proposal

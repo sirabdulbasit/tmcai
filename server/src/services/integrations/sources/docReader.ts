@@ -36,6 +36,7 @@ import { getBehaviorValue } from '../../behaviorConfig';
 import { placeholderHost, readPagination } from './apiReader';
 import { encryptSecret } from '../store/secretStore';
 import { extractFile } from '../../../vendor/ai-integration/sources/fileExtractor';
+import { declaredUnzippedBytes } from './zipSize';
 import {
   API_METHODS,
   AUTH_SCHEMES,
@@ -112,36 +113,10 @@ export const DOC_MAX_UNZIPPED_BYTES = 60 * 1024 * 1024;
 export const DOC_MAX_PDF_PAGES = 400;
 export const DOC_MAX_TEXT_CHARS = 2_000_000;
 
-/**
- * Sum of the uncompressed sizes a zip's central directory declares, or null
- * when the archive cannot be walked (no end record, truncated directory, or a
- * ZIP64 marker — a ZIP64 API document is not plausible, so it is refused, not
- * trusted). Pure; exported for tests.
- */
-export function declaredUnzippedBytes(buf: Buffer): number | null {
-  const EOCD = 0x06054b50;
-  const CEN = 0x02014b50;
-  // The end record is the last 22 bytes plus at most a 65,535-byte comment.
-  const stop = Math.max(0, buf.length - 22 - 0xffff);
-  let eocd = -1;
-  for (let i = buf.length - 22; i >= stop; i--) {
-    if (buf.readUInt32LE(i) === EOCD) { eocd = i; break; }
-  }
-  if (eocd < 0) return null;
-  const count = buf.readUInt16LE(eocd + 10);
-  const cdOffset = buf.readUInt32LE(eocd + 16);
-  if (count === 0xffff || cdOffset === 0xffffffff) return null;
-  let p = cdOffset;
-  let total = 0;
-  for (let k = 0; k < count; k++) {
-    if (p + 46 > buf.length || buf.readUInt32LE(p) !== CEN) return null;
-    const size = buf.readUInt32LE(p + 24);
-    if (size === 0xffffffff) return null;
-    total += size;
-    p += 46 + buf.readUInt16LE(p + 28) + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
-  }
-  return total;
-}
+/** Sum of a zip's declared uncompressed sizes — moved to zipSize.ts (DEF-368)
+ *  so the file reader can use it without importing this AI module; re-exported
+ *  here unchanged for every existing caller. */
+export { declaredUnzippedBytes };
 
 /** The framework found no text (its own words differ; Nexeo's are kept). */
 class NoTextError extends Error {}

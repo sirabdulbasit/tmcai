@@ -15,7 +15,8 @@
 
 type Row = Record<string, any>;
 
-const MODELS = ['integrationSync', 'integrationMappingVersion', 'integrationSuggestion', 'integrationRun', 'integrationRunChange', 'kpiDefinition'] as const;
+// DEF-368 adds integrationSourceFile (the uploaded spreadsheet; key = integrationId).
+const MODELS = ['integrationSync', 'integrationMappingVersion', 'integrationSuggestion', 'integrationRun', 'integrationRunChange', 'kpiDefinition', 'integrationSourceFile'] as const;
 type ModelName = typeof MODELS[number];
 
 export interface Call { model: string; op: string; args: any }
@@ -85,6 +86,9 @@ const DEFAULTS: Record<ModelName, () => Row> = {
   integrationRunChange: () => ({}),
   kpiDefinition: () => ({
     unit: null, direction: 'up', grain: 'month', sourceIntegrationId: null, isActive: true, createdBy: null,
+  }),
+  integrationSourceFile: () => ({
+    filename: null, mime: null, sizeBytes: null, sha256: null, uploadedBy: null, uploadedAt: new Date(),
   }),
 };
 

@@ -34,8 +34,10 @@
 // ── Enumerations (mirror the CHECK constraints in 20261026_integrations_core,
 //    widened by 20261026b_integrations_api) ────────────────────────────────
 
-/** DEF-362: 'api' = a REST endpoint drafted from an uploaded API document. */
-export const SOURCE_KINDS = ['gsheet', 'api'] as const;
+/** DEF-362: 'api' = a REST endpoint drafted from an uploaded API document.
+ *  DEF-368: 'file' = an uploaded Excel (.xlsx, .xls) or CSV file; every run reads
+ *  the stored copy (integration_source_files) until a newer one is uploaded. */
+export const SOURCE_KINDS = ['gsheet', 'api', 'file'] as const;
 export type SourceKind = typeof SOURCE_KINDS[number];
 
 export const INTEGRATION_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED'] as const;
@@ -105,6 +107,26 @@ export interface GsheetSourceConfig {
   gid: string;
   tabLabel?: string;
   link: string;
+}
+
+/** DEF-368: stored in integration_syncs.source_config for sourceKind 'file'.
+ *  `sha256` names the stored copy (integration_source_files.sha256); the
+ *  connection fingerprint covers sha256 + sheetName, so a newer upload or
+ *  another tab clears the connection test. `sheetName` absent ⇒ the first
+ *  sheet; a named sheet the file does not have fails loudly, never another tab. */
+export interface FileSourceConfig {
+  fileName: string;
+  sheetName?: string;
+  sha256: string;
+}
+
+/** DEF-368: the stored file as the DTO shows it. Never the bytes. `tabs` only
+ *  where the workbook was opened (upload answer, GET /:id/source-file). */
+export interface SourceFileDTO {
+  fileName: string;
+  sizeBytes: number;
+  uploadedAt: string;
+  tabs?: string[];
 }
 
 /** What a reader needs to know about the integration it reads. */
@@ -776,7 +798,10 @@ export interface IntegrationDTO {
   purpose: string | null;
   adminBrief: string | null;
   sourceKind: SourceKind;
-  sourceConfig: GsheetSourceConfig | null;
+  /** gsheet: the sheet; file (DEF-368): {fileName, sheetName?, sha256}; api: null. */
+  sourceConfig: GsheetSourceConfig | FileSourceConfig | null;
+  /** DEF-368, file only: the stored copy (null until a file is uploaded, and on other kinds). */
+  sourceFile: SourceFileDTO | null;
   status: IntegrationStatus;
   frequency: Frequency;
   runTime: string;
@@ -846,6 +871,9 @@ export interface IntegrationInput {
   filterInstructions?: string | null;
   /** "How should this data be mapped?" from the Connect step. */
   connectInstructions?: string | null;
+  /** DEF-368, sourceKind 'file': the workbook tab to read (null ⇒ the first
+   *  sheet). Must be a tab of the stored file; changing it clears the test. */
+  sheetName?: string | null;
 }
 
 /** Runtime copy of the whitelist, for the unknown-key check. */
@@ -854,6 +882,8 @@ export const INTEGRATION_INPUT_KEYS: ReadonlyArray<keyof IntegrationInput> = [
   'frequency', 'runTime', 'dayOfWeek', 'dayOfMonth', 'timezone',
   'changeCapPct', 'blankPolicy',
   'apiConfig', 'filterInstructions', 'connectInstructions',
+  // DEF-368: the tab of an uploaded workbook. The file itself has its own upload call.
+  'sheetName',
 ];
 
 export interface MappingVersionDTO {

@@ -28,6 +28,8 @@ export const INTEGRATION_INPUT_KEYS = [
   // DEF-362 (Stage 1b). The secret is NOT here: it has its own write-only call
   // (setIntegrationSecret) so it never rides on a PUT that echoes the integration.
   'apiConfig', 'filterInstructions', 'connectInstructions',
+  // DEF-368: the tab of an uploaded workbook. The file itself has its own upload call.
+  'sheetName',
 ];
 
 export function pickInput(obj) {
@@ -105,6 +107,28 @@ export async function uploadApiDocument(id, file) {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return { document: data?.document ?? null, integration: data?.integration ?? null };
+}
+
+/** DEF-368: the spreadsheet of a "file" integration (Excel .xlsx / .xls or CSV). The server
+ *  types it by its bytes, opens it in an isolated reader and stores it as THE copy every
+ *  run reads. Resolves {file: {fileName, sizeBytes, uploadedAt, tabs}, integration}. */
+export const FILE_MAX_BYTES = 10 * 1024 * 1024;
+export const FILE_ACCEPT = '.xlsx,.xls,.csv';
+
+export async function uploadSourceFile(id, file) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  // Multipart type kept for the same reason as uploadApiDocument (axios + JSON default).
+  const { data } = await api.post(`${BASE}/${encodeURIComponent(id)}/source-file`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return { file: data?.file ?? null, integration: data?.integration ?? null };
+}
+
+/** The stored file with its tabs: {fileName, sizeBytes, uploadedAt, tabs} or null. */
+export async function getSourceFile(id) {
+  const { data } = await api.get(`${BASE}/${encodeURIComponent(id)}/source-file`);
+  return data?.file ?? null;
 }
 
 /** Same as uploadApiDocument, for pasted text. */

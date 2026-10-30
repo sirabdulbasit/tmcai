@@ -48,6 +48,8 @@ export const TENANT_SCOPED_MODELS = new Set<string>([
   // not covered by the extension and carries client_number explicitly.
   'IntegrationSync', 'IntegrationMappingVersion', 'IntegrationSuggestion',
   'IntegrationRun', 'IntegrationRunChange', 'KpiDefinition', 'KpiReading',
+  // DEF-368, 2026-10-31: the uploaded spreadsheet of a 'file' integration.
+  'IntegrationSourceFile',
 ]);
 
 const READ_OPS = new Set(['findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy']);

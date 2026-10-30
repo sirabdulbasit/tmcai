@@ -47,6 +47,7 @@ import prisma from '../../../db/prisma';
 import { isValidTimezone, resolveUserTimezone } from '../../userTimezoneService';
 import { parseSheetLink } from '../sources/sheetLink';
 import { readApiConfig, readPagination } from '../sources/apiReader';
+import { listTabs, readFileConfig, sourceFileTable } from '../sources/fileReader';
 import { nextScheduledRun } from '../engine/planner';
 import {
   API_METHODS,
@@ -60,6 +61,7 @@ import {
   type ApiConfig,
   type ApiDocReading,
   type BlankPolicy,
+  type FileSourceConfig,
   type Frequency,
   type GsheetSourceConfig,
   type IntegrationDTO,
@@ -69,6 +71,7 @@ import {
   type RecordFilter,
   type RunStatus,
   type ScheduleConfig,
+  type SourceFileDTO,
   type SourceKind,
   type StageFacts,
   type WizardStage,
@@ -100,6 +103,8 @@ const inputSchema = z.object({
   apiConfig: z.unknown(),
   filterInstructions: z.string().max(5000, 'The filter words are too long (5000 characters at most).').nullable(),
   connectInstructions: z.string().max(5000, 'The mapping instructions are too long (5000 characters at most).').nullable(),
+  // DEF-368: the tab of the uploaded workbook (checked against the stored file's tabs).
+  sheetName: z.string().trim().max(200, 'The tab name is too long.').nullable(),
 }).partial().strict();
 
 // ── API connection input (DEF-362) ────────────────────────────────────────
@@ -259,6 +264,7 @@ export function validateIntegrationInput(raw: unknown): IntegrationInput {
     // never true for whitespace.
     if (typeof out[k] === 'string' && !out[k]!.trim()) out[k] = null;
   }
+  if (out.sheetName === '') out.sheetName = null;
   return out;
 }
 
@@ -323,6 +329,15 @@ export function apiConnectionFingerprint(cfg: ApiConfig, secretSetAt: Date | nul
     .digest('hex');
 }
 
+/**
+ * DEF-368: "which connection" for a file integration — the stored copy
+ * (sha256) and the tab. A newer upload or another tab is a new connection;
+ * the file name is display only.
+ */
+export function fileConnectionFingerprint(cfg: FileSourceConfig): string {
+  return createHash('sha256').update(`file\n${cfg.sha256}\n${cfg.sheetName ?? ''}`).digest('hex');
+}
+
 /** The row's connection columns. apiConfig / secretSetAt are REQUIRED in the
  *  type on purpose: a caller that selects only the sheet columns would get
  *  "not connected" for every api integration, so the compiler names it. */
@@ -339,13 +354,19 @@ export function currentFingerprint(row: ConnectionColumns): string | null {
     const cfg = readApiConfig(row.apiConfig);
     return cfg ? apiConnectionFingerprint(cfg, row.secretSetAt ?? null) : null;
   }
+  if (row.sourceKind === 'file') {
+    const fc = readFileConfig(row.sourceConfig);
+    return fc ? fileConnectionFingerprint(fc) : null;
+  }
   const cfg = readSourceConfig(row.sourceConfig);
   return cfg ? connectionFingerprint(row.sourceKind as SourceKind, cfg) : null;
 }
 
 /** The row has a source a reader can use (sheet parsed / api_config valid). */
 export function hasUsableSource(row: Pick<ConnectionColumns, 'sourceKind' | 'sourceConfig' | 'apiConfig'>): boolean {
-  return row.sourceKind === 'api' ? readApiConfig(row.apiConfig) !== null : readSourceConfig(row.sourceConfig) !== null;
+  if (row.sourceKind === 'api') return readApiConfig(row.apiConfig) !== null;
+  if (row.sourceKind === 'file') return readFileConfig(row.sourceConfig) !== null;
+  return readSourceConfig(row.sourceConfig) !== null;
 }
 
 /** Tested AND the tested fingerprint is the current config's. */
@@ -443,14 +464,36 @@ async function loadStageFacts(cn: string, rows: SyncRow[]): Promise<Map<string, 
 
 const iso = (d: Date | null | undefined): string | null => (d ? d.toISOString() : null);
 
-function toDTO(r: SyncRow, facts: StageFacts): IntegrationDTO {
+/** DEF-368: the stored file of each 'file' row (name, size, date — never the
+ *  bytes), in one query. No query at all when no row reads a file. */
+async function loadSourceFiles(cn: string, rows: SyncRow[]): Promise<Map<string, SourceFileDTO>> {
+  const out = new Map<string, SourceFileDTO>();
+  const ids = rows.filter((r) => r.sourceKind === 'file').map((r) => r.id);
+  if (ids.length === 0) return out;
+  const files = await sourceFileTable().findMany({
+    where: { clientNumber: cn, integrationId: { in: ids } },
+    select: { integrationId: true, filename: true, sizeBytes: true, uploadedAt: true },
+  });
+  for (const f of files) {
+    if (!f.integrationId) continue;
+    out.set(f.integrationId, {
+      fileName: f.filename ?? 'spreadsheet',
+      sizeBytes: f.sizeBytes ?? 0,
+      uploadedAt: (f.uploadedAt ?? new Date(0)).toISOString(),
+    });
+  }
+  return out;
+}
+
+function toDTO(r: SyncRow, facts: StageFacts, sourceFile: SourceFileDTO | null = null): IntegrationDTO {
   return {
     id: r.id,
     name: r.name,
     purpose: r.purpose ?? null,
     adminBrief: r.adminBrief ?? null,
     sourceKind: r.sourceKind as SourceKind,
-    sourceConfig: readSourceConfig(r.sourceConfig),
+    sourceConfig: r.sourceKind === 'file' ? readFileConfig(r.sourceConfig) : readSourceConfig(r.sourceConfig),
+    sourceFile: r.sourceKind === 'file' ? sourceFile : null,
     status: r.status as IntegrationStatus,
     frequency: r.frequency as Frequency,
     runTime: r.runTime,
@@ -489,8 +532,8 @@ async function findRow(cn: string, id: string): Promise<SyncRow | null> {
 }
 
 async function rowToDTO(cn: string, row: SyncRow): Promise<IntegrationDTO> {
-  const facts = await loadStageFacts(cn, [row]);
-  return toDTO(row, facts.get(row.id)!);
+  const [facts, files] = await Promise.all([loadStageFacts(cn, [row]), loadSourceFiles(cn, [row])]);
+  return toDTO(row, facts.get(row.id)!, files.get(row.id) ?? null);
 }
 
 /** P2002 on integration_syncs_tenant_name_key ⇒ a 400 naming the field. */
@@ -508,8 +551,8 @@ export const listIntegrations: IntegrationStoreModule['listIntegrations'] = asyn
     where: { clientNumber: cn },
     orderBy: { createdAt: 'desc' },
   });
-  const facts = await loadStageFacts(cn, rows);
-  return rows.map((r) => toDTO(r, facts.get(r.id)!));
+  const [facts, files] = await Promise.all([loadStageFacts(cn, rows), loadSourceFiles(cn, rows)]);
+  return rows.map((r) => toDTO(r, facts.get(r.id)!, files.get(r.id) ?? null));
 };
 
 export const getIntegration: IntegrationStoreModule['getIntegration'] = async (cn, id) => {
@@ -527,12 +570,27 @@ function assertSourceFieldsMatch(kind: string, input: IntegrationInput): void {
   if (kind !== 'api' && input.apiConfig) {
     throw new IntegrationInputError('This integration reads a Google Sheet; choose "API" as the source first.', 'apiConfig');
   }
+  // DEF-368: a file integration has no link; only a file integration has a tab name.
+  if (kind === 'file' && input.link !== undefined && input.link.trim() !== '') {
+    throw new IntegrationInputError('This integration reads an uploaded file; a Google Sheet link does not apply.', 'link');
+  }
+  if (kind !== 'file' && input.sheetName) {
+    throw new IntegrationInputError('Only an uploaded Excel file has tabs to choose; choose "Excel or CSV file" as the source first.', 'sheetName');
+  }
+}
+
+/** DEF-368: the tabs of this tenant's stored file for the integration. */
+async function storedFileTabs(cn: string, id: string): Promise<string[] | null> {
+  const f = await sourceFileTable().findFirst({ where: { integrationId: id, clientNumber: cn }, select: { bytes: true } });
+  if (!f?.bytes) return null;
+  return listTabs(Buffer.from(f.bytes));
 }
 
 export const createIntegration: IntegrationStoreModule['createIntegration'] = async (cn, rawInput, actorId) => {
   const input = validateIntegrationInput(rawInput);
   if (!input.name) throw new IntegrationInputError('Give the integration a name.', 'name');
   assertSourceFieldsMatch(input.sourceKind ?? 'gsheet', input);
+  if (input.sheetName) throw new IntegrationInputError('Upload the spreadsheet first; then choose its tab.', 'sheetName');
 
   let sourceConfig: GsheetSourceConfig | Record<string, never> = {};
   if (input.link) {
@@ -609,12 +667,33 @@ export const updateIntegration: IntegrationStoreModule['updateIntegration'] = as
   }
   // DEF-362: the api connection. Compared in its normalised form, so a save
   // that changes nothing does not clear a passed test.
+  // DEF-368: a file integration's tab. Only a tab the stored file HAS can be
+  // chosen — a read never falls back to another tab, so a wrong name is
+  // refused here rather than failing at the next run.
+  let newFileCfg: FileSourceConfig | null = null;
+  if (kind === 'file' && patch.sheetName !== undefined) {
+    const cur = readFileConfig(row.sourceConfig);
+    if (!cur) throw new IntegrationInputError('Upload the spreadsheet first; then choose its tab.', 'sheetName');
+    const want = patch.sheetName ?? null;
+    if (want && want !== cur.sheetName) {
+      const tabs = await storedFileTabs(cn, id);
+      if (!tabs) throw new IntegrationInputError('Upload the spreadsheet first; then choose its tab.', 'sheetName');
+      if (!tabs.includes(want)) {
+        throw new IntegrationInputError(
+          tabs.length ? `The file has no tab "${want}". Its tabs are: ${tabs.map((t) => `"${t}"`).join(', ')}.` : 'This file has no tabs to choose (it is a CSV).',
+          'sheetName');
+      }
+    }
+    newFileCfg = { fileName: cur.fileName, sha256: cur.sha256, ...(want ? { sheetName: want } : {}) };
+  }
   const newApi = patch.apiConfig !== undefined ? patch.apiConfig : row.apiConfig;
   const oldFp = currentFingerprint(row);
-  const newFp = currentFingerprint({ sourceKind: kind, sourceConfig: newCfg ?? {}, apiConfig: newApi, secretSetAt: row.secretSetAt });
+  const nextSourceConfig = kind === 'file' ? (newFileCfg ?? row.sourceConfig) : (newCfg ?? {});
+  const newFp = currentFingerprint({ sourceKind: kind, sourceConfig: nextSourceConfig, apiConfig: newApi, secretSetAt: row.secretSetAt });
   const routeChanged = oldFp !== newFp;
   if (patch.sourceKind !== undefined) data.sourceKind = patch.sourceKind;
   if (newCfg !== oldCfg) data.sourceConfig = (newCfg ?? {}) as object;
+  if (newFileCfg) data.sourceConfig = newFileCfg as unknown as object;
   if (patch.apiConfig !== undefined) {
     data.apiConfig = patch.apiConfig ? JSON.parse(JSON.stringify(patch.apiConfig)) : Prisma.DbNull;
     // DEF-362 review: the secret is bound to the origin (and sign-in scheme) it
@@ -637,6 +716,9 @@ export const updateIntegration: IntegrationStoreModule['updateIntegration'] = as
     if (row.status === 'ACTIVE') {
       // Spec §3 "the tested connection is the one runs use": an ACTIVE row would
       // read the new, untested source at its next slot. Pause, edit, re-test, turn on.
+      if (kind === 'file' || row.sourceKind === 'file') {
+        throw new IntegrationInputError('Pause this integration before changing its file or tab.', 'sheetName');
+      }
       throw kind === 'api' || row.sourceKind === 'api'
         ? new IntegrationInputError('Pause this integration before changing its API connection.', 'apiConfig')
         : new IntegrationInputError('Pause this integration before changing its sheet.', 'link');
@@ -705,7 +787,7 @@ export const recordConnectionTest = async (
     || (opts.testStartedAt !== undefined && !!row.secretSetAt && row.secretSetAt.getTime() > opts.testStartedAt.getTime());
   if (changedDuringTest) {
     throw new IntegrationInputError('The connection changed while it was being tested. Test it again.',
-      row.sourceKind === 'api' ? 'apiConfig' : 'link');
+      row.sourceKind === 'api' ? 'apiConfig' : row.sourceKind === 'file' ? 'file' : 'link');
   }
   const ok = result.ok && fp !== null;
   // The WHERE re-checks the config read above, so a link edited between the
@@ -727,6 +809,11 @@ export const recordConnectionTest = async (
       : { connectionTestedAt: null, connectionFingerprint: null },
   });
   if (res.count === 0) {
+    if (row.sourceKind === 'file') {
+      // DEF-368: source_config carries the stored copy's sha256 and the tab, so
+      // the guard above also refuses a pass earned by a file replaced mid-test.
+      throw new IntegrationInputError('The file or its tab changed while it was being tested. Test it again.', 'file');
+    }
     throw isApi
       ? new IntegrationInputError('The API connection or its credential changed while it was being tested. Test it again.', 'apiConfig')
       : new IntegrationInputError('The sheet link changed while it was being tested. Test it again.', 'link');
