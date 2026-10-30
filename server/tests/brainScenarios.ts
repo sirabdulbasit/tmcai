@@ -38,6 +38,10 @@ import {
 import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
 import { looksLikeAnswer } from '../src/services/brainPrompts/promptReplyHandler';
 import { parseRelevanceVerdict, mayConsumeAsAnswer, RELEVANCE_CONFIDENCE_THRESHOLD } from '../src/services/brainPrompts/promptReplyRelevance';
+// chat28 (DEF-149/DEF-366) — the LIVE-path surfaces: the real reasoning prompt
+// builder and the real registry seed row the live model selects actions from.
+import { buildReasoningSystemPrompt } from '../src/services/knowledge/brainComposer';
+import { ACTIONS as SEEDED_ACTIONS } from '../src/scripts/seedActionDefinitions';
 import { listCapabilities } from '../src/services/knowledge/brainCapabilityRegistry';
 import { detectAudioMime } from '../src/services/voiceService';
 import { parseReasoningOutput } from '../src/services/knowledge/reasoningCompose';
@@ -888,6 +892,50 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       const cleanupSeg = provider.slice(cleanIdx, provider.indexOf('return;', cleanIdx));
       expect(cleanupSeg).toContain("event: 'probe_cleaned'");
       expect(cleanupSeg).toContain('outcome');
+    },
+  },
+  {
+    id: 'chat28',
+    title: '"Chase her again" was filed as a note — twice — because no decision point the live model reads drew the instruction/preference boundary',
+    fixCommits: ['6b6044a', 'ce46f84', '7a1a024'],
+    symptomTags: ['instruction-as-preference', 'protection-with-two-implementations'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+
+      // 1. THE BOUNDARY EXISTS in the shared rule source, drawn by durability,
+      //    not a verb list (a verb list would be detector-is-a-list-of-sentences).
+      const composer = readFileSync(
+        join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      const start = composer.indexOf('const CORE_CONVERSATIONAL_RULES');
+      const rules = composer.slice(start, composer.indexOf('const OUTPUT_SHAPE_RULES', start));
+      expect(rules).toContain('An instruction to ACT is never a note to file');
+      expect(rules).toContain('chase her again');
+      expect(rules).toContain('a verb aimed at the world is an instruction');
+
+      // 2. THE LIVE PATH READS IT — through the REAL builder, not the constant.
+      //    The first fix (6b6044a) put the text where only the legacy path looks
+      //    and was reviewed WEAK for exactly that; this is the lesson, pinned.
+      const live = buildReasoningSystemPrompt('persona', '');
+      expect(live).toContain('An instruction to ACT is never a note to file');
+      expect(live).toContain("I've made a note of that");
+      expect(composer).toContain('const reasoningSystemPrompt = buildReasoningSystemPrompt(');
+
+      // 3. THE LIVE SELECTION POINT — the registry description the reasoning
+      //    model reads when it picks an action — carries the must-NOT-fire
+      //    boundary with the verbatim case.
+      const rp = SEEDED_ACTIONS.find((a) => a.type === 'record_preference');
+      expect(rp).toBeTruthy();
+      expect(rp!.description).toContain('chase her again');
+      expect(rp!.description).toContain('never reply with a filing receipt');
+      expect(rp!.description).toContain('STANDING RULE');
+
+      // 4. THE EXECUTOR IS UNTOUCHED — an explicit "remember X" still stores.
+      //    Gating it in code would block the good path (the measured 42% class).
+      const executors = readFileSync(
+        join(__dirname, '..', 'src', 'services', 'knowledge', 'internalActionExecutors.ts'), 'utf-8');
+      expect(executors).toContain('executeRecordPreference');
+      expect(executors).toContain('recordExplicitMemory');
     },
   },
   {

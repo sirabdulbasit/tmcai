@@ -1132,3 +1132,34 @@ This is not DEF-260 recurring.
 question inside it was Brain's own; core rule 10 says the same for a question sitting in the
 prompt queue — the route the "Hi" instance took the day before. The rule REORDERS rather than
 silences: an outstanding question may still be asked, after answering what he actually said.
+
+## Chat 28
+
+**2026-08-12 17:00 PKT (R-1) — DEF-149, the oldest open owner ask until iteration 83.
+*"Chase her again"* → **"I've made a note of that."** Twice (17:00:18, 17:29:09), and then his
+own words for the defect: *"What did u got from my word chase her again?"***
+
+He gave Brain a command. Brain filed it. The imperative was routed to `record_preference` —
+a durable-memory write — and the reply was that action's receipt. **The receipt was correct
+for the action taken; the action was wrong**, which is why the reply reads as a polite filing
+confirmation for a chase that never happened. Kin to DEF-093 inverted: there his ANSWER to
+Brain's question became a task; here his INSTRUCTION became a note.
+
+**What went RIGHT:** nothing was fabricated. Brain truthfully reported what it did — it stored
+a note. The failure sits entirely at one decision: instruction vs. preference, decided by the
+model at the moment it picks an action.
+
+**Why the fix took two attempts, recorded because the miss is the lesson:** the first fix
+(`6b6044a`, deployed D-136) wrote the boundary into `CORE_CONVERSATIONAL_RULES` and the
+`ACTION_RULES` guidance — correct text, on the LEGACY path. The live path is
+`reasoningCompose` (`BRAIN_USE_REASONING` unset in the running process), whose prompt is built
+from the persona preamble + tenant rules + a DB-driven action registry, and it read none of
+those blocks. Codex ruled the placement WEAK: the fourth rule in a row to silently miss the
+prompt that writes the owner's replies (DEF-222, DEF-248, DEF-333's rule 1a before it — the
+`protection-with-two-implementations` class). Iteration 83 re-placed it where the live model
+actually looks: the always-on half rides `buildReasoningSystemPrompt` (DEF-366 — one rule
+source, both paths, by construction), and the selection-point half lives in
+`record_preference`'s registry DESCRIPTION (seeded idempotently at every server start),
+rendered by the real `renderActionsBlock` into the action block the model selects from. The
+executor stays untouched, so an explicit "remember X" still stores — the boundary is judgment
+text at the model's decision points, never a verb filter in code.
