@@ -18,8 +18,16 @@
  *   - the type is decided by a clear majority of the FILLED cells (see
  *     TYPE_MAJORITY), not "mixed" — one stray "n/a" in a column of numbers is a
  *     number column with one bad cell, which the risk check then counts.
+ *
+ * DEF-365: the fill counts and the "few enough values to list" decision come
+ * from the vendored @tmc/ai-integration discoverSourceFields (same ≤12 rule,
+ * computed over every record). Nexeo keeps, on top of it, the two deliberate
+ * differences above (sheet order; majority typing — the framework types a
+ * string cell as 'string', never number/date) and its sample/distinct display
+ * (trimmed, first-seen order; the framework lists commonest first).
  */
 import type { FieldCoverage, FieldInventoryModule, InferredFieldType } from '../types';
+import { discoverSourceFields } from '../../../vendor/ai-integration/mapping/fieldInventory';
 
 /** vm MAX_SAMPLES_PER_FIELD. */
 export const MAX_SAMPLES = 3;
@@ -98,7 +106,9 @@ export const buildFieldCoverage: FieldInventoryModule['buildFieldCoverage'] = (r
   }
 
   const total = rows.length;
+  const discovered = new Map(discoverSourceFields(rows).map((f) => [f.path, f] as const));
   return order.map((field): FieldCoverage => {
+    const fw = discovered.get(field);
     const filledValues: string[] = [];
     const samples: string[] = [];
     // Distinct values are only listed when few; counting stops one past the
@@ -119,13 +129,17 @@ export const buildFieldCoverage: FieldInventoryModule['buildFieldCoverage'] = (r
     }
     const cov: FieldCoverage = {
       field,
-      filled: filledValues.length,
+      // The framework's count over every record (blank = empty after trim, as here).
+      filled: fw?.filled ?? filledValues.length,
       total,
       inferredType: inferType(filledValues),
       samples,
     };
     // Present only when it describes the column; absent (not []) otherwise.
-    if (!overflowed && distinct.size > 0) cov.distinct = [...distinct];
+    // Listed only when BOTH agree the column is few-valued (the framework's
+    // `values` is present iff ≤12 distinct) — either one can only withhold.
+    const fwFew = fw ? fw.values !== undefined : true;
+    if (!overflowed && fwFew && distinct.size > 0) cov.distinct = [...distinct];
     return cov;
   });
 };

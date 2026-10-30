@@ -324,7 +324,36 @@ export interface FieldCoverage {
  */
 export type KpiTransform =
   | { mode: 'long'; valueField: string; periodField: string; dimensionField?: string }
-  | { mode: 'wide'; columns: string[]; periodFrom: 'header'; dimensionField?: string };
+  | { mode: 'wide'; columns: string[]; periodFrom: 'header'; dimensionField?: string }
+  | { mode: 'recipe'; recipe: KpiRecipe; dimensionField?: string };
+
+/**
+ * DEF-365 — a KPI figure COMPUTED from the records (count / sum / ratio per
+ * month), evaluated by the vendored @tmc/ai-integration recipe functions
+ * (engine/kpiRecipe.ts compiles it to a framework GoalRecipe). Pure data: the
+ * model proposes it, an admin approves it, code computes it — the model never
+ * produces a figure. Per MONTH only, and only for months that have ended (the
+ * framework's rule: a running month is never counted).
+ *  - count: records per month (a record counts when its period reads);
+ *  - sum:   Σ valueField per month;
+ *  - ratio: Σ numeratorField ÷ Σ denominatorField per month (pooled), × scale
+ *           (100 for a percentage).
+ * dimensionField (on the transform, as for long/wide) splits it per value.
+ */
+export interface KpiRecipe {
+  measure: 'count' | 'sum' | 'ratio';
+  /** The field dating each record. */
+  periodField: string;
+  /** sum only. */
+  valueField?: string;
+  /** ratio only. */
+  numeratorField?: string;
+  denominatorField?: string;
+  /** ratio only; default 1. */
+  scale?: number;
+  /** Plain words for the admin ("Orders per month"). */
+  label: string;
+}
 
 /**
  * DEF-362 — Context: records become tenant-wide Brain knowledge (org_doc pages).
@@ -981,6 +1010,9 @@ export interface PlannerModule {
     defs: KpiDefinitionRef[],
     existing: ExistingReadings,
     policy?: BlankPolicy,
+    /** DEF-365: the month it is NOW in the integration's zone — required only
+     *  by recipe rows (a running month is never computed). The planner reads no clock. */
+    now?: { year: number; month: number },
   ): KpiPlan;
   /** owned = readings this integration already owns; owned 0 never trips
    *  (first load). Trips when pct > capPct. */

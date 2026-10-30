@@ -383,6 +383,10 @@ function SuggestionCard({ sg, editable, busy, decide, refusedById, isApi, childr
           </span>
         )}
       </div>
+      {sg.transform?.mode === 'recipe' && sg.transform.recipe?.label && (
+        // DEF-365: a computed KPI says so first, in the AI's plain label.
+        <div style={{ ...s.hint, marginTop: 6, fontWeight: 600 }}>Computed figure: {sg.transform.recipe.label}</div>
+      )}
       {sg.transform && !isFilter && <div style={{ ...s.hint, marginTop: 6 }}>{describeTransform(sg.transform)}</div>}
       {children}
       {sg.samples?.length > 0 && !isFilter && (

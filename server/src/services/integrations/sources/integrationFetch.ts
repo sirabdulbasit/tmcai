@@ -23,6 +23,13 @@
  *   - the credential is attached only when the hop's origin is the configured
  *     origin, and never appears in an error message or the returned finalUrl.
  *
+ * DEF-365: the vendored @tmc/ai-integration assertSafeOutboundUrl is composed
+ * in as a FIRST check on every hop (loopback refused, as here) — it can only
+ * refuse more (credentials in the URL, encoded metadata/link-local hosts); the
+ * DNS vetting and socket pinning above remain the deciding guard. The
+ * framework's applyOutboundNetworkPolicy is NOT called: it rewrites
+ * process-wide http/https/dns defaults for every Nexeo subsystem.
+ *
  * Model-free and tenant-free by construction: it fetches what it is told,
  * within the rules, and nothing else.
  */
@@ -33,6 +40,7 @@ import zlib from 'zlib';
 import type { IncomingMessage } from 'http';
 import type { LookupFunction } from 'net';
 import createLogger from '../../../utils/logger';
+import { assertSafeOutboundUrl } from '../../../vendor/ai-integration/net/outboundUrl';
 import { getBehaviorValue } from '../../behaviorConfig';
 import {
   FetchGuardError,
@@ -283,6 +291,15 @@ const lowerHeaders = (h: IncomingMessage['headers']): Record<string, string> => 
 
 // ── The guard ─────────────────────────────────────────────────────────────
 
+/** The framework's URL rule, in this guard's error type (never echoes the query). */
+export function assertFrameworkSafe(u: URL): void {
+  try {
+    assertSafeOutboundUrl(u.toString(), { allowLoopback: false });
+  } catch {
+    throw new FetchGuardError('address', `Refusing to call ${describe(u)} — that address is not allowed.`);
+  }
+}
+
 export const guardedFetch: IntegrationFetchModule['guardedFetch'] = async (url, opts: GuardedFetchOptions) => {
   const origin = normaliseOrigin(opts.origin);
   const deadline = Date.now() + Math.max(1, opts.timeoutMs);
@@ -297,6 +314,7 @@ export const guardedFetch: IntegrationFetchModule['guardedFetch'] = async (url, 
   for (;;) {
     // Re-validated every hop: the redirect target is the outside system's choice.
     current = assertSameOrigin(current, origin);
+    assertFrameworkSafe(current);
     const vetted = await resolveVetted(current.hostname, deadline);
 
     const target = new URL(current.toString());

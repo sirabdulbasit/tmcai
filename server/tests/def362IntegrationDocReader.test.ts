@@ -128,6 +128,17 @@ describe('DEF-362 extractDocText', () => {
     expect(t).toContain('Records are in results');
   });
 
+  it('a 300k-character text or DOCX is read in full, never cut at the framework 200k', async () => {
+    const body = 'x'.repeat(299_000) + ' ENDPOINT_AT_THE_END';
+    const t = await extractDocText(Buffer.from(body), 'big.txt', 'text/plain');
+    expect(t.length).toBeGreaterThan(299_000);
+    expect(t).toContain('ENDPOINT_AT_THE_END');
+    const docx = await makeDocx(['a'.repeat(300_000), 'DOCX_ENDPOINT_AT_THE_END']);
+    const d = await extractDocText(docx, 'big.docx', 'application/octet-stream');
+    expect(d).toContain('DOCX_ENDPOINT_AT_THE_END');
+    expect(d).not.toContain('[truncated]');
+  });
+
   it('reads TXT / MD / JSON as UTF-8 and normalises line ends', async () => {
     expect(await extractDocText(Buffer.from('﻿line one\r\nline two\r\n\r\n\r\n\r\nend'), 'a.txt', 'text/plain'))
       .toBe('line one\nline two\n\nend');

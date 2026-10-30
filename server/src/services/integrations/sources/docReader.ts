@@ -11,8 +11,9 @@
  * value the model drafts is re-checked so a credential that slipped through
  * cannot ride into api_config.
  *
- *  - extractDocText: PDF (pdf-parse v2), DOCX (mammoth), TXT / MD / JSON /
- *    YAML as UTF-8. Over integrations.doc_max_bytes or another type ⇒
+ *  - extractDocText: PDF (pdf-parse v2, Nexeo's page-capped path), DOCX and
+ *    TXT / MD / JSON / YAML through the vendored framework fileExtractor
+ *    (DEF-365), behind Nexeo's size, zip-declared-size and NUL/char caps. Over integrations.doc_max_bytes or another type ⇒
  *    IntegrationInputError, never a partial read.
  *  - redactSecrets: bearer/basic tokens, Authorization headers, JWTs, vendor
  *    key formats, key/token/secret/password = value pairs, long high-entropy
@@ -33,6 +34,7 @@ import prisma from '../../../db/prisma';
 import { callLLM } from '../../llmRouter';
 import { getBehaviorValue } from '../../behaviorConfig';
 import { readPagination } from './apiReader';
+import { extractFile } from '../../../vendor/ai-integration/sources/fileExtractor';
 import {
   API_METHODS,
   AUTH_SCHEMES,
@@ -140,6 +142,34 @@ export function declaredUnzippedBytes(buf: Buffer): number | null {
   return total;
 }
 
+/** The framework found no text (its own words differ; Nexeo's are kept). */
+class NoTextError extends Error {}
+
+/**
+ * DEF-365: DOCX and plain text go through the vendored framework extractor
+ * (@tmc/ai-integration fileExtractor). Nexeo picks the kind and passes a fixed
+ * mime type for it, so the framework's own type sniffing (which would send a
+ * ".docx" labelled as a spreadsheet to xlsx@0.18.5) never decides. PDF stays on
+ * Nexeo's own path: the framework parses every page, Nexeo caps the page count.
+ */
+async function frameworkText(buf: Buffer, kind: 'docx' | 'text'): Promise<string> {
+  try {
+    const got = await extractFile({
+      fileBase64: buf.toString('base64'),
+      filename: kind === 'docx' ? 'document.docx' : 'document.txt',
+      mimetype: kind === 'docx' ? DOCX_MIME : 'text/plain',
+    });
+    if (got.kind !== 'text') throw new Error(`unexpected ${got.kind} extraction`);
+    return got.text;
+  } catch (err) {
+    if (/no (?:readable|extractable) text|is empty/i.test(err instanceof Error ? err.message : '')) throw new NoTextError();
+    throw err;
+  }
+}
+/** The vendored extractor's own cut (fileExtractor MAX_TEXT_CHARS). */
+const FRAMEWORK_TEXT_CHARS = 200_000;
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 /**
  * Plain text of the attached document. The optional `cn` makes the size cap
  * the tenant's (behavior integrations.doc_max_bytes); the contract signature
@@ -173,15 +203,34 @@ export const extractDocText = async (buf: Buffer, filename: string, mime: string
       if (unzipped === null || unzipped > DOC_MAX_UNZIPPED_BYTES) {
         throw new IntegrationInputError('That Word document expands to far more than an API document could need, or its archive is malformed. Paste the part that describes the endpoints instead.', 'apiDoc');
       }
-      const mammoth = await import('mammoth');
-      text = String((await mammoth.extractRawText({ buffer: buf })).value ?? '');
+      // DEF-365: the framework's extractor runs only AFTER the zip cap above,
+      // and is told the kind by Nexeo (never by the upload's own mime type), so
+      // a misnamed upload can never reach its xlsx path.
+      text = await frameworkText(buf, 'docx');
+      // The framework cuts at FRAMEWORK_TEXT_CHARS and appends '[truncated]';
+      // a longer document is read whole by Nexeo instead, so the 2M cap below
+      // decides — never a silent part-read.
+      if (text.length > FRAMEWORK_TEXT_CHARS) {
+        const mammoth = await import('mammoth');
+        text = String((await mammoth.extractRawText({ buffer: buf })).value ?? '');
+      }
     } else {
       // A NUL byte means it is not text, whatever its name says.
       if (buf.includes(0)) throw new IntegrationInputError('That file is not plain text. Attach a PDF, Word, text or JSON file.', 'apiDoc');
-      text = new TextDecoder('utf-8').decode(buf);
+      // Nexeo's text cap is checked on the WHOLE text before the framework
+      // (which would quietly cut at 200k) — an over-long text is refused, never stored part-way.
+      const whole = new TextDecoder('utf-8').decode(buf);
+      if (whole.length > DOC_MAX_TEXT_CHARS) {
+        throw new IntegrationInputError(`The document holds more than ${DOC_MAX_TEXT_CHARS.toLocaleString('en-US')} characters of text. Attach the part that describes the endpoints.`, 'apiDoc');
+      }
+      // The framework would cut past FRAMEWORK_TEXT_CHARS; Nexeo reads longer text whole.
+      text = whole.length > FRAMEWORK_TEXT_CHARS ? whole : await frameworkText(buf, 'text');
     }
   } catch (err) {
     if (err instanceof IntegrationInputError) throw err;
+    if (err instanceof NoTextError) {
+      throw new IntegrationInputError('No text was found in the document (a scanned PDF has no text layer). Paste the text instead.', 'apiDoc');
+    }
     log.warn('api document extraction failed', { kind, filename, error: err instanceof Error ? err.message : String(err) });
     throw new IntegrationInputError(`The ${kind === 'pdf' ? 'PDF' : kind === 'docx' ? 'Word document' : 'file'} could not be read — it may be damaged or password-protected. Try another copy, or paste the text.`, 'apiDoc');
   }

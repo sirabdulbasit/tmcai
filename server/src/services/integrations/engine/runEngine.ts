@@ -76,7 +76,8 @@ import {
   type RunEngineModule,
   type RunOptions,
 } from '../types';
-import { MAX_CHANGE_PCT, changeCapVerdict, nextScheduledRun, parseNumber, parsePeriod, planKpiReadings, readingKey, type PlannerKpiDef } from './planner';
+import { MAX_CHANGE_PCT, changeCapVerdict, monthIn, nextScheduledRun, parseNumber, parsePeriod, planKpiReadings, readingKey, type PlannerKpiDef } from './planner';
+import { readKpiRecipe, recipeTransformFields } from './kpiRecipe';
 
 const log = createLogger('integrations-run');
 
@@ -108,11 +109,19 @@ export function readTransform(raw: unknown): KpiTransform | null {
       && t.columns.every((c) => typeof c === 'string' && c) && t.periodFrom === 'header') {
     return { mode: 'wide', columns: t.columns as string[], periodFrom: 'header', ...(dim ? { dimensionField: dim } : {}) };
   }
+  if (t.mode === 'recipe') {
+    // DEF-365: re-checked on the way out of the database (the header check
+    // against the live source runs below, through fieldsRead).
+    const recipe = readKpiRecipe(t.recipe);
+    if (typeof recipe === 'string') return null;
+    return { mode: 'recipe', recipe, ...(dim ? { dimensionField: dim } : {}) };
+  }
   return null;
 }
 
 /** Every sheet column an approved row reads — the header check's list. */
 export function fieldsRead(t: KpiTransform): string[] {
+  if (t.mode === 'recipe') return recipeTransformFields(t);
   const own = t.mode === 'long' ? [t.valueField, t.periodField] : [...t.columns];
   return t.dimensionField ? [...own, t.dimensionField] : own;
 }
@@ -547,7 +556,13 @@ export const runIntegration: RunEngineModule['runIntegration'] = async (cn, id, 
     }
     const defs: PlannerKpiDef[] = defRows;
     const existing = await loadExisting(cn, kpiKeys);
-    const plan = planKpiReadings(records, approved, defs, existing, integ.blankPolicy as BlankPolicy);
+    // DEF-365: `now` is needed only by recipe rows; a timezone Intl rejects
+    // must never fail a long/wide run (the planner reports a missing `now` per recipe).
+    let recipeNow: ReturnType<typeof monthIn> | undefined;
+    if (approved.some((r) => r.transform.mode === 'recipe')) {
+      try { recipeNow = monthIn(new Date(), integ.timezone); } catch { recipeNow = undefined; }
+    }
+    const plan = planKpiReadings(records, approved, defs, existing, integ.blankPolicy as BlankPolicy, recipeNow);
     counts.skipped = plan.skipped;
     counts.blanks = plan.blanks;
     anomalies.push(...plan.anomalies);

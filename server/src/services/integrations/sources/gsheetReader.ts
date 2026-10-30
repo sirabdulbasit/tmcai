@@ -48,6 +48,7 @@ import {
   type TestResult,
 } from '../types';
 import { csvToRecords } from './csv';
+import { nameFromDisposition as frameworkNameFromDisposition } from '../../../vendor/ai-integration/sources/sheetLink';
 import { SHEETS_EXPORT_HOST, parseSheetLink as parseLink, sheetExportUrl } from './sheetLink';
 
 const log = createLogger('integrations-gsheet');
@@ -147,14 +148,9 @@ export async function readCapped(res: Response, max: number): Promise<{ bytes: B
   return { bytes: Buffer.concat(parts), truncated: false };
 }
 
-/** The file's name from Google's Content-Disposition (vm nameFromDisposition). */
-export function nameFromDisposition(header: string | null): string | null {
-  if (!header) return null;
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
-  if (star) { try { return decodeURIComponent(star[1]!.trim()); } catch { /* fall through */ } }
-  const plain = /filename="?([^";]+)"?/i.exec(header);
-  return plain ? plain[1]!.trim() : null;
-}
+/** The file's name from Google's Content-Disposition — DEF-365: the vendored
+ *  framework's function (identical rule), re-exported so callers keep importing it here. */
+export const nameFromDisposition = frameworkNameFromDisposition;
 
 type Fetched =
   | { kind: 'ok'; res: Response }

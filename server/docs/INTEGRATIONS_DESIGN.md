@@ -192,6 +192,25 @@ to the resolved address (no DNS rebinding); same-origin for every page and redir
 size / time / page caps from behaviorConfig; the secret is attached only to the configured origin.
 Qlik and Odoo stay Stage 4.
 
+## 2c. Shared framework `@tmc/ai-integration` (DEF-365)
+
+Owner, 2026-10-30: *"adopt in Nexeo under integration — only adopt till mapping (further mapping
+should be as per Nexeo) and then Schedule and run"*. The framework
+(github.com/sirabdulbasit/ai-integration, commit `c0a6ebe`) is **vendored unchanged** in
+`server/src/vendor/ai-integration/` (see `VENDORED.md` there; prod deploys run no `npm install`).
+A thin tenant-bound adapter lives in `services/integrations/framework/`.
+
+| Up to mapping — framework, composed with Nexeo's stricter guard | Nexeo's own |
+|---|---|
+| sheet-link parsing (second check), field inventory, API-document text for DOCX/text, outbound-URL check on every hop, **recipes + periods** (KPI figures computed as count / sum / ratio per month, optional dimension) | destinations (KPI, Context, filter), approval and versions, the run engine, schedule and dispatcher, designated-account Google access, PDF caps, redaction, DNS pinning, proposal jobs |
+
+Recipe KPIs: stored as a KPI suggestion transform `{mode:'recipe', recipe, dimensionField?}`, checked
+with the framework's `validateRecipe`, evaluated by Nexeo's engine with its pure `evaluateRecipe` —
+same dry-run / change-cap / one-transaction rules. Monthly only; the running month is not counted.
+**Not adopted:** the xlsx workbook readers (CVEs; a test fails if Nexeo imports them), per-integration
+Drive OAuth (would bypass the designated account), the process-wide network policy, goal-specific
+prompts.
+
 ## 3. Rules carried from vm §8/§9 (each pinned by a test that fails when weakened)
 
 Blank never overwrites · identity/account fields unwritable · proposable ≠ writable (approval is

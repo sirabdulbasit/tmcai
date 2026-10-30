@@ -23,9 +23,14 @@
  *  - The input must BE the link (not a text containing one): this is a form
  *    field, and a value with extra text is far more likely a paste mistake.
  *
+ * DEF-365: the vendored @tmc/ai-integration parseSheetLink is composed in as
+ * a second recogniser (see parseSheetLink). Its xlsx export / tab finder / token
+ * readers are NOT used (xlsx@0.18.5 CVEs; Nexeo reads one tab as CSV).
+ *
  * Pure: no I/O.
  */
 import { IntegrationInputError, type GsheetSourceConfig } from '../types';
+import { parseSheetLink as frameworkParseSheetLink } from '../../../vendor/ai-integration/sources/sheetLink';
 
 /** Google sheet ids are base64url-ish and long; vm used ≥20, kept. */
 const SHEET_ID_RE = /^[A-Za-z0-9_-]{20,128}$/;
@@ -66,6 +71,15 @@ export function parseSheetLink(link: string): GsheetSourceConfig {
   }
   const sheetId = m![2]!;
   if (!SHEET_ID_RE.test(sheetId)) fail('That Google Sheet link is incomplete — the sheet id is missing or cut short.');
+  // DEF-365: the framework's recogniser must read the SAME sheet id from the
+  // normalised link. Composed, never substituted: Nexeo's stricter rules above
+  // (host, no userinfo/port, no "Publish to web", one input = one link) and the
+  // gid-conflict refusal below still decide; the framework is a second opinion
+  // that can only refuse more.
+  const fw = frameworkParseSheetLink(url.toString());
+  if (!fw || fw.published || fw.id !== sheetId) {
+    fail('That Google Sheet link could not be read reliably. Open the sheet and copy its link from the address bar.');
+  }
 
   const gid = pickGid(url);
   return { sheetId, gid, link: raw };

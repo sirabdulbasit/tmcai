@@ -37,6 +37,8 @@ import type {
   ScheduleConfig,
   ValueVerdict,
 } from '../types';
+import { evaluateRecipe } from '../../../vendor/ai-integration/mapping/recipes';
+import { COUNT_FIELD, recipeValueFields, toGoalRecipe } from './kpiRecipe';
 
 /** A definition as the planner can use it. `grain` is optional so the
  *  contract's KpiDefinitionRef still fits; absent ⇒ 'month' (the schema default). */
@@ -261,7 +263,7 @@ interface Candidate {
 }
 
 export const planKpiReadings: PlannerModule['planKpiReadings'] = (
-  records, approvedRows, defs, existing, policy = 'abnormal',
+  records, approvedRows, defs, existing, policy = 'abnormal', now,
 ): KpiPlan => {
   const defsByKey = new Map<string, PlannerKpiDef>((defs as PlannerKpiDef[]).map((d) => [d.kpiKey, d]));
   const plan: KpiPlan = {
@@ -279,6 +281,13 @@ export const planKpiReadings: PlannerModule['planKpiReadings'] = (
       failures.push(`The approved field "${row.sourceField}" feeds the KPI "${key}", which is no longer in the KPI catalogue.`);
     } else if (!def.isActive) {
       failures.push(`The approved field "${row.sourceField}" feeds the KPI "${def.label}" (${key}), which is switched off.`);
+    } else if (row.transform.mode === 'recipe') {
+      // DEF-365: a recipe computes MONTHS (the framework's grain) for months
+      // that have ENDED — it needs the month it is now, and a monthly KPI.
+      if (!now) failures.push(`The approved recipe for "${def.label}" (${key}) cannot be computed without the current month.`);
+      else if (String(def.grain ?? 'month') !== 'month') {
+        failures.push(`The approved recipe for "${def.label}" (${key}) computes monthly figures, but the KPI is kept per ${def.grain}.`);
+      }
     }
   }
   if (failures.length) {
@@ -351,6 +360,62 @@ export const planKpiReadings: PlannerModule['planKpiReadings'] = (
       continue;
     }
 
+    if (t.mode === 'recipe') {
+      // DEF-365: Nexeo's cell rules first (a blank, a non-number, an
+      // unreadable period or dimension is skipped and COUNTED, as for long
+      // rows); the framework recipe then computes from canonical values only.
+      const r = t.recipe;
+      const valueFields = recipeValueFields(r);
+      const groups = new Map<string, Array<Record<string, string>>>();
+      const nowKey = now!.year * 100 + now!.month;
+      let notEnded = 0;
+      records.forEach((rec, i) => {
+        const rowNo = i + 2;
+        const rawPeriod = (rec[r.periodField] ?? '').trim();
+        const parsed = parsePeriodDetailed(rawPeriod);
+        if (!parsed) { plan.skipped += 1; badPeriods.add(r.periodField, rawPeriod || '(blank)'); return; }
+        if (parsed.y * 100 + parsed.m >= nowKey) { notEnded += 1; return; }
+        const dim = dimensionOf(rec, t.dimensionField);
+        if (dim === null) return;
+        const prepared: Record<string, string> = { [r.periodField]: `${parsed.y}-${String(parsed.m).padStart(2, '0')}` };
+        if (r.measure === 'count') prepared[COUNT_FIELD] = '1';
+        for (const f of valueFields) {
+          const v = valueOf(rec[f], f, rowNo);
+          if (v === null) return;
+          prepared[f] = v;
+        }
+        const g = groups.get(dim) ?? [];
+        g.push(prepared);
+        groups.set(dim, g);
+      });
+      if (notEnded) {
+        plan.anomalies.push(`${notEnded} record(s) for "${kpiKey}" fall in the current or a future month — a recipe counts only months that have ended.`);
+      }
+      const goal = toGoalRecipe(r);
+      for (const [dim, recs] of groups) {
+        // evaluateRecipe reads one calendar year (the one `now` is in); an
+        // earlier year is read with now = "after its December", so every one
+        // of its months counts as ended.
+        const years = [...new Set(recs.map((x) => Number(x[r.periodField]!.slice(0, 4))))].sort((a, b) => a - b);
+        for (const y of years) {
+          const ofYear = recs.filter((x) => x[r.periodField]!.startsWith(`${y}-`));
+          const res = evaluateRecipe(goal, {
+            owner: dim,
+            recordsOf: () => ofYear,
+            populationOf: () => [dim],
+            now: y < now!.year ? { year: y, month: 13 } : now!,
+          });
+          for (const issue of res.issues) plan.anomalies.push(`"${kpiKey}"${dim ? ` ${dim}` : ''} ${issue}`);
+          for (const mo of res.months) {
+            const v = classifyValue(String(mo.value), 'normal');
+            if (v.kind !== 'ok') { plan.skipped += 1; invalid.add(`recipe ${kpiKey}`, String(mo.value)); continue; }
+            consider(kpiKey, iso(mo.year, mo.month, 1), dim, v.value, `recipe › ${r.label}`);
+          }
+        }
+      }
+      continue;
+    }
+
     // wide: the period is each column's HEADER. A header that is not a period
     // is never guessed at — its column is not read and the admin is told.
     for (const col of t.columns) {
@@ -415,6 +480,14 @@ export const planKpiReadings: PlannerModule['planKpiReadings'] = (
   }
   return plan;
 };
+
+/** DEF-365: the calendar month an instant falls in, in `tz` — what a recipe
+ *  row's `now` is. Pure (the instant is passed in; the planner reads no clock). */
+export function monthIn(at: Date, tz: string): { year: number; month: number } {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: 'numeric' }).formatToParts(at);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  return { year: get('year'), month: get('month') };
+}
 
 // ── Change cap ────────────────────────────────────────────────────────────
 

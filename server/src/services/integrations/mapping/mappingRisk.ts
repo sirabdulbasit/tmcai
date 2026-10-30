@@ -33,7 +33,8 @@
  */
 import type { KpiTransform } from '../types';
 import { looksNumeric } from './fieldInventory';
-import { periodStartFor } from '../engine/planner';
+import { monthIn, periodStartFor, planKpiReadings, type PlannerKpiDef } from '../engine/planner';
+import { describeKpiRecipe, recipeTransformFields, recipeValueFields } from '../engine/kpiRecipe';
 
 /** Below this share of numeric filled cells the row is set aside. Half, not
  *  "all": a column of numbers with a few "n/a" cells is still the KPI, and the
@@ -69,11 +70,13 @@ const blank = (v: unknown): boolean => v === null || v === undefined || String(v
 
 /** The value columns a transform reads (long: one; wide: every period column). */
 export function transformValueColumns(t: KpiTransform): string[] {
+  if (t.mode === 'recipe') return recipeValueFields(t.recipe);
   return t.mode === 'long' ? [t.valueField] : [...t.columns];
 }
 
 /** Every header a transform reads — the run's header check uses the same set. */
 export function transformFields(t: KpiTransform): string[] {
+  if (t.mode === 'recipe') return recipeTransformFields(t);
   const out = t.mode === 'long' ? [t.valueField, t.periodField] : [...t.columns];
   if (t.dimensionField) out.push(t.dimensionField);
   return out;
@@ -86,6 +89,7 @@ export function profileKpiRow(
   isNumber: (raw: string) => boolean = looksNumeric,
   grain: string = 'month',
 ): KpiRowProfile {
+  if (t.mode === 'recipe') return profileRecipeRow(records, t, grain).profile;
   const subjects = new Set<string>();
   let cells = 0; let filled = 0; let numeric = 0; let periodUnreadable = 0;
   for (const r of records ?? []) {
@@ -111,7 +115,44 @@ export function profileKpiRow(
 
 const pct = (n: number, d: number): string => (d === 0 ? '0' : (Math.round((n / d) * 1000) / 10).toString());
 
+/**
+ * DEF-365: a recipe row is judged by running the RUN'S OWN planner over every
+ * record (dry, against an empty store), with the month it is now — so the
+ * reading count shown at review is the count a run would produce.
+ */
+function profileRecipeRow(
+  records: Record<string, string>[],
+  t: Extract<KpiTransform, { mode: 'recipe' }>,
+  grain: string,
+  at: Date = new Date(),
+): { profile: KpiRowProfile; anomalies: string[]; failure: string | null } {
+  const def: PlannerKpiDef = { kpiKey: '__risk', label: 'this KPI', unit: null, isActive: true, sourceIntegrationId: null, grain };
+  const plan = planKpiReadings(
+    records ?? [],
+    [{ suggestionId: 'risk', sourceField: t.recipe.periodField, targetKey: 'kpi:__risk', transform: t }],
+    [def],
+    new Map(),
+    'normal',
+    monthIn(at, 'UTC'),
+  );
+  const rows = (records ?? []).length;
+  const cells = rows * Math.max(1, recipeValueFields(t.recipe).length);
+  const unusable = plan.skipped + plan.blanks;
+  return {
+    profile: {
+      cells,
+      filled: Math.max(0, cells - plan.blanks),
+      numeric: Math.max(0, cells - unusable),
+      subjects: plan.readings.length,
+      periodUnreadable: 0,
+    },
+    anomalies: plan.anomalies,
+    failure: plan.failure,
+  };
+}
+
 function describeSource(t: KpiTransform): string {
+  if (t.mode === 'recipe') return `the recipe "${t.recipe.label}"`;
   return t.mode === 'long'
     ? `column "${t.valueField}" by "${t.periodField}"`
     : `${t.columns.length} period column${t.columns.length === 1 ? '' : 's'} ("${t.columns[0]}"${t.columns.length > 1 ? ` … "${t.columns[t.columns.length - 1]}"` : ''})`;
@@ -128,9 +169,30 @@ export function assessKpiRowRisk(
   isNumber?: (raw: string) => boolean,
   grain: string = 'month',
 ): MappingRisk {
-  const p = profileKpiRow(records, t, isNumber, grain);
   const src = describeSource(t);
   const rows = (records ?? []).length;
+  if (t.mode === 'recipe') {
+    const r = profileRecipeRow(records, t, grain);
+    const p = r.profile;
+    if (r.failure) {
+      return { code: 'period_unreadable', setAside: true, profile: p, reason: `Set aside: ${r.failure.replace(/this KPI \(__risk\)|"this KPI" \(__risk\)/g, targetLabel)}` };
+    }
+    if (p.subjects === 0) {
+      return {
+        code: 'never_populated', setAside: true, profile: p,
+        reason: `Set aside: ${src} gives no monthly figure from the ${rows} record${rows === 1 ? '' : 's'} read`
+          + `${r.anomalies.length ? ` (${r.anomalies.slice(0, 2).join(' ')})` : ''}, so ${targetLabel} would never get a reading.`,
+      };
+    }
+    const notes = r.anomalies.slice(0, 3).map((a) => a.replace(/"__risk"\s?/g, '').replace(/recipe __risk/g, 'the recipe'));
+    return {
+      code: 'none', setAside: false, profile: p,
+      reason: `Computes ${targetLabel}: ${describeKpiRecipe(t.recipe, t.dimensionField)} `
+        + `${p.subjects} monthly reading${p.subjects === 1 ? '' : 's'} from ${rows} record${rows === 1 ? '' : 's'}`
+        + `${notes.length ? `; ${notes.join(' ')}` : ''}.`,
+    };
+  }
+  const p = profileKpiRow(records, t, isNumber, grain);
 
   // vm rule 1: nothing to read ⇒ approving it can never write anything.
   if (p.filled === 0) {

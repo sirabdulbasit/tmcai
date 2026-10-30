@@ -58,7 +58,8 @@ import { callLLM } from '../../llmRouter';
 import { readSource, sourceProblem } from '../sources';
 import { getBehaviorValue } from '../../behaviorConfig';
 import { buildFieldCoverage } from './fieldInventory';
-import { assessKpiRowRisk, transformFields } from './mappingRisk';
+import { assessKpiRowRisk, transformFields, transformValueColumns } from './mappingRisk';
+import { readKpiRecipe } from '../engine/kpiRecipe';
 import { applyRecordFilter, validateRecordFilter } from '../engine/recordFilter';
 import {
   FILTER_TARGET_KEY,
@@ -194,12 +195,23 @@ export function readTransform(raw: unknown, headers: string[]): KpiTransform | s
       ? { mode: 'wide', columns, periodFrom: 'header', dimensionField: dim }
       : { mode: 'wide', columns, periodFrom: 'header' };
   }
-  return 'transform.mode must be "long" or "wide"';
+  if (t.mode === 'recipe') {
+    // DEF-365: a computed KPI (count / sum / ratio per month), checked by the
+    // framework's validateRecipe against the real headers (engine/kpiRecipe).
+    const recipe = readKpiRecipe(t.recipe, headers);
+    if (typeof recipe === 'string') return recipe;
+    if (dim && [recipe.periodField, recipe.valueField, recipe.numeratorField, recipe.denominatorField].includes(dim)) {
+      return 'the dimension column is also used by the recipe';
+    }
+    return dim ? { mode: 'recipe', recipe, dimensionField: dim } : { mode: 'recipe', recipe };
+  }
+  return 'transform.mode must be "long", "wide" or "recipe"';
 }
 
 /** sourceField of a row: the value column (wide: the first period column,
  *  for display — types.ts SuggestionDraft). */
 export function sourceFieldOf(t: KpiTransform): string {
+  if (t.mode === 'recipe') return transformValueColumns(t)[0] ?? t.recipe.periodField;
   return t.mode === 'long' ? t.valueField : t.columns[0];
 }
 
@@ -220,10 +232,12 @@ Each row has a "kind":
    Two layouts are possible:
    - "long": one field holds the number and another holds the period. transform = {"mode":"long","valueField":"<field>","periodField":"<field>","dimensionField":"<field, optional>"}
    - "wide": one field per period, the period is the field NAME (e.g. "Jan 2026"). transform = {"mode":"wide","columns":["<field>", ...],"periodFrom":"header","dimensionField":"<field, optional>"}
+   - "recipe": the number is COMPUTED from the records, per month: a count of records, a sum of one field, or a ratio of two fields' totals. transform = {"mode":"recipe","recipe":{"measure":"count"|"sum"|"ratio","periodField":"<field dating each record>","valueField":"<field, sum only>","numeratorField":"<field, ratio only>","denominatorField":"<field, ratio only>","scale":<ratio only, e.g. 100 for a percentage>,"label":"<plain words, e.g. New customers per month>"},"dimensionField":"<field, optional>"}
+     Use a recipe only when the data holds no field that already IS the number, and only for a KPI kept per month. Code computes it from every record; only months that have ended are counted. Never use a recipe to count identity fields' values as a KPI of their own (e.g. a count of emails is fine as "records per month", but never a sum of ids or phone numbers).
    dimensionField, when given, splits the KPI by its value (one reading per value); omit it for a single total.
    Target keys: "kpi:<key>" for a KPI in the catalogue you are given (use ONLY catalogue keys), or "kpi:new:<key>" for a KPI not in it, with "newKpi": {"kpiKey":"<key>","label":"<short label>","unit":"<optional unit, e.g. PKR, %, count>"}. <key> is lowercase letters, digits and underscores, starting with a letter, at most 80 characters.
    One row per KPI; never two sources for the same KPI.
-   A KPI row COPIES a number already in the data; it can never count, sum or average records (no "headcount per department", no "number of customers"). If the instruction asks for a count or total the data does not already hold as a field, propose no KPI row for it: say so in a "not_used" row's "why" for the field it would have counted, and NEVER force a "long" row onto unrelated fields (e.g. a salary as a value with a hire date as the period).
+   A "long" or "wide" row COPIES a number already in the data. When the instruction asks for a count, total or ratio the data does not hold as a field, use a "recipe" row; NEVER force a "long" row onto unrelated fields (e.g. a salary as a value with a hire date as the period). If no field can date the records, a recipe cannot be built either: say so in a "not_used" row's "why".
 
 2. "context" — knowledge the assistant should be able to read and quote (descriptions, statuses, names, notes, terms):
    - per record: {"kind":"context","targetKey":"context:per_record","transform":{"mode":"per_record","titleField":"<field naming the record>","bodyFields":["<field>", ...]}} — one knowledge page per record;
@@ -505,6 +519,10 @@ export function fieldsOfTransform(kind: string, t: unknown): string[] {
       ? [...new Set(o.conditions.map((c) => String((c as Record<string, unknown>)?.field ?? '')).filter(Boolean))]
       : [];
   }
+  if (o.mode === 'recipe') {
+    const r = readKpiRecipe(o.recipe);
+    return typeof r === 'string' ? [] : transformFields({ mode: 'recipe', recipe: r, ...(typeof o.dimensionField === 'string' && o.dimensionField ? { dimensionField: o.dimensionField } : {}) });
+  }
   return o.mode === 'long' || o.mode === 'wide' ? transformFields(o as unknown as KpiTransform) : [];
 }
 
@@ -770,7 +788,8 @@ function readNewKpi(raw: unknown): { kpiKey: string; label: string; unit?: strin
 
 /** 2–3 real values the row reads (wide: gathered across its period columns). */
 function samplesOf(t: KpiTransform, covOf: Map<string, FieldCoverage>): string[] {
-  const cols = t.mode === 'long' ? [t.valueField] : t.columns;
+  const cols = t.mode === 'recipe' ? (transformValueColumns(t).length ? transformValueColumns(t) : [t.recipe.periodField])
+    : t.mode === 'long' ? [t.valueField] : t.columns;
   const out: string[] = [];
   for (const c of cols) {
     for (const s of covOf.get(c)?.samples ?? []) {

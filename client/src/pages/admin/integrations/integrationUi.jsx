@@ -214,6 +214,7 @@ export function describeTransform(tr) {
     return `Keep only records where ${tr.conditions.map(describeCondition).join(joiner)}.`;
   }
   const dim = tr.dimensionField ? `, one reading per “${tr.dimensionField}”` : ', as a total';
+  if (tr.mode === 'recipe') return describeRecipe(tr.recipe, dim);
   if (tr.mode === 'long') return `Value from “${tr.valueField}”, dated by “${tr.periodField}”${dim}.`;
   if (tr.mode === 'wide') {
     const cols = tr.columns || [];
@@ -223,12 +224,28 @@ export function describeTransform(tr) {
   return '';
 }
 
+/** DEF-365 — a computed KPI (count / sum / ratio per month), in plain words.
+ *  Mirrors server engine/kpiRecipe.describeKpiRecipe. */
+export function describeRecipe(r, dim = ', as a total') {
+  if (!r) return '';
+  const what = r.measure === 'count'
+    ? 'Counts the records'
+    : r.measure === 'sum'
+      ? `Adds up “${r.valueField}”`
+      : `Divides the total of “${r.numeratorField}” by the total of “${r.denominatorField}”${r.scale && r.scale !== 1 ? ` × ${r.scale}` : ''}`;
+  return `Computed: ${what} per month, dated by “${r.periodField}”${dim}. Only months that have ended are counted; blanks and non-numbers are skipped.`;
+}
+
 /** Every source field a suggestion reads — for "Where it goes" (KPI, Context, filter). */
 export function fieldsOfSuggestion(sg) {
   const tr = sg?.transform;
   if (!tr) return [sg?.sourceField].filter(Boolean);
   if (tr.mode === 'wide') return tr.columns || [];
   if (tr.mode === 'long') return [tr.valueField, tr.periodField, tr.dimensionField].filter(Boolean);
+  if (tr.mode === 'recipe') {
+    const r = tr.recipe || {};
+    return [r.periodField, r.valueField, r.numeratorField, r.denominatorField, tr.dimensionField].filter(Boolean);
+  }
   if (tr.mode === 'per_record') return [tr.titleField, ...(tr.bodyFields || [])].filter(Boolean);
   if (tr.mode === 'table') return tr.columns || [];
   if (Array.isArray(tr.conditions)) return tr.conditions.map((c) => c.field).filter(Boolean);
