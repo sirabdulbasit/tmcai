@@ -411,7 +411,11 @@ export const ACTIONS: Seed[] = [
   {
     type: 'record_preference',
     displayName: 'Record preference',
-    description: 'Store a durable user preference (sign-off, working hours, default duration, etc).',
+    // DEF-149 — this description IS the live selection point: the reasoning
+    // path renders it into the action registry block the model reads when it
+    // chooses an action. "Chase her again" was filed here as a note (twice)
+    // because nothing at this point drew the instruction/preference boundary.
+    description: "Store how the user wants things done as a STANDING RULE — \"always…\", \"never…\", \"from now on…\", \"I prefer…\", \"remember that I sign off as Best regards\" — plus durable facts about his setup (working hours, default meeting duration). Must NOT fire for an instruction to ACT: \"chase her again\", \"send the report to Ali\", \"remind me tomorrow at 9\" are COMMANDS — emit the matching action this turn, or ask for the one missing piece; never file the command, and never reply with a filing receipt (\"I've made a note of that\") — he asked you to DO a thing, and a note means it never happens. When in doubt: a verb aimed at the world is an instruction; a statement about his lasting preferences is a memory.",
     schema: {
       type: 'object',
       required: ['key', 'value'],

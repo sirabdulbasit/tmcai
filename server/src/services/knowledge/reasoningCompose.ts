@@ -303,7 +303,12 @@ ${actionsBlock}`;
 
 // ─── Internal ────────────────────────────────────────────────────
 
-function renderActionsBlock(actions: any[]): string {
+// DEF-149 — exported so the live SELECTION POINT (the registry block the
+// reasoning model reads when it picks an action) is testable through the real
+// renderer. Same precedent as renderUserMessage (DEF-259) and
+// parseReasoningOutput (DEF-256): test the final owner-visible path, not a
+// re-implementation.
+export function renderActionsBlock(actions: any[]): string {
   if (actions.length === 0) return '(no actions registered — decline action requests honestly)';
   const lines: string[] = [];
   for (const a of actions) {

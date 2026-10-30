@@ -24,10 +24,24 @@
  *  - the record_preference ACTION GUIDANCE (the selection point) carries
  *    must-NOT-fire examples including the verbatim "chase her again";
  *  - the positive examples are NOT weakened — explicit preferences still fire.
+ *
+ * ITERATION-83 CORRECTION (Codex review, verdict WEAK): the blocks pinned
+ * above feed only `assembleSystemPrompt` — the LEGACY path. The LIVE path is
+ * `reasoningCompose`, whose prompt is persona + tenant rules + a DB-driven
+ * action registry, and it read NONE of this. The remediation is two-sided and
+ * the second describe block pins it where the live model actually looks:
+ *  - the always-on half now rides `buildReasoningSystemPrompt` (DEF-366: one
+ *    rule source, both paths, by construction);
+ *  - the selection-point half now lives in the `record_preference` registry
+ *    DESCRIPTION (seedActionDefinitions, upserted by type at every server
+ *    start), rendered into the live prompt by the real `renderActionsBlock`.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { buildReasoningSystemPrompt } from '../src/services/knowledge/brainComposer';
+import { renderActionsBlock } from '../src/services/knowledge/reasoningCompose';
+import { ACTIONS } from '../src/scripts/seedActionDefinitions';
 
 const raw = fs.readFileSync(
   path.join(__dirname, '../src/services/knowledge/brainComposer.ts'),
@@ -79,5 +93,39 @@ describe('DEF-149 — rule 1b: an instruction to ACT is never a note to file', (
     );
     expect(executors).toContain('executeRecordPreference');
     expect(executors).toContain('recordExplicitMemory');
+  });
+});
+
+describe('DEF-149 — the boundary reaches the LIVE path (iteration-83 remediation of the WEAK review)', () => {
+  it('the always-on half rides the real reasoning prompt builder (DEF-366), not only the legacy constant', () => {
+    const live = buildReasoningSystemPrompt('persona-preamble', '');
+    expect(live).toContain('An instruction to ACT is never a note to file');
+    expect(live).toContain('chase her again');
+    expect(live).toContain("I've made a note of that");
+  });
+
+  it('the live SELECTION POINT — record_preference\'s registry description — carries the boundary and the verbatim case', () => {
+    const row = ACTIONS.find((a) => a.type === 'record_preference');
+    expect(row).toBeTruthy();
+    expect(row!.description).toContain('STANDING RULE');
+    expect(row!.description).toContain('chase her again');
+    expect(row!.description).toContain('filing receipt');
+    expect(row!.description).toContain('a verb aimed at the world is an instruction');
+  });
+
+  it('the REAL renderer carries the description into the registry block the live model reads', () => {
+    const row = ACTIONS.find((a) => a.type === 'record_preference')!;
+    const block = renderActionsBlock([row]);
+    expect(block).toContain('**record_preference**');
+    expect(block).toContain('chase her again');
+    expect(block).toContain('never reply with a filing receipt');
+  });
+
+  it('the positive selection path is NOT weakened — standing-rule language still names when to fire', () => {
+    const row = ACTIONS.find((a) => a.type === 'record_preference')!;
+    expect(row!.description).toContain('I prefer');
+    expect(row!.description).toContain('remember that I sign off as Best regards');
+    // and the schema is untouched, so an explicit preference still validates
+    expect(row!.schema?.required).toEqual(['key', 'value']);
   });
 });
