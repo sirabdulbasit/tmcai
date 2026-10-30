@@ -437,6 +437,11 @@ export async function testApiWith(cn: string, cfg: ApiConfig, secret: string | n
 const safeHost = (u: string): string => { try { return new URL(u).host; } catch { return '?'; } };
 
 export const testApi: ApiReaderModule['testApi'] = async (cn, integ) => {
+  // DEF-369: the example-address check comes BEFORE "no credential yet" — the
+  // owner's test (10-31) said only "enter the credential" while the address was
+  // still your-domain.com, so fixing the key alone could never have worked.
+  const ph = placeholderHost(integ.apiConfig.baseUrl);
+  if (ph) return { ok: false, rows: 0, columns: [], sampleRow: null, reason: placeholderReason(ph) };
   let secret: string | null;
   try {
     secret = await loadSecret(cn, integ);

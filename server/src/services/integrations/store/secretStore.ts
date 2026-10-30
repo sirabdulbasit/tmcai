@@ -37,6 +37,8 @@ const log = createLogger('integrations-secret');
 
 const PREFIX = 'v1';
 const HKDF_INFO = 'nexeo/integrations/secret/v1';
+/** DEF-369: salt for an ENCRYPTION_KEY that is a long string rather than a canonical MEK. */
+const LEGACY_KEY_SALT = 'nexeo/integrations/secret/v1/string-key';
 /** 12 bytes: the NIST-recommended GCM IV length (same as envelopeEncryptionService H4). */
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
@@ -54,8 +56,19 @@ function deriveKey(): Buffer {
   try {
     mek = decodeMEK(raw);
   } catch {
-    // decodeMEK's own message names the key length; keep the admin message plain.
-    throw new CredentialUnreadableError('The server encryption key is malformed, so the API credential cannot be stored or read.');
+    // DEF-369: production's ENCRYPTION_KEY is the long-standing configService
+    // key — a ≥32-character string, not a canonical 32-byte hex/base64 MEK — so
+    // the strict decoder refused it and NO integration secret could ever be
+    // stored or document key kept (log: "encryption key is malformed",
+    // keysKept 0). Such a key is used as HKDF input keying material: the whole
+    // string, not configService's slice(0,32) (DEF-356), with its own salt so
+    // the derived key differs from the canonical-MEK path. Below 32 characters
+    // is still refused, exactly as configService refuses it.
+    const s = raw.trim();
+    if (s.length < 32) {
+      throw new CredentialUnreadableError('The server encryption key is malformed, so the API credential cannot be stored or read.');
+    }
+    return Buffer.from(hkdfSync('sha256', Buffer.from(s, 'utf8'), Buffer.from(LEGACY_KEY_SALT, 'utf8'), HKDF_INFO, 32));
   }
   return Buffer.from(hkdfSync('sha256', mek, Buffer.alloc(0), HKDF_INFO, 32));
 }
