@@ -128,4 +128,9 @@ export const env = {
 
   // PII settings
   get piiEnabled() { return process.env.PII_ENABLED !== 'false'; },
+
+  // Suzi desktop (DEF-370): the gateway's loopback admin API and the secret file it owns.
+  get suziGatewayAdminUrl() { return process.env.SUZI_GATEWAY_ADMIN_URL || 'http://127.0.0.1:4012'; },
+  get suziGatewayAdminSecretFile() { return process.env.SUZI_GATEWAY_ADMIN_SECRET_FILE || '/var/www/jarvis-gateway/secrets/nexeo-admin.secret'; },
+  get suziGatewayTimeoutMs() { return parseInt(process.env.SUZI_GATEWAY_TIMEOUT_MS || '5000', 10); },
 };

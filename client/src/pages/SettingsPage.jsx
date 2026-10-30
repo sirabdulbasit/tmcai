@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import SuziDesktopSection from '../components/SuziDesktopSection';
 
 export default function SettingsPage() {
   const { user, logout, fontScale, appDefaultFontScale, fontScaleIsOverride, setFontScale, resetFontScaleToDefault } = useAuth();
@@ -70,6 +71,7 @@ export default function SettingsPage() {
     // belong here, not on personal Profile. Conditionally appended so
     // non-SA users never see it.
     ...(user?.isSuperAdmin ? [{ id: 'organisation', label: 'Organisation' }] : []),
+    { id: 'suzi',       label: 'Suzi desktop' },
     { id: 'security',   label: 'Security' },
   ];
 
@@ -225,6 +227,8 @@ export default function SettingsPage() {
             appDefaultFontScale={appDefaultFontScale}
           />
         )}
+
+        {tab === 'suzi' && <SuziDesktopSection />}
 
         {tab === 'security' && (
           <>

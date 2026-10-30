@@ -27,6 +27,7 @@ import userAuthRoutes from './routes/userAuthRoutes';
 import mutedSendersRoutes from './routes/mutedSendersRoutes';
 import personalContactsRoutes from './routes/personalContactsRoutes';
 import userPreferencesRoutes from './routes/userPreferencesRoutes';
+import suziRoutes from './routes/suziRoutes';
 import conversationRoutes from './routes/conversationRoutes';
 import profileRoutes from './routes/profileRoutes';
 import schedulerRoutes from './routes/schedulerRoutes';
@@ -261,6 +262,7 @@ v1.use('/triage', triageRoutes);
 v1.use('/wiki', wikiRoutes);
 v1.use('/drafts', draftsRoutes);
 v1.use('/brief', briefRoutes);
+v1.use('/suzi', suziRoutes);
 
 // Static pages — served at root for Google OAuth branding verification
 app.use(staticPagesRoutes);
