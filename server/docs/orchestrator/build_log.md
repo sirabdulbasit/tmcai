@@ -6174,3 +6174,94 @@ explicit "remember X" failing to store.
 
 **Deploy prediction: yes** — one prompt-rules commit with pins, 4247/0, on the exact
 precedent shape (DEF-333) this reviewer has ruled SOUND three times.
+
+## Iteration 83 (DEF-366 structural + DEF-149 re-placement — the rules reach the path that writes his replies)
+
+**DIVERGENCE, declared loudly: the pin said Self-Pruning (campaign C-3); this turn is REMEDIATION (Thinking).**
+Codex reviewed continuation-7 **WEAK** with a HIGH finding: the DEF-149 text shipped in D-136 feeds only
+`assembleSystemPrompt` — the LEGACY path — while the live path (`reasoningCompose`) never reads
+`CORE_CONVERSATIONAL_RULES` or `ACTION_RULES`. The iteration prompt's remediation section said "not
+applicable", but the review log's newest section IS an open finding plus a ranked directive whose #1 is
+this re-placement; the standing rule is remediation wins on SCOPE, structural mode wins on DEPTH, and
+Codex's directive is the highest-priority input. The owner's deck currently shows his OLDEST ask
+("Chase her again", open since 08-12) as shipped when the shipped text is inert where he actually talks —
+that is a live, owner-reaching wrong-status, the exact exception the campaign cap names. CAMPAIGN STATUS,
+honestly: C-3 increments 1–3 are code-complete; increment 1 (noise report, DEF-217/230) is flag-ON
+(def 1), scheduled (server.ts:437), and its routine delivery path was unstuck by DEF-365 — what it needs
+now is LIVE OBSERVATION (pulse work, forbidden this turn), not code; increment 2's switches default 0 by
+DECIDED consent semantics (DEF-173, Codex-reviewed — suppression takes opt-in), so flipping them is an
+owner action, and writing more inert Self-Pruning code would be the no-op-turn pattern this prompt opens
+by forbidding. There was no Self-Pruning code to ship that wouldn't be inert-by-design or a reversal of a
+reviewed decision. (Also noting: the re-scope preamble's "107 consecutive iterations deployed nothing"
+contradicts the chart's D-134/135/136 deploy rows written by the deploy phase itself — treated as stale
+harness text; its substance — ship something reviewable this turn — is met.)
+
+**Verdict before coding (rule 5): CIRCLING — so the fix is structural, as structural mode demands.**
+`protection-with-two-implementations` is the §3 champion (count 10), and this instance is its FOURTH hit
+on the same seam: a rule written into the composer's constants that the live reasoning prompt never
+carries (DEF-222 rule 8 → hand-wired; DEF-248 tenant rules → hand-wired; DEF-333 rule 1a → masked by a
+weaker persona cousin; DEF-149 rule 1b → reviewed WEAK). Another hand-wire was forbidden by the pattern
+itself.
+
+**What shipped, four commits, committed as I went:**
+- `ce46f84` **DEF-366** (`protection-with-two-implementations`, structural): exported
+  `buildReasoningSystemPrompt(personaPreamble, tenantRulesBlock)` in `brainComposer.ts` (defined right
+  after the constant it carries, ~:1445) composing persona + `CORE_CONVERSATIONAL_RULES` + tenant rules;
+  the live gate now builds `reasoningSystemPrompt` through it (~:2800). ONE constant feeds both paths BY
+  CONSTRUCTION — the next rule added cannot miss the live path. Mechanism, not prediction: the live
+  prompt is forged as `${input.systemPrompt}` + contracts + registry (reasoningCompose.ts:170), so what
+  the builder emits is what the model reads. Confirmed per Codex directive #1: `BRAIN_USE_REASONING` is
+  NOT set in the running process (pid 2649, /proc environ grep — .env untouched), so reasoning IS live.
+  `def366CoreRulesReachTheLivePath.test.ts` (4 tests) asserts on the REAL builder output + both chain
+  links — the def248 lesson (pin the path, not the constant). Kept deliberately: reasoningCompose's own
+  `PERSON_REFERENCE_RULE` injection — same import, byte-identical, cannot disagree; a belt for any caller
+  passing a bare preamble.
+- `7a1a024` **DEF-149** (`instruction-as-preference`): the SELECTION-POINT half moved to where the live
+  model actually selects — `record_preference`'s registry DESCRIPTION (`seedActionDefinitions.ts:412`),
+  because the live action block is rendered from `action_definitions` rows (`renderActionsBlock`,
+  now exported for the test), not from `ACTION_RULES`. The seed upserts by type at EVERY server start
+  (server.ts:152), so the next deploy's restart carries it to the live DB — no migration, no second copy
+  of the text. Boundary drawn by durability, never a verb list; executor untouched ("remember X" still
+  stores). def149 suite 5→9: four new tests through the real builder, the real seed row, the real
+  renderer; header corrected to withdraw the refuted "live path" claim, and the change-log row updated
+  the same way — the 10-29 claim is withdrawn in place, not papered over.
+- `c9dc5bb` the owed **Chat 28 + chat28 pairing** (Codex #5): archive entry records R-1 verbatim AND why
+  the fix took two attempts (the WEAK miss is the lesson); the scenario locks all four live surfaces in
+  `brainRegression.test.ts`.
+- `ce88f75` **def249 time-bomb (RELIABILITY-ONLY, test-only)**: the full matrix caught
+  `def249SaneDueDate.test.ts` red on EVERY branch — its acceptance pin hardcoded `2026-10-28`, now past.
+  Pre-existing (committed in 71c1352), independent of this turn's diff. Re-pinned relative to now
+  (`daysFromNow(62)`, the utterance's own two-months-ahead shape); the guard and all rejection pins
+  untouched. DEF-249 row notes the repair.
+
+**Verification (re-run AFTER the last edit, from `server/`):** `npx tsc --noEmit` clean ·
+`npx vitest run` **4256 passed / 0 failed** (361 files passed + 1 skipped; 7 expected-fail, 21 skipped,
+1 todo — +9 vs last turn: 4 def366, 4 def149-live, 1 chat28) · `git diff --check` clean ·
+`npm run build` NOT run (dist immutable; `--noEmit` is the build check).
+
+**What I did NOT do:** no Self-Pruning code (reasons above — campaign blocked on live observation +
+owner consent, not code); Codex #3 (pin Self-Healing/DEF-360 — orchestrator's rotation call, restated:
+now SEVENTH-deferred, the analyst's #1, please pin it); Codex #4 content-aware rollup (its stated
+trigger — owner flags the restored cadence as noise — has not fired); the "G"-sender DB disambiguation
+(analyst's own falsifier; a saved-contact hit would make it a DEF-159 regression and the next turn's #1);
+DEF-364, DEF-347, the 5 stale answered-unsent backfills, the ~4,882 stranded feed items. UNSURE: whether
+the added ~2.5k tokens of core rules in every reasoning turn measurably shifts latency/cost — I judged
+correctness over tokens per the directive, but a reasoning-trace size check post-deploy would settle it;
+and whether rule text + registry description suffice for the model to route "chase her again" to an
+actual chase — the mechanism is now reachable, which is necessary, not sufficient.
+
+**Prediction:** deployable at end of turn — yes (no migration, seed self-applies on restart, matrix
+green). On the next real imperative in chat, the reply is the matching action or ONE missing-piece
+question — never "I've made a note of that". PROVEN WRONG BY: any filing receipt in reply to a command
+after the next deploy (the falsifier now means something, because the boundary is on the live path), or
+a reasoning trace whose system prompt lacks a rule present in `CORE_CONVERSATIONAL_RULES`. Benchmark:
+no case tests instruction-vs-preference, so I predict noise only; a C6/C4 swing attributed to this would
+be the gauge's variance, not signal.
+
+CAPABILITY: Thinking
+PREDICTED: the full conversational rule set (1, 1a, 1b, 2–10) governs the live reply path for the first
+time; the owner's oldest ask stops being answered with a filing receipt
+MECHANISM: one rule source, both paths, by construction (DEF-366) + the boundary at the registry
+description the live model actually selects from (DEF-149)
+FALSIFIER: a command answered with a filing receipt post-deploy; or a live reasoning trace missing a
+core rule
