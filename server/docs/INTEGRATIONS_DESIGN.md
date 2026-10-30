@@ -192,6 +192,14 @@ to the resolved address (no DNS rebinding); same-origin for every page and redir
 size / time / page caps from behaviorConfig; the secret is attached only to the configured origin.
 Qlik and Odoo stay Stage 4.
 
+**Screens (owner 10-30: "Basic, Connect both UI/UX should be the same — same as Vision Metric",
+"because Vision Metric integration is working fine for Basic and Connect"):** Basics and Connect
+follow vm's `IntegrationSyncTab` layout, questions, wording and order, wired to Nexeo's API. vm
+fields Nexeo has no place for are not shown (what it updates — Review decides that; create/leave
+people; blank-alert recipients; per-integration Google consent — Nexeo uses the designated account).
+The main Basics button sends pasted document text and reads it before continuing; a failed reading
+still continues to Connect. A token typed in Connect is stored before the test runs with it.
+
 ## 2c. Shared framework `@tmc/ai-integration` (DEF-365)
 
 Owner, 2026-10-30: *"adopt in Nexeo under integration — only adopt till mapping (further mapping

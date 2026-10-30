@@ -39,6 +39,39 @@ export const s = {
   row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
 };
 
+/**
+ * Owner 10-30 "Basic, Connect both UI/UX should be the same — same as Vision Metric":
+ * the vm wizard's Basics/Connect building blocks (IntegrationSyncTab.tsx), on Nexeo's
+ * theme variables. A section heading, a choice card (vm's bordered radio/checkbox
+ * tiles), a pill, the divider above the test panel and the result boxes.
+ */
+export const vm = {
+  section: { fontSize: '0.9rem', margin: '20px 0 6px', color: 'var(--text)' },
+  sectionHint: { color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', lineHeight: 1.5, margin: '0 0 8px' },
+  grid2: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 },
+  divider: { marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 },
+  notes: { background: 'var(--bg-1)', borderRadius: 9, padding: '12px 14px', margin: '10px 0', fontSize: 'var(--fs-sm)', lineHeight: 1.7, color: 'var(--text)' },
+  ok: { background: C.ok + '1a', color: C.ok, borderRadius: 8, padding: '10px 13px', fontSize: 'var(--fs-sm)', marginTop: 12 },
+  bad: { background: C.bad + '1a', color: C.bad, borderRadius: 8, padding: '10px 13px', fontSize: 'var(--fs-sm)', marginTop: 12 },
+  amber: { background: C.warn + '1a', color: C.warn, borderRadius: 8, padding: '10px 13px', fontSize: 'var(--fs-sm)', marginTop: 12 },
+  choiceTitle: { fontWeight: 700, fontSize: 'var(--fs-sm)', color: 'var(--text)' },
+  footer: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 14, flexWrap: 'wrap' },
+};
+
+export function choiceCard(selected, disabled = false) {
+  return {
+    display: 'block', borderRadius: 9, padding: '12px 14px', cursor: disabled ? 'not-allowed' : 'pointer',
+    border: selected ? '1px solid ' + C.accent : '1px solid var(--border)',
+    background: selected ? C.accent + '14' : 'var(--bg-1)',
+    ...(disabled && !selected ? { opacity: 0.5 } : null),
+  };
+}
+
+export function pill(tone = 'acc') {
+  const col = tone === 'ok' ? C.ok : tone === 'warn' ? C.warn : C.accent;
+  return { display: 'inline-block', padding: '2px 9px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: col + '22', color: col };
+}
+
 export function btn(kind = 'outline', { small = false, disabled = false } = {}) {
   const base = kind === 'primary' ? s.btnPrimary : kind === 'success' ? s.btnSuccess : kind === 'danger' ? s.btnDanger : s.btnOutline;
   return { ...s.btn, ...base, ...(small ? s.btnSmall : null), ...(disabled ? s.disabled : null) };
