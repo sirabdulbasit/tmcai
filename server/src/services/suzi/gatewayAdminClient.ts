@@ -1,10 +1,10 @@
 /**
- * Suzi desktop — Nexeo's side of the connection-key flow (DEF-370).
+ * Suzi desktop — Nexeo's side of the per-user API key flow (DEF-370).
  *
  * Suzi is the voice assistant on a user's own computer. Its server half, the
  * gateway (/var/www/jarvis-gateway, PM2 `jarvis-gateway`), owns the devices.
- * Nexeo only asks it, on behalf of the signed-in person, to mint a single-use
- * connection key, list that person's computers, or disconnect one. The calls
+ * Nexeo only asks it, on behalf of the signed-in person, to mint that person's
+ * own API key (valid 7 / 30 / 90 days), list their computers, or disconnect one. The calls
  * go to the gateway's admin API on loopback; the browser never sees the
  * gateway or its secret.
  *
@@ -34,6 +34,9 @@ export interface SuziDevice {
   connectedAt: string;
   lastSeenAt: string | null;
   online: boolean;
+  /** API-key computers stop working at this time; null for computers paired another way. */
+  expiresAt: string | null;
+  keyPrefix: string | null;
 }
 
 async function readSecret(): Promise<string> {
@@ -76,25 +79,43 @@ async function call(method: 'GET' | 'POST', path: string, body?: unknown): Promi
   return data;
 }
 
-/** The key and the server URL the desktop app needs — Nexeo web shows both, plus a one-line link. */
-export async function createConnectKey(owner: SuziOwner): Promise<{ key: string; expiresAt: string; serverUrl: string; connectLink: string }> {
-  const data = await call('POST', '/admin/connect-keys', {
+export const SUZI_KEY_VALIDITY_DAYS = [7, 30, 90] as const;
+export type SuziKeyValidity = (typeof SUZI_KEY_VALIDITY_DAYS)[number];
+
+export interface SuziApiKey {
+  apiKey: string;
+  keyPrefix: string;
+  expiresAt: string;
+  validityDays: SuziKeyValidity;
+  serverUrl: string;
+  /** One line the Suzi app accepts pasted into its Connect field. */
+  connectLink: string;
+}
+
+/**
+ * A new API key for THIS person (each user gets their own; it is never shared or reused), valid for
+ * `validityDays`. The gateway keeps only its hash, so this is the one moment it can be shown.
+ */
+export async function createApiKey(owner: SuziOwner, validityDays: SuziKeyValidity): Promise<SuziApiKey> {
+  const data = await call('POST', '/admin/api-keys', {
     user_id: String(owner.userId),
     tenant_id: owner.clientNumber,
     user_name: owner.displayName,
+    validity_days: validityDays,
     created_by: 'nexeo-web',
   });
-  if (typeof data?.key !== 'string' || typeof data?.expires_at !== 'string' || !/^https?:\/\/[^\s]+$/.test(String(data?.server_url ?? ''))) {
+  if (typeof data?.api_key !== 'string' || typeof data?.expires_at !== 'string' || !/^https?:\/\/[^\s]+$/.test(String(data?.server_url ?? ''))) {
     throw new SuziGatewayError('Suzi server returned an unexpected answer', 502);
   }
   const serverUrl = String(data.server_url).replace(/\/+$/, '');
-  log.info('suzi connection key issued', { userId: owner.userId, clientNumber: owner.clientNumber });
+  log.info('suzi api key issued', { userId: owner.userId, clientNumber: owner.clientNumber, validityDays });
   return {
-    key: data.key,
+    apiKey: data.api_key,
+    keyPrefix: String(data.key_prefix ?? data.api_key.slice(0, 12)),
     expiresAt: data.expires_at,
+    validityDays,
     serverUrl,
-    // Pasted as one line into the Suzi app's Connect field (CN-001).
-    connectLink: `suzi://connect?server=${encodeURIComponent(serverUrl)}&key=${encodeURIComponent(data.key)}`,
+    connectLink: `suzi://connect?server=${encodeURIComponent(serverUrl)}&key=${encodeURIComponent(data.api_key)}`,
   };
 }
 
@@ -109,6 +130,8 @@ export async function listDevices(owner: SuziOwner): Promise<SuziDevice[]> {
     connectedAt: String(d.connected_at ?? ''),
     lastSeenAt: d.last_seen_at ? String(d.last_seen_at) : null,
     online: !!d.online,
+    expiresAt: d.expires_at ? String(d.expires_at) : null,
+    keyPrefix: d.key_prefix ? String(d.key_prefix) : null,
   }));
 }
 

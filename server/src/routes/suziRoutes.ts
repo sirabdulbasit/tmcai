@@ -1,7 +1,8 @@
 /**
  * Suzi desktop (DEF-370) — Settings → Suzi desktop in Nexeo web.
  *
- *   POST   /suzi/connect-key   → { key, expiresAt, serverUrl, connectLink }   single-use, 10 min, for the signed-in person
+ *   POST   /suzi/api-key       { validityDays: 7|30|90 } → { apiKey, keyPrefix, expiresAt, validityDays, serverUrl, connectLink }
+ *                               the signed-in person's OWN key (each user gets a different one), shown once
  *   GET    /suzi/devices       → { devices: [...] }   that person's connected computers
  *   DELETE /suzi/devices/:id   → { ok: true }         disconnect one of THEIR computers
  *
@@ -13,7 +14,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { requireAuth } from '../middleware/auth';
 import {
-  SuziGatewayError, SuziNotConfiguredError, createConnectKey, disconnectDevice, listDevices, type SuziOwner,
+  SUZI_KEY_VALIDITY_DAYS, SuziGatewayError, SuziNotConfiguredError, createApiKey, disconnectDevice, listDevices,
+  type SuziKeyValidity, type SuziOwner,
 } from '../services/suzi/gatewayAdminClient';
 
 const router = Router();
@@ -37,7 +39,7 @@ const keyLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req: any) => req.user?.id?.toString() || ipKeyGenerator(req),
-  message: { error: 'Too many connection keys. Please try again in a minute.' },
+  message: { error: 'Too many API keys. Please try again in a minute.' },
 });
 
 function ownerOf(req: Request): SuziOwner {
@@ -55,9 +57,15 @@ function fail(res: Response, err: unknown): void {
   }
 }
 
-router.post('/connect-key', keyLimiter, async (req: Request, res: Response) => {
+router.post('/api-key', keyLimiter, async (req: Request, res: Response) => {
+  const raw = req.body?.validityDays ?? 30;
+  const validityDays = Number(raw);
+  if (!SUZI_KEY_VALIDITY_DAYS.includes(validityDays as SuziKeyValidity)) {
+    res.status(400).json({ error: 'Validity must be 7, 30 or 90 days' });
+    return;
+  }
   try {
-    res.json(await createConnectKey(ownerOf(req)));
+    res.json(await createApiKey(ownerOf(req), validityDays as SuziKeyValidity));
   } catch (err) {
     fail(res, err);
   }

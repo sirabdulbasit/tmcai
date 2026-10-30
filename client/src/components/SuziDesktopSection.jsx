@@ -1,13 +1,15 @@
-// Suzi desktop (DEF-370) — connect the Suzi desktop app to this Nexeo account with a single-use key,
-// and see / disconnect the computers already connected. Lives in Settings → Suzi desktop.
+// Suzi desktop (DEF-370) — give the Suzi desktop app the server URL + YOUR OWN API key (each Nexeo
+// user gets a different key), valid for the period chosen here, and see / disconnect the
+// computers using your keys. Lives in Settings → Suzi desktop.
 import { useEffect, useState } from 'react';
 import { InlineConfirm, formatPkt } from '../pages/admin/integrations/integrationUi';
-import { createConnectKey, disconnectDevice, errorText, listDevices } from '../services/suziApi';
+import { createApiKey, disconnectDevice, errorText, listDevices } from '../services/suziApi';
 
-const OS_LABEL = { macos: 'macOS', windows: 'Windows' };
+const VALIDITY = [7, 30, 90];
 
 export default function SuziDesktopSection() {
-  const [issued, setIssued] = useState(null); // { key, expiresAt }
+  const [validity, setValidity] = useState(30);
+  const [issued, setIssued] = useState(null); // { apiKey, keyPrefix, expiresAt, validityDays, serverUrl, connectLink }
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(null); // 'url' | 'key' | 'both'
   const [msg, setMsg] = useState(null); // { ok, text }
@@ -25,20 +27,13 @@ export default function SuziDesktopSection() {
     load();
   }, []);
 
-  // The key is only good for 10 minutes; drop it from the screen when it lapses.
-  useEffect(() => {
-    if (!issued) return undefined;
-    const ms = new Date(issued.expiresAt).getTime() - Date.now();
-    const t = setTimeout(() => setIssued(null), Math.max(0, ms));
-    return () => clearTimeout(t);
-  }, [issued]);
-
   const generate = async () => {
     setBusy(true);
     setMsg(null);
     setCopied(null);
     try {
-      setIssued(await createConnectKey());
+      setIssued(await createApiKey(validity));
+      await load();
     } catch (e) {
       setMsg({ ok: false, text: errorText(e) });
     } finally {
@@ -60,7 +55,8 @@ export default function SuziDesktopSection() {
     setMsg(null);
     try {
       await disconnectDevice(d.id);
-      setMsg({ ok: true, text: `${d.name} is disconnected.` });
+      if (issued && d.keyPrefix === issued.keyPrefix) setIssued(null);
+      setMsg({ ok: true, text: `${label(d)} is disconnected — its key no longer works.` });
     } catch (e) {
       setMsg({ ok: false, text: errorText(e) });
     }
@@ -70,62 +66,72 @@ export default function SuziDesktopSection() {
   return (
     <>
       <section className="settings-section">
-        <h2>Connect a computer</h2>
+        <h2>Connect Suzi desktop</h2>
         <p style={{ fontSize: 12, color: '#666', marginTop: -4, marginBottom: 10 }}>
-          Suzi is your voice assistant on your own Mac or Windows computer. Generate a key here, then give the Suzi
-          desktop app the server URL and the key. A key works once and is valid for 10 minutes.
+          Suzi is your voice assistant on your own Mac or Windows computer. Generate your API key here and enter it in the
+          Suzi desktop app together with the server URL. The key is yours alone and works until it expires or you disconnect it.
         </p>
-        {!issued && (
-          <button className="settings-btn" onClick={generate} disabled={busy}>
-            {busy ? <><span className="btn-spinner" /> Generating…</> : 'Generate connection key'}
-          </button>
-        )}
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+          <span style={{ fontSize: 13 }}>Valid for</span>
+          {VALIDITY.map((d) => (
+            <label key={d} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+              <input type="radio" name="suzi-validity" checked={validity === d} onChange={() => setValidity(d)} />
+              {d} days
+            </label>
+          ))}
+        </div>
+        <button className="settings-btn" onClick={generate} disabled={busy}>
+          {busy ? <><span className="btn-spinner" /> Generating…</> : issued ? 'Generate another key' : 'Generate API key'}
+        </button>
+
         {issued && (
-          <div>
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 12, color: '#f59e0b', marginBottom: 8 }}>
+              Copy the key now — for your security it is shown only this once.
+            </div>
             <CopyRow label="Server URL" value={issued.serverUrl} copied={copied === 'url'} onCopy={() => copy('url', issued.serverUrl)} />
-            <CopyRow label="Key" value={issued.key} mono copied={copied === 'key'} onCopy={() => copy('key', issued.key)} />
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+            <CopyRow label="API key" value={issued.apiKey} mono copied={copied === 'key'} onCopy={() => copy('key', issued.apiKey)} />
+            <div style={{ fontSize: 12, color: '#999', marginBottom: 8 }}>
+              Valid for {issued.validityDays} days — until {formatPkt(issued.expiresAt)}.
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <button className="settings-btn" onClick={() => copy('both', issued.connectLink)}>
                 {copied === 'both' ? 'Copied' : 'Copy both (one line)'}
               </button>
               <span style={{ fontSize: 12, color: '#999' }}>Paste it into the Suzi app's Connect field.</span>
             </div>
-            <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
-              Key valid until {formatPkt(issued.expiresAt)} · single use.
-            </div>
-            <button className="settings-btn" style={{ marginTop: 10, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)' }} onClick={generate} disabled={busy}>
-              {busy ? 'Generating…' : 'Generate a new key'}
-            </button>
           </div>
         )}
         {msg && <div style={{ fontSize: 12, color: msg.ok ? '#4ade80' : '#fca5a5', marginTop: 8 }}>{msg.text}</div>}
       </section>
 
       <section className="settings-section">
-        <h2>Connected computers</h2>
+        <h2>Your keys and computers</h2>
         {devices === null && <div style={{ fontSize: 12, color: '#999' }}>Loading…</div>}
-        {devices && devices.length === 0 && <div style={{ fontSize: 12, color: '#999' }}>No computers connected yet.</div>}
+        {devices && devices.length === 0 && <div style={{ fontSize: 12, color: '#999' }}>No active keys yet.</div>}
         {devices && devices.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {devices.map((d) => (
               <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <div style={{ fontWeight: 600 }}>
-                    {d.name}{' '}
+                    {label(d)}{' '}
                     <span style={{ fontSize: 11, color: d.online ? '#4ade80' : '#999', fontWeight: 400 }}>
-                      {d.online ? '● online' : '○ offline'}
+                      {d.online ? '● connected now' : '○ not connected'}
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: '#999' }}>
-                    {OS_LABEL[d.os] ?? d.os} · connected {formatPkt(d.connectedAt)}
-                    {d.lastSeenAt ? ` · last used ${formatPkt(d.lastSeenAt)}` : ''}
+                    created {formatPkt(d.connectedAt)}
+                    {d.expiresAt ? ` · expires ${formatPkt(d.expiresAt)}` : ''}
+                    {d.lastSeenAt ? ` · last used ${formatPkt(d.lastSeenAt)}` : ' · not used yet'}
                   </div>
                 </div>
                 <InlineConfirm
                   label="Disconnect"
                   confirmLabel="Disconnect"
                   kind="danger"
-                  consequence={`Suzi on ${d.name} stops working until you connect it again with a new key.`}
+                  consequence="This key stops working at once; Suzi on that computer needs a new key."
                   onConfirm={() => disconnect(d)}
                 />
               </div>
@@ -137,17 +143,21 @@ export default function SuziDesktopSection() {
   );
 }
 
-function CopyRow({ label, value, mono = false, copied, onCopy }) {
+function label(d) {
+  return d.keyPrefix ? `Key ${d.keyPrefix}…` : d.name;
+}
+
+function CopyRow({ label: text, value, mono = false, copied, onCopy }) {
   return (
     <div style={{ marginBottom: 8 }}>
-      <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>{text}</div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           readOnly
           value={value}
-          aria-label={label}
+          aria-label={text}
           onClick={(e) => e.target.select()}
-          style={{ fontFamily: mono ? 'monospace' : 'inherit', fontSize: mono ? 16 : 14, letterSpacing: mono ? 1 : 0, padding: '8px 10px', minWidth: 280 }}
+          style={{ fontFamily: mono ? 'monospace' : 'inherit', fontSize: mono ? 13 : 14, padding: '8px 10px', minWidth: 320, flex: '1 1 320px' }}
         />
         <button className="settings-btn" onClick={onCopy}>{copied ? 'Copied' : 'Copy'}</button>
       </div>
