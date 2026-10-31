@@ -157,7 +157,12 @@ function CopyRow({ label: text, value, mono = false, copied, onCopy }) {
           value={value}
           aria-label={text}
           onClick={(e) => e.target.select()}
-          style={{ fontFamily: mono ? 'monospace' : 'inherit', fontSize: mono ? 13 : 14, padding: '8px 10px', minWidth: 320, flex: '1 1 320px' }}
+          style={{
+            fontFamily: mono ? 'monospace' : 'inherit', fontSize: mono ? 13 : 14, padding: '8px 10px', minWidth: 320, flex: '1 1 320px',
+            // Same as .settings-field inputs; without this the browser's read-only look made the value unreadable.
+            background: 'var(--bg-input)', color: 'var(--text-primary)', WebkitTextFillColor: 'var(--text-primary)',
+            border: '1px solid var(--border-input)', borderRadius: 'var(--radius-sm)', opacity: 1,
+          }}
         />
         <button className="settings-btn" onClick={onCopy}>{copied ? 'Copied' : 'Copy'}</button>
       </div>
