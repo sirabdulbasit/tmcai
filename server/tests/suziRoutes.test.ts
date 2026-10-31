@@ -82,14 +82,27 @@ describe('POST /api/v1/suzi/api-key', () => {
     expect(JSON.parse(calls[0].init.body)).toEqual({ user_id: '17', tenant_id: 'TMC-0001', user_name: 'Ayesha Khan', validity_days: 90, created_by: 'nexeo-web' });
   });
 
-  it('validity defaults to 30 days; only 7, 30 or 90 are accepted', async () => {
+  it('validity defaults to 30 days; only 7, 30, 90 or never are accepted', async () => {
     responder = () => json({ api_key: K, key_prefix: 'suzi_AAAAAAA', expires_at: '2026-11-30T00:00:00.000Z', device_id: DEVICE, server_url: 'https://tai.tmcltd.com/suzi' });
     await request(appAs()).post('/api/v1/suzi/api-key');
     expect(JSON.parse(calls[0].init.body).validity_days).toBe(30);
-    for (const bad of [1, 365, 'forever', -7]) {
+    for (const bad of [1, 365, 'forever', -7, 'Never']) {
       expect((await request(appAs()).post('/api/v1/suzi/api-key').send({ validityDays: bad })).status).toBe(400);
     }
     expect(calls).toHaveLength(1);
+  });
+
+  it('"never" mints a key with no expiry (DEF-373)', async () => {
+    responder = () => json({ api_key: K, key_prefix: 'suzi_AAAAAAA', expires_at: null, device_id: DEVICE, server_url: 'https://tai.tmcltd.com/suzi' });
+    const r = await request(appAs()).post('/api/v1/suzi/api-key').send({ validityDays: 'never' });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ apiKey: K, expiresAt: null, validityDays: 'never' });
+    expect(JSON.parse(calls[0].init.body).validity_days).toBe('never');
+  });
+
+  it('a dated key the gateway returns without an expiry is refused, not shown as never-expiring', async () => {
+    responder = () => json({ api_key: K, key_prefix: 'suzi_AAAAAAA', expires_at: null, device_id: DEVICE, server_url: 'https://tai.tmcltd.com/suzi' });
+    expect((await request(appAs()).post('/api/v1/suzi/api-key').send({ validityDays: 30 })).status).toBe(502);
   });
 
   it('two people get two different keys, each minted for its own user', async () => {

@@ -8,7 +8,7 @@ export function errorText(e) {
   return e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message ?? 'Unknown error';
 }
 
-/** The signed-in person's own API key, valid for `validityDays` (7, 30 or 90). Shown once. */
+/** The signed-in person's own API key, valid for `validityDays` (7, 30, 90 or 'never'). Shown once. */
 export async function createApiKey(validityDays = 30) {
   const { data } = await api.post(`${BASE}/api-key`, { validityDays });
   return data; // { apiKey, keyPrefix, expiresAt, validityDays, serverUrl, connectLink }

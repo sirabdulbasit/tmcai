@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { InlineConfirm, formatPkt } from '../pages/admin/integrations/integrationUi';
 import { createApiKey, disconnectDevice, errorText, listDevices } from '../services/suziApi';
 
-const VALIDITY = [7, 30, 90];
+const VALIDITY = [7, 30, 90, 'never'];
 
 export default function SuziDesktopSection() {
   const [validity, setValidity] = useState(30);
@@ -77,7 +77,7 @@ export default function SuziDesktopSection() {
           {VALIDITY.map((d) => (
             <label key={d} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
               <input type="radio" name="suzi-validity" checked={validity === d} onChange={() => setValidity(d)} />
-              {d} days
+              {d === 'never' ? 'Never expires' : `${d} days`}
             </label>
           ))}
         </div>
@@ -93,7 +93,9 @@ export default function SuziDesktopSection() {
             <CopyRow label="Server URL" value={issued.serverUrl} copied={copied === 'url'} onCopy={() => copy('url', issued.serverUrl)} />
             <CopyRow label="API key" value={issued.apiKey} mono copied={copied === 'key'} onCopy={() => copy('key', issued.apiKey)} />
             <div style={{ fontSize: 12, color: '#999', marginBottom: 8 }}>
-              Valid for {issued.validityDays} days — until {formatPkt(issued.expiresAt)}.
+              {issued.expiresAt
+                ? `Valid for ${issued.validityDays} days — until ${formatPkt(issued.expiresAt)}.`
+                : 'Never expires — works until you disconnect it below.'}
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <button className="settings-btn" onClick={() => copy('both', issued.connectLink)}>
@@ -123,7 +125,7 @@ export default function SuziDesktopSection() {
                   </div>
                   <div style={{ fontSize: 12, color: '#999' }}>
                     created {formatPkt(d.connectedAt)}
-                    {d.expiresAt ? ` · expires ${formatPkt(d.expiresAt)}` : ''}
+                    {d.expiresAt ? ` · expires ${formatPkt(d.expiresAt)}` : d.keyPrefix ? ' · never expires' : ''}
                     {d.lastSeenAt ? ` · last used ${formatPkt(d.lastSeenAt)}` : ' · not used yet'}
                   </div>
                 </div>

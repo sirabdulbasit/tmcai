@@ -40,7 +40,7 @@ dead names; internal `brain_*` table and route names are kept deliberately for s
   `jarvis-gateway`, 127.0.0.1:4010 + loopback admin 127.0.0.1:4012, own `jarvis` database).
   Nexeo's only part is **Settings → Suzi desktop**: `POST/GET/DELETE /api/v1/suzi/*`
   (`routes/suziRoutes.ts` → `services/suzi/gatewayAdminClient.ts`). These mint the person's **own
-  API key** (valid 7 / 30 / 90 days, shown once) and show it with the **server URL**
+  API key** (valid 7 / 30 / 90 days or never expiring — DEF-373; shown once) and show it with the **server URL**
   `https://tai.tmcltd.com/suzi`, list the person's keys/computers and disconnect one. Apache
   `tmcai.conf` proxies `/suzi/v1/` (HTTP + WebSocket) to the gateway on 4010. The person and the tenant come from `req.user` only, agent tokens are refused, and
   the gateway's admin secret is a file it owns (`/var/www/jarvis-gateway/secrets/nexeo-admin.secret`).

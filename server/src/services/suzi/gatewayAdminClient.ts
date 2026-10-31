@@ -79,13 +79,15 @@ async function call(method: 'GET' | 'POST', path: string, body?: unknown): Promi
   return data;
 }
 
-export const SUZI_KEY_VALIDITY_DAYS = [7, 30, 90] as const;
+/** 'never' = the key works until it is disconnected (DEF-373, owner 10-31). */
+export const SUZI_KEY_VALIDITY_DAYS = [7, 30, 90, 'never'] as const;
 export type SuziKeyValidity = (typeof SUZI_KEY_VALIDITY_DAYS)[number];
 
 export interface SuziApiKey {
   apiKey: string;
   keyPrefix: string;
-  expiresAt: string;
+  /** null = never expires. */
+  expiresAt: string | null;
   validityDays: SuziKeyValidity;
   serverUrl: string;
   /** One line the Suzi app accepts pasted into its Connect field. */
@@ -94,7 +96,7 @@ export interface SuziApiKey {
 
 /**
  * A new API key for THIS person (each user gets their own; it is never shared or reused), valid for
- * `validityDays`. The gateway keeps only its hash, so this is the one moment it can be shown.
+ * `validityDays` ('never' = until disconnected). The gateway keeps only its hash, so this is the one moment it can be shown.
  */
 export async function createApiKey(owner: SuziOwner, validityDays: SuziKeyValidity): Promise<SuziApiKey> {
   const data = await call('POST', '/admin/api-keys', {
@@ -104,7 +106,8 @@ export async function createApiKey(owner: SuziOwner, validityDays: SuziKeyValidi
     validity_days: validityDays,
     created_by: 'nexeo-web',
   });
-  if (typeof data?.api_key !== 'string' || typeof data?.expires_at !== 'string' || !/^https?:\/\/[^\s]+$/.test(String(data?.server_url ?? ''))) {
+  const expiryOk = validityDays === 'never' ? data?.expires_at === null : typeof data?.expires_at === 'string';
+  if (typeof data?.api_key !== 'string' || !expiryOk || !/^https?:\/\/[^\s]+$/.test(String(data?.server_url ?? ''))) {
     throw new SuziGatewayError('Suzi server returned an unexpected answer', 502);
   }
   const serverUrl = String(data.server_url).replace(/\/+$/, '');
