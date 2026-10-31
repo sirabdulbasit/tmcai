@@ -49,7 +49,7 @@ import { resolveUserTimezone, getTimezoneOffset, formatLocalDate } from '../user
 // ALONE — not `assembleSystemPrompt`. So DEF-222's rule 8, which lives in
 // `CORE_CONVERSATIONAL_RULES`, never reached the prompt that actually writes the
 // owner's reply. One import, one definition, both paths.
-import { PERSON_REFERENCE_RULE } from './personReference';
+import { PERSON_REFERENCE_RULE, statesPersonReferenceRule } from './personReference';
 
 export type ReasoningDecision = 'act' | 'ask' | 'answer' | 'decline' | 'tool_call';
 
@@ -155,6 +155,23 @@ export interface ReasoningInput {
   };
 }
 
+/**
+ * DEF-371 — rule 8 arrives ONCE, whatever the caller sent.
+ *
+ * Since DEF-366 the live call site's `input.systemPrompt` already carries
+ * `PERSON_REFERENCE_RULE` (rule 8 of CORE_CONVERSATIONAL_RULES), so the
+ * unconditional add here printed it twice on every live turn. The legacy path
+ * guards this exact doubling (`statesPersonReferenceRule`, brainComposer); this
+ * is the SAME guard on this path — the add survives only as the fallback for a
+ * prompt that does not already state the rule, so the two deliveries cannot
+ * disagree and cannot stack.
+ *
+ * Exported so the once-only suite asserts on real output, not on this comment.
+ */
+export function personReferenceRuleBlock(systemPrompt: string): string {
+  return statesPersonReferenceRule(systemPrompt) ? '' : `\n\n${PERSON_REFERENCE_RULE}`;
+}
+
 /** Build the structured-output prompt + call Gemini. Returns the
  *  parsed decision or null on failure (caller falls back to legacy
  *  composer). */
@@ -167,9 +184,7 @@ export async function reasoningCompose(input: ReasoningInput): Promise<Reasoning
   const actions = await listActiveActions(undefined, input.clientNumber).catch(() => []);
   const actionsBlock = renderActionsBlock(actions);
 
-  const systemPromptWithDecisionContract = `${input.systemPrompt}
-
-${PERSON_REFERENCE_RULE}
+  const systemPromptWithDecisionContract = `${input.systemPrompt}${personReferenceRuleBlock(input.systemPrompt)}
 
 # Reasoning decision contract (this turn)
 

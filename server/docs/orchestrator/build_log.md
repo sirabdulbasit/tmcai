@@ -6265,3 +6265,81 @@ MECHANISM: one rule source, both paths, by construction (DEF-366) + the boundary
 description the live model actually selects from (DEF-149)
 FALSIFIER: a command answered with a filing receipt post-deploy; or a live reasoning trace missing a
 core rule
+
+## Iteration 83 (continuation 1, DEF-371 — rule 8 lands once; B04/B02 regression guard settled by 3-run re-measure) — 2026-10-31
+
+**MODE: campaign suspended — this turn's only job was to make HEAD deployable.** The newest
+review (it-83) is **SOUND, zero CRITICAL, ROLLBACK: no** — nothing blocks release, so "make
+HEAD deployable" resolved to closing the reviewer's own ranked directives: #2 (the one
+diff-introduced defect) and #1 (settle B04). Both done this turn. The deploy itself is the
+orchestrator's (D-22); I did not touch pm2 or dist.
+
+**Directive #2 — CLOSED (the code change).** Finding quoted: *"person-reference rule doubled
+on the reasoning path … `reasoningCompose.ts:172` still appends `PERSON_REFERENCE_RULE`
+standalone — so it appears twice."* Fix: `server/src/services/knowledge/reasoningCompose.ts`
+— new exported `personReferenceRuleBlock()` (≈line 170) appends the rule ONLY when
+`statesPersonReferenceRule(input.systemPrompt)` is false, and the decision-contract template
+builds through it. That is the mechanism because it is the SAME predicate the legacy path
+uses at `brainComposer.ts:1941` — one guard, both paths, so the two deliveries cannot stack
+and cannot disagree; the def223 guarantee (a bare-preamble caller still gets the rule)
+survives as the fallback branch. Tag closed (residue of the parent class): `protection-with-two-implementations`.
+Tests: `tests/def371PersonReferenceRuleOnce.test.ts` (6 tests — once-only on REAL output for
+the live shape and the bare caller, no stacking, wiring pinned in source so an unconditional
+re-add goes red). `tests/def223ReasoningPathRule.test.ts` import pin updated in place
+(DEF-248 precedent), nothing weakened.
+
+**Directive #1 — EXECUTED, and the regression guard is settled.** 3 runs of
+`nexeoCapabilityBenchmark --only B04-outstanding-question-ignored,B02-unknown-fact` through
+the live pipeline at HEAD, POST-dedup (reports: /tmp/iter83c1-remeasure-{1,2,3}.json):
+- **B02: 98 / 93 / 86 (baseline 94), C3 ∈ {100,80,85} vs baseline 80.** The guard's
+  "C3 100→80" is inside the observed spread — judge variance, NO regression. One flag for
+  the analyst: run 3 answered "There are two contacts … Hamna Kamal and Hamna Raheel" —
+  I did NOT verify whether those rows exist in TMC-0001 or were fabricated.
+- **B04: 71 / 69 / 88 (baseline 60).** NOT a clean regression and NOT clean noise: the
+  systemMarker compose fallback ("I couldn't put together an answer I trust") recurred in
+  1 of 3 runs AFTER the dedup — so the reviewer's enlarged/doubled-prompt hypothesis is NOT
+  confirmed as the cause. The failing run's marker shows the actual mechanism:
+  `[update_open_item: could not find an open item matching "Define rules for Brain's
+  responsiveness…"]` — **rule 1a now FIRES on the live path (the model emits the binding
+  action), and the action misses its target because it re-finds the item by TITLE.** Run 1
+  deflected ("say \"go ahead\""), run 3 surfaced the duplicate-title guard. All three shapes
+  are DEF-333's open class: the bind must carry the awaiting-question's item id (the
+  `awaitingAnswer` block already exists in `ReasoningInput`), not a title re-lookup. That is
+  the next Thinking turn's work — naming it here, not starting it (campaign suspended).
+
+**What I now believe was wrong about the last attempt (continuation ask):** nothing in its
+placement — DEF-366/149 verifiably reach the live prompt. What it could not do is make the
+binding LAND: the rule decides, the action grounds, and B04 fails at grounding, after the
+decision goes right. The previous turn fixed the deciding half; the grounding half was never
+touched and is where B04's remaining failures live.
+
+**Three-docs verdict said out loud:** DEF-371 is *circling by class* — `protection-with-two-implementations`
+is §3's largest class (10) — so per rule 5 the fix is structural, not an instance patch: the
+guard removes the unguarded second delivery mechanism itself, same predicate both paths.
+DEF-372 (day-brief soft-fail, CL-060): *progressing* — genuinely new symptom, logged OPEN,
+honestly undiagnosed.
+
+**Verification (re-run after the LAST edit, exact):** `npx tsc --noEmit` clean (exit 0) ·
+`npx vitest run` **4477 passed | 0 failed** (7 expected-fail, 21 skipped, 1 todo; 376 files)
+· `git diff --check` clean. `npm run build` NOT run — dist is the immutable deployed
+artifact (CLAUDE.md); `--noEmit` is the build check.
+
+**What I did NOT do, named:** (1) review directive #3 (confirm the running
+`action_definitions` row) — the deployed SHA `6c0f2a1` predates `7a1a024`, so the live row
+CANNOT yet carry the new description; the re-seed happens at the deploy restart, and git
+already proves the deploy hasn't happened. Check it post-deploy. (2) Directives #4/#5
+(Self-Pruning increment, DEF-364) — campaign suspended, no new work; Self-Pruning's 58-iteration
+starvation stands and is owed the first unsuspended turn. (3) No DEF-333 code — named as next,
+not started. (4) No diagnosis of DEF-372 beyond logging it. (5) No deploy.
+
+**CAPABILITY:** Thinking
+**PREDICTED:** +0 direct — this removes a prompt-noise variable and closes the reviewer's
+last diff-introduced finding; B04 will NOT be fixed by it (measured: fallback recurred post-dedup).
+**MECHANISM:** dedup guard — each conversational rule reaches the live reasoning prompt exactly once.
+**FALSIFIER:** a live reasoning prompt carrying "NO GENDER IS RECORDED FOR ANYONE" twice; or
+B04's compose fallback VANISHING across many runs with no other change (would mean the
+doubling was the cause after all and this entry's attribution is wrong).
+
+**Deployability prediction:** HEAD is deployable now by the reviewer's own verdict plus this
+turn's closure of its one diff-introduced finding. I predict the orchestrator can deploy at
+end of turn; the owed owner-visible wins ride it (DEF-149/333-1a finally reaching his replies).

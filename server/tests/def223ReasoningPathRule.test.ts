@@ -93,7 +93,13 @@ describe('DEF-223 — the path that actually writes the reply', () => {
 
   it('so the reasoning contract carries the rule itself, by reference', () => {
     expect(reasoning).toMatch(/\$\{PERSON_REFERENCE_RULE\}/);
-    expect(reasoning).toMatch(/import \{ PERSON_REFERENCE_RULE \} from '\.\/personReference'/);
+    // UPDATED 2026-10-31 (DEF-371). The pin used to require the rule be the ONLY
+    // import from personReference. That pinned the import's exact shape, not the
+    // fact it exists for: one definition, imported by reference. The module now
+    // also imports `statesPersonReferenceRule` — the dedup guard that stops the
+    // rule printing twice since DEF-366 routed rule 8 here too. Same precedent as
+    // the DEF-248 update above: keep the pin, make it precise.
+    expect(reasoning).toMatch(/import \{ PERSON_REFERENCE_RULE, statesPersonReferenceRule \} from '\.\/personReference'/);
     expect(reasoning, 'one definition, not a second copy of the words')
       .not.toContain('NO GENDER IS RECORDED FOR ANYONE');
   });
